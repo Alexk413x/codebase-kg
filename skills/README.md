@@ -1,15 +1,19 @@
-# skills/ — Phase 3 (not built yet)
+# skills/
 
-Five skills, each a `SKILL.md` (frontmatter: `name`, `description`, `when_to_use`, `effort`,
-`allowed-tools` — mirror the a11y plugin's skills). All are **advisory** and **source-derived**.
+Five skills, all **advisory** and **source-derived**. Each is a `SKILL.md` (third-person trigger
+description + imperative workflow), with the heavy multi-agent procedures pushed into `references/`.
 
-| Skill | Purpose |
-|---|---|
-| `kg-build` | Bootstrap a KG from scratch: read the source tree, emit nodes per `SCHEMA.md`. Parallelize with Explore-style sub-agents per subsystem. |
-| `kg-refresh` | Re-derive against current source; add/edit/remove nodes **comprehensively** + edges; bump `refreshed`. Enforces the no-header-only rule (`SCHEMA.md` §6). |
-| `kg-audit` | Source-vs-KG drift sweep (the proven 4-agent pattern: partition the KG, verify each node's anchors/claims against source, report STALE / MISSING / INACCURATE). Advisory output. |
-| `kg-link` | Establish/maintain cross-codebase `counterpart` + `parity` + `divergence` on nodes, reading **both** codebases. |
-| `kg-validate` | Run the MCP `kg_validate` and report (dangling edges, dangling/one-directional counterparts, ungreppable anchors). |
+| Skill | Use when | Writes? |
+|---|---|---|
+| [`kg-build`](kg-build/SKILL.md) | a repo has no KG (or too narrow a one) — bootstrap from source | writes the KG |
+| [`kg-refresh`](kg-refresh/SKILL.md) | code changed — re-sync the affected nodes (never header-only) | edits the KG |
+| [`kg-audit`](kg-audit/SKILL.md) | deep read-only accuracy sweep — STALE / INACCURATE / MISSING | report only |
+| [`kg-link`](kg-link/SKILL.md) | establish/maintain cross-codebase parity (counterpart links) | edits both KGs' parity fields |
+| [`kg-validate`](kg-validate/SKILL.md) | cheap deterministic structural drift check | report only |
 
-Design notes: `BUILD_PLAN.md` §6, `SCHEMA.md`. The build/refresh skills write markdown KG tables;
-the audit/validate skills read + report, never block.
+All five lean on the MCP query surface (`mcp__codebase-kg__*`) and the schema (`../SCHEMA.md`).
+Build/refresh write KG markdown; audit/validate read + report; link maintains parity across a pair.
+
+Division of labor: **kg-validate** is structural and deterministic (dangling edges, ungreppable
+anchors, parity field shape); **kg-audit** is semantic (does the summary still match the source?);
+**kg-refresh** is the only one that fixes drift in place.

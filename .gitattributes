@@ -1,0 +1,10 @@
+# Normalize line endings: store LF in the repo, check out native.
+* text=auto eol=lf
+
+# Keep shell + python LF even on Windows checkouts.
+*.sh text eol=lf
+*.py text eol=lf
+
+# Markdown/JSON are text.
+*.md text
+*.json text
