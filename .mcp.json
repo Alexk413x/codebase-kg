@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "codebase-kg": {
+      "command": "uvx",
+      "args": ["--from", "${CLAUDE_PLUGIN_ROOT}/mcp", "codebase-kg"],
+      "env": {
+        "CODEBASE_KG_PATH": "${CODEBASE_KG_PATH}"
+      }
+    }
+  }
+}
