@@ -1,18 +1,39 @@
-# hooks/ — Phase 4 (not built yet)
+# hooks/
 
-A single **advisory** post-edit freshness nudge. Mirrors the a11y plugin's `hooks/` (a `hooks.json`
-+ Python scripts run via `python ${CLAUDE_PLUGIN_ROOT}/hooks/...`).
+One **advisory** PostToolUse hook. Never blocks, never edits, fail-safe (any error exits silently
+so an edit is never broken).
 
-Planned behavior:
+| File | Role |
+|---|---|
+| `hooks.json` | Plugin hook config — PostToolUse on `Edit\|Write\|MultiEdit` → `kg_post_edit_check.py`. |
+| `kg_post_edit_check.py` | The nudge: counts source edits under `root` since the KG was last touched; when the count hits the threshold, emits a `systemMessage` reminding you to run `/codebase-kg:refresh`. |
+| `_config.py` | Reads `.claude/codebase-kg.local.md` frontmatter + defaults; decides what counts as a source file. |
 
-- **PostToolUse** on `Edit|Write|MultiEdit`: when a source file under the configured `root` changes
-  but the repo's `KNOWLEDGE_GRAPH.md` wasn't touched in the same stretch of work, surface a quiet
-  reminder — "source changed; the KG may need a node update (run `kg-refresh`)."
-- **Never blocking.** No commit/build gate. Honors per-repo config (`codebase-kg.local.md`) and an
-  inline opt-out (e.g. a `kg-ignore` marker), exactly like the a11y hooks' override posture.
+## Behavior
 
-This is a *nudge*, not enforcement — the comprehensive-update contract (`SCHEMA.md` §6) is the
-author's responsibility; a hook can only notice that the KG file went untouched, not whether the
-nodes are complete.
+- Increments a per-project counter on each source edit under `root` (defaults to the whole repo).
+- Editing the `KNOWLEDGE_GRAPH.md` **resets** the counter (you kept it in sync).
+- Nudges once per `nudge_every` source edits (default 5).
+- **No-ops** when the repo has no KG, when `post_edit_nudge: false`, when the edited file is a
+  doc/config (`.md`, `.json`, …) or lives in an ignored dir (`.git`, `node_modules`, `build`, …).
+- State lives in the OS temp dir (keyed by project path) — **nothing is written into the repo**.
 
-Design notes: `BUILD_PLAN.md` §4, and decision #8 in `docs/DESIGN.md` (advisory, never blocking).
+## Config (all optional, in `.claude/codebase-kg.local.md`)
+
+```yaml
+---
+post_edit_nudge: true     # master off-switch
+nudge_every: 5            # nudge once per N source edits since the KG was last touched
+root: app/src             # only edits under here count (default: whole repo)
+kg_path: knowledge/KNOWLEDGE_GRAPH.md   # default: auto-discover
+---
+```
+
+## Notes
+
+- Hooks load at session start — restart Claude Code after changing `hooks.json`.
+- Test a hook directly: pipe a JSON event to `python hooks/kg_post_edit_check.py` (see the plugin's
+  build history for example events). Malformed input → no output, exit 0 (by design).
+- This is a *nudge*, not enforcement. The comprehensive-update contract (`SCHEMA.md` §6) is the
+  author's responsibility; a hook can only notice the KG file went untouched, not whether the nodes
+  are complete.

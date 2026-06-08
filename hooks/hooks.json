@@ -1,0 +1,17 @@
+{
+  "description": "codebase-kg advisory hook: a PostToolUse nudge on Edit/Write/MultiEdit that reminds you to run /codebase-kg:refresh when source files under the repo's root change without the KNOWLEDGE_GRAPH.md being touched. Never blocks, never edits. Honors .claude/codebase-kg.local.md (post_edit_nudge, nudge_every, root, kg_path); no-ops when the repo has no KG.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_post_edit_check.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
