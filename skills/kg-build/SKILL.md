@@ -56,7 +56,8 @@ On a repo big enough that one pass would be shallow, fan out one `Task` sub-agen
 ### 4. Assemble the document
 Write `kg_path` using `templates/KNOWLEDGE_GRAPH.template.md` as the skeleton:
 - Header block (`codebase`, `root`, `counterpart?`, `language?`, `refreshed` = today).
-- The **update policy** paragraph, copied verbatim (SCHEMA.md §6) — every KG carries it.
+- The **update policy** paragraph, copied verbatim from `templates/KNOWLEDGE_GRAPH.template.md`
+  (the canonical wording; it mirrors SCHEMA.md §6) — every KG carries it.
 - `## NODES` grouped into `###` sections.
 - `## EDGES` — narrate the multi-hop flows (navigation, data, notification, DI) the node `edges`
   can't show linearly.

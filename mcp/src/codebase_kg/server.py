@@ -134,8 +134,10 @@ def kg_validate() -> dict[str, Any]:
 def main() -> None:
     global _graph_path
     _graph_path = _resolve_graph_path()
-    # Fail fast with a clear message if the KG is missing.
-    _get_graph()
+    # The graph loads lazily on the first tool call — so the server still starts
+    # cleanly in a repo that has no KNOWLEDGE_GRAPH.md yet (e.g. before the user
+    # runs /codebase-kg:build). A missing KG surfaces as a clear error on first
+    # use, not as a server that refuses to start.
     mcp.run()
 
 

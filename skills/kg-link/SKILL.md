@@ -43,7 +43,8 @@ Confirm each KG's header `counterpart:` points at the other (reciprocal). If mis
 Walk one side's nodes and find each one's peer on the other side — by concept, not by name. Match on
 behavior/role (a "bookmarks list screen" ↔ a "bookmarks list screen"), tolerating expected platform
 tooling differences (SwiftUI↔Compose, SwiftData↔Room, Combine↔Flow, actor↔Dispatchers). Use
-`kg_search` on each side to find candidates. Record three outcomes per node:
+`kg_search` on each side to find candidates. Record the outcome per node (matched-vs-divergent is
+finalized in step 3):
 - **a clear peer** → it's `matched` or `divergent` (decide in step 3).
 - **no peer in code** → `<codebase>-only` (verify against *source*, not a PRD/ticket — a feature
   mentioned only in docs is still `<codebase>-only`).

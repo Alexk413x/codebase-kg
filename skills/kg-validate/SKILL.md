@@ -1,6 +1,6 @@
 ---
 name: kg-validate
-description: This skill should be used when the user asks to "validate the knowledge graph", "check the KG for drift", "lint the KNOWLEDGE_GRAPH.md", "find dangling edges or broken anchors", or "check the parity links" for a repo that already has a KG. It runs the deterministic codebase-kg drift checks and reports — advisory only, never blocking.
+description: This skill should be used when the user asks to "validate the knowledge graph", "check the KG for drift", "lint the KNOWLEDGE_GRAPH.md", "find dangling edges or broken anchors", or "check the parity links" for a repo that already has a KG. It runs the fast, deterministic, STRUCTURAL codebase-kg drift checks and reports — advisory only, never blocking. (For the deep SEMANTIC accuracy sweep against source, use kg-audit instead.)
 when_to_use: Use to quickly check a KNOWLEDGE_GRAPH.md for structural drift (dangling edges, ungreppable symbol anchors, broken or non-reciprocal counterpart links, parity field mistakes). The cheap deterministic pre-check before the deeper kg-audit.
 allowed-tools:
   - mcp__codebase-kg__kg_validate

@@ -21,6 +21,16 @@ All notable changes to the `codebase-kg` plugin.
   live migration of the Acme repos staged as a go-ahead step.
 - `.gitattributes` (LF normalization).
 
+### Reviewed — 2026-06-08 — plugin-dev validator + skill-reviewer
+
+- Ran the `plugin-dev:plugin-validator` and `plugin-dev:skill-reviewer` agents — both PASS.
+- **Fixed:** MCP server now loads the graph **lazily**, so it starts cleanly in a repo that has no
+  `KNOWLEDGE_GRAPH.md` yet (the `/codebase-kg:build` first-run case) — a missing KG surfaces on first
+  tool call, not as a server that refuses to start.
+- **Sharpened** the `kg-validate` (structural/deterministic) vs `kg-audit` (semantic/deep) trigger
+  descriptions so generic "check my KG" queries route deterministically.
+- **Genericized** the kg-audit anecdote (no repo-specific reference) and two micro-wordings.
+
 ### Added — 2026-06-08 — Phase 1 scaffold + schema
 
 - Repo skeleton (standalone plugin at root): `.claude-plugin/plugin.json` + thin

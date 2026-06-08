@@ -1,6 +1,6 @@
 ---
 name: kg-audit
-description: This skill should be used when the user asks to "audit the knowledge graph", "check the KG against the source", "is the KG accurate", "find stale or inaccurate nodes", or wants a source-vs-KG verification sweep. It partitions the KG, verifies each node's anchors and claims against current source, and reports STALE / MISSING / INACCURATE — advisory output, no edits.
+description: This skill should be used when the user asks to "audit the knowledge graph", "check the KG against the source", "is the KG accurate", "find stale or inaccurate nodes", or wants a source-vs-KG verification sweep. It is the deep, SEMANTIC, multi-agent sweep: it partitions the KG, verifies each node's anchors and claims against current source, and reports STALE / MISSING / INACCURATE — advisory output, no edits. (For the fast, deterministic STRUCTURAL check, use kg-validate instead.)
 when_to_use: Use for a deep, read-only accuracy check of an existing KG against the codebase (the proven multi-agent verification sweep). For the cheap deterministic structural check use kg-validate; to actually fix what the audit finds use kg-refresh.
 allowed-tools:
   - mcp__codebase-kg__kg_stats
@@ -28,8 +28,9 @@ it does not edit (hand fixes to `kg-refresh`). Advisory, never blocking.
 `kg-validate` is deterministic and structural (dangling edges, ungreppable symbols, parity field
 shape). `kg-audit` is **semantic**: it reads the source and checks whether the `summary` is still
 *true* — wrong version numbers, dead class names, renamed symbols, undocumented features, wiring
-that changed, claims that were never accurate. (This is the sweep that caught ~3–4 sprints of node
-drift in the Acme Android KG: Room version, dead class names, ~25 missing features.)
+that changed, claims that were never accurate. (This is the sweep that catches multi-sprint node
+drift — stale dependency/migration versions, dead class names, undocumented features — that
+accumulates while only the KG header gets bumped.)
 
 ## Workflow
 
