@@ -166,20 +166,23 @@ def parse_nodes(text: str) -> list[Node]:
         if cells is None:
             flush()  # blank or prose line ends a node block
             continue
-        if len(cells) != 2:
-            flush()  # separator / wide table row — not a node kv row
+        if len(cells) < 2:
+            flush()  # malformed / not a kv row
             continue
 
         key = cells[0].strip().lower()
-        value = cells[1].strip()
         canon = _KEY_ALIASES.get(key)
+        # A value (esp. summary/details) may contain literal '|' — common in prose
+        # like "Bookmarks | Read Later | Highlights". Rejoin everything after the
+        # key cell so internal pipes don't truncate the node mid-block.
+        value = " | ".join(c.strip() for c in cells[1:]).strip() if len(cells) > 2 else cells[1].strip()
         if key == "id" or (canon == "id"):
             flush()
-            current = {"id": value}
+            current = {"id": cells[1].strip()}
         elif current is not None and canon is not None:
             current[canon] = value
         else:
-            # a 2-col row that isn't a node field (e.g. a wide-table data row)
+            # a row that isn't a node field (e.g. a wide-table data row)
             flush()
     flush()
     return nodes

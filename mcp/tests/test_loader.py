@@ -89,6 +89,40 @@ refreshed: 2026-01-01
 """
 
 
+PIPE_KG = """# P — Knowledge Graph
+
+```
+codebase: p
+root: src
+refreshed: 2026-01-01
+```
+
+## NODES
+
+### N
+
+| id | bookmarks_screen |
+| type | View |
+| files | `ui/BookmarksScreen.kt` |
+| details | M3 tabs: Bookmarks | Read Later | Highlights. Swipe removes. |
+| deps | BookmarksViewModel |
+| parity | matched |
+| counterpart | ../other/KNOWLEDGE_GRAPH.md#bookmarks_view |
+"""
+
+
+def test_value_with_internal_pipes_does_not_truncate_node() -> None:
+    # Regression: a details/summary cell containing literal '|' must not cut the
+    # node short and drop the trailing parity/counterpart rows.
+    g = parse_graph(PIPE_KG, path="x")
+    n = g.by_id("bookmarks_screen")
+    assert n is not None
+    assert "Read Later" in n.summary and "Highlights" in n.summary
+    assert n.edges == ["BookmarksViewModel"]
+    assert n.parity == "matched"
+    assert n.counterpart == "../other/KNOWLEDGE_GRAPH.md#bookmarks_view"
+
+
 def test_legacy_field_aliases() -> None:
     g = parse_graph(LEGACY_KG, path="x")
     a = g.by_id("article")
