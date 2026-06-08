@@ -1,0 +1,30 @@
+{
+  "name": "codebase-kg",
+  "owner": {
+    "name": "Alexk413x",
+    "email": "alexk413x@gmail.com"
+  },
+  "metadata": {
+    "description": "A per-repo knowledge-graph plugin for Claude Code. Source-derived code maps with cross-codebase parity linking. Advisory only."
+  },
+  "plugins": [
+    {
+      "name": "codebase-kg",
+      "source": ".",
+      "description": "Builds, maintains, and serves a per-repo knowledge graph — a structured, source-derived map of any codebase (nodes = components with symbol anchors, edges = relationships) so an agent can orient and find code without re-deriving the map every session. Language-agnostic: node `kind` is free-form, source reading is agent-driven, all per-repo specifics live in config. Cross-codebase parity: a node links directly to its counterpart in another repo's KG, carrying a parity status + one-line divergence, so 'find all feature gaps' is a query across both graphs. Ships a markdown KG schema, skills (build/refresh/audit/link/validate), an MCP query surface, and advisory post-edit freshness hooks. Advisory, never blocking — a code mirror, descriptive not prescriptive, source-derived not ticket-derived.",
+      "category": "development",
+      "tags": [
+        "knowledge-graph",
+        "codebase",
+        "code-map",
+        "code-index",
+        "orientation",
+        "parity",
+        "cross-codebase",
+        "mcp",
+        "language-agnostic",
+        "advisory"
+      ]
+    }
+  ]
+}

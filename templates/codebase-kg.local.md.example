@@ -1,0 +1,30 @@
+---
+# Per-repo config for the codebase-kg plugin.
+# Copy to the TARGET repo as `.claude/codebase-kg.local.md` (gitignored there, or committed —
+# your call). The skills and MCP read these; everything repo-specific lives here, not in code.
+
+# Short name for this codebase. Used in `<codebase>-only` parity flags.
+codebase: android
+
+# The code root this KG describes (repo-relative or absolute).
+root: app/src/main/java/com/example/acme/
+
+# Where the KG file lives in this repo. Default: repo root. Common alt: knowledge/.
+kg_path: knowledge/KNOWLEDGE_GRAPH.md
+
+# Optional — the paired repo's KG, for cross-codebase parity. Omit for a single-codebase repo.
+counterpart: ../acme-ios/KNOWLEDGE_GRAPH.md
+
+# Optional language hint for symbol tooling. Grep always works; this only enables
+# opportunistic ctags/LSP. Omit if unsure.
+language: kotlin
+---
+
+# codebase-kg — local config
+
+Free-form notes for this repo go here (below the frontmatter). For example: subsystems to skip
+when building the KG, naming conventions for node ids, or a pointer to the peer repo's checkout
+path so `kg-link` can read both sides.
+
+Nothing in this file is platform-specific *to the plugin* — the plugin stays generic; this file
+is where this repo's specifics live.

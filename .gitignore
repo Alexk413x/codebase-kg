@@ -1,0 +1,21 @@
+# Python (MCP server, Phase 2+)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Per-repo local config — never committed (the .example template IS committed)
+.claude/*.local.md
+**/codebase-kg.local.md
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

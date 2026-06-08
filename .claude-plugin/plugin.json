@@ -1,0 +1,21 @@
+{
+  "name": "codebase-kg",
+  "description": "Builds, maintains, and serves a per-repo knowledge graph — a structured, source-derived map of any codebase (nodes = components, edges = relationships) so an agent can orient and find code without re-deriving the map every session. Language-agnostic. Cross-codebase parity linking tracks feature gaps between paired repos (e.g. an iOS app and its Android port). Advisory only.",
+  "author": {
+    "name": "Alexk413x",
+    "email": "alexk413x@gmail.com"
+  },
+  "homepage": "https://github.com/Alexk413x/codebase-kg",
+  "repository": "https://github.com/Alexk413x/codebase-kg",
+  "keywords": [
+    "knowledge-graph",
+    "codebase",
+    "code-map",
+    "code-index",
+    "orientation",
+    "parity",
+    "cross-codebase",
+    "mcp",
+    "language-agnostic"
+  ]
+}
