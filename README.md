@@ -20,17 +20,19 @@ state to reduce search cost. Nothing more.
 
 ## Status
 
-🚧 **Early scaffold.** This session set up the repo, the schema, and the design docs. The MCP
-server and skills are not built yet — see the build phases below.
+✅ **All six build phases complete.** Schema, MCP query server (7 tools, 21 passing tests), five
+skills + five slash commands, the advisory hook, cross-codebase parity, and a read-only dogfood
+against the real Acme Android KG. The one remaining action is the **live migration** of the two
+Acme repos (it edits external repos — a user go-ahead step; see `docs/DOGFOOD.md`).
 
 | Phase | What | State |
 |---|---|---|
 | 1 | Schema + format; one example KG | ✅ `SCHEMA.md`, `docs/examples/EXAMPLE_KG.md` |
-| 2 | MCP server (parse markdown KG → queryable graph; the §5 tools) | ⬜ `mcp/` (see `docs/MCP_SURFACE.md`) |
-| 3 | Skills — `kg-build` / `kg-refresh` / `kg-audit` / `kg-link` / `kg-validate` | ⬜ `skills/` |
-| 4 | Advisory post-edit freshness hooks | ⬜ `hooks/` |
-| 5 | Cross-codebase parity (`counterpart` resolution + `kg_parity_gaps`) | ⬜ |
-| 6 | Dogfood on the Acme iOS↔Android pair | ⬜ |
+| 2 | MCP server (parse markdown KG → queryable graph; the §5 tools) | ✅ `mcp/` — 7 tools, 21 tests |
+| 3 | Skills — `kg-build` / `kg-refresh` / `kg-audit` / `kg-link` / `kg-validate` | ✅ `skills/` + `commands/` |
+| 4 | Advisory post-edit freshness hook | ✅ `hooks/` |
+| 5 | Cross-codebase parity (`counterpart` resolution + `kg_parity_gaps`) | ✅ in `mcp/` + `kg-link` |
+| 6 | Dogfood on the Acme iOS↔Android pair | ✅ read-only; live migration staged (`docs/DOGFOOD.md`) |
 
 ## How it works
 
@@ -66,9 +68,11 @@ codebase-kg/
 ├── templates/
 │   ├── KNOWLEDGE_GRAPH.template.md
 │   └── codebase-kg.local.md.example
-├── skills/   (Phase 3)       # kg-build / kg-refresh / kg-audit / kg-link / kg-validate
-├── mcp/      (Phase 2)       # the markdown-KG query server (uvx-run Python, like a11y-kg)
-└── hooks/    (Phase 4)       # advisory post-edit freshness nudge
+├── .mcp.json                 # registers the codebase-kg MCP server (uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp)
+├── commands/                 # /codebase-kg:build|refresh|audit|link|validate (thin → skills)
+├── skills/                   # kg-build / kg-refresh / kg-audit / kg-link / kg-validate
+├── mcp/                      # the markdown-KG query server (uvx-run Python, like a11y-kg)
+└── hooks/                    # advisory post-edit freshness nudge
 ```
 
 ## Design lineage

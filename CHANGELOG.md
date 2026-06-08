@@ -4,6 +4,23 @@ All notable changes to the `codebase-kg` plugin.
 
 ## [Unreleased]
 
+### Added — 2026-06-08 — Phases 2–6
+
+- **Phase 2 — MCP query server** (`mcp/`): FastMCP stdio server parsing `KNOWLEDGE_GRAPH.md` into a
+  queryable graph; 7 tools (`kg_search` / `kg_node` / `kg_neighborhood` / `kg_find_by_kind` /
+  `kg_parity_gaps` / `kg_stats` / `kg_validate`). `loader`+`tools` are stdlib-only with 21 passing
+  tests over a cross-linked ios/android fixture pair + source tree. Loader tolerates legacy
+  Acme-Android field names (parses the real 700-line Android KG, 98 nodes). Root `.mcp.json`.
+- **Phase 3 — skills + commands**: five advisory skills (`kg-build`, `kg-refresh`, `kg-audit`,
+  `kg-link`, `kg-validate`) with references for the multi-agent ones; five thin slash commands.
+- **Phase 4 — advisory hook** (`hooks/`): PostToolUse freshness nudge; never blocks, fail-safe,
+  state in OS temp; honors `codebase-kg.local.md`.
+- **Phase 5 — cross-codebase parity**: counterpart resolution + reciprocity in `kg_validate`,
+  `kg_parity_gaps`, and the `kg-link` skill — verified end-to-end on the fixture pair.
+- **Phase 6 — dogfood** (`docs/DOGFOOD.md`): read-only validation against the real Acme Android KG;
+  live migration of the Acme repos staged as a go-ahead step.
+- `.gitattributes` (LF normalization).
+
 ### Added — 2026-06-08 — Phase 1 scaffold + schema
 
 - Repo skeleton (standalone plugin at root): `.claude-plugin/plugin.json` + thin
