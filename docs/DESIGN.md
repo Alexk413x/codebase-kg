@@ -66,6 +66,5 @@ The **Acme iOS ↔ Android** pair (`BUILD_PLAN.md` §9):
   matched (SavedArticle ↔ SavedArticleEntity), divergent (PersonalizedRankingService ↔
   FeedRanker), android-only (Night Digest — iOS has it only in `AcmeApp/PRD.md`).
 
-> The throwaway `PARITY_GRAPH.md` prototype (in the Android repo) validated the parity format,
-> then the design moved to **direct node cross-linking** (no separate parity file). The prototype
-> can be discarded; its lessons are in decisions #5 and `SCHEMA.md` §8.
+Parity is expressed by **direct node cross-linking** (decision #5, `SCHEMA.md` §8) — there is no
+separate parity file. "Find all gaps" is the `kg_parity_gaps` query across both KGs.
