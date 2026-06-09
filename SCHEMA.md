@@ -160,16 +160,22 @@ mode it forbids.
 
 ## 7. Per-repo config
 
-Everything platform- or repo-specific is **config, not code**. It lives in the KG header (§3)
-and/or a `.claude/codebase-kg.local.md` in the target repo:
+Everything platform- or repo-specific is **config, not code** — and the **project-level config is
+the committed KG header itself (§3)**. It is shared with the team because the KG file is committed:
 
 - `codebase` — short name (`android`, `ios`, `web`).
-- `root` — the code root the KG describes.
+- `root` — the code root the KG describes (read by the MCP server and the pre-push gate).
 - `counterpart` — the paired repo's KG path (omit for single-codebase repos).
 - `language` — optional hint for symbol tooling (Grep always works; ctags/LSP are opportunistic).
-- `kg_path` — where the KG file lives (repo root vs `knowledge/`).
 
-See `templates/codebase-kg.local.md.example`. The skills and MCP stay generic; they read these.
+`kg_path` (where the KG file lives) is **auto-discovered** — `knowledge/KNOWLEDGE_GRAPH.md` by
+default, repo root as a fallback. Because all of the above is in the committed header, **no separate
+config file is needed**; the tools read the header.
+
+A `.claude/codebase-kg.local.md` is an **optional, per-developer override** — by the `.local`
+convention it is **gitignored, never committed**. Use it only when one clone differs (e.g. a peer
+repo checked out at a non-standard path, or a custom `kg_path`); it overrides the header for that
+clone. The shared truth stays in the committed KG header. See `templates/codebase-kg.local.md.example`.
 
 ## 8. Cross-codebase parity
 

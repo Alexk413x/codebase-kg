@@ -7,7 +7,7 @@ so an edit is never broken).
 |---|---|
 | `hooks.json` | Plugin hook config — PostToolUse on `Edit\|Write\|MultiEdit` → `kg_post_edit_check.py`. |
 | `kg_post_edit_check.py` | The nudge: counts source edits under `root` since the KG was last touched; when the count hits the threshold, emits a `systemMessage` reminding you to run `/codebase-kg:refresh`. |
-| `_config.py` | Reads `.claude/codebase-kg.local.md` frontmatter + defaults; decides what counts as a source file. |
+| `_config.py` | Reads `root` from the committed KG header (auto-discovers the KG); a gitignored `.claude/codebase-kg.local.md` may override. Decides what counts as a source file. |
 
 ## Behavior
 
@@ -18,7 +18,10 @@ so an edit is never broken).
   doc/config (`.md`, `.json`, …) or lives in an ignored dir (`.git`, `node_modules`, `build`, …).
 - State lives in the OS temp dir (keyed by project path) — **nothing is written into the repo**.
 
-## Config (all optional, in `.claude/codebase-kg.local.md`)
+## Config — optional per-dev override only (gitignored `.claude/codebase-kg.local.md`)
+
+The shared config (`root`) is the committed KG header. This file is **only** for a per-developer
+override of the nudge behavior or `root`; it is gitignored, not committed.
 
 ```yaml
 ---

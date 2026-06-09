@@ -8,6 +8,7 @@ frontmatter). Everything here is best-effort: callers must treat failures as
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 DEFAULTS: dict[str, object] = {
@@ -87,6 +88,17 @@ def find_kg(proj: Path, cfg: dict[str, object]) -> Path | None:
         if cand.is_file():
             return cand.resolve()
     return None
+
+
+def kg_header_value(kg_file: Path, key: str) -> str:
+    """Read one `key:` from the KG header block — the committed, shared config
+    (so `root` etc. don't depend on a per-dev `.local.md`)."""
+    try:
+        head = "\n".join(kg_file.read_text(encoding="utf-8").splitlines()[:40])
+    except OSError:
+        return ""
+    m = re.search(rf"(?mi)^\s*{re.escape(key)}:\s*(.+?)\s*$", head)
+    return re.sub(r"\s+#.*$", "", m.group(1)).strip() if m else ""
 
 
 def is_source_file(path: Path, proj: Path, cfg: dict[str, object], kg: Path) -> bool:

@@ -12,7 +12,7 @@ don't push code whose KG is out of sync; it points you at the refresh.
 
 | File | Role |
 |---|---|
-| `kg_pre_push.py` | The check — **stdlib only, no codebase-kg dependency**, so it vendors into any repo. Reads `.claude/codebase-kg.local.md` (`root`, `kg_path`). |
+| `kg_pre_push.py` | The check — **stdlib only, no codebase-kg dependency**, so it vendors into any repo. Reads `root` from the **committed KG header** (auto-discovers the KG; an optional, gitignored `.claude/codebase-kg.local.md` may override). No committed config file required. |
 | `pre-push` | Thin `sh` wrapper that runs `kg_pre_push.py` next to it. |
 
 ## Why vendored (copied into the repo) and not referenced from the plugin
@@ -41,8 +41,9 @@ if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
 "$PY" "$(dirname "$0")/kg_pre_push.py" || exit 1
 ```
 
-Then drop a `.claude/codebase-kg.local.md` (see `templates/codebase-kg.local.md.example`) with at
-least `root` and `kg_path`.
+No config file is needed — the gate reads `root` from the committed KG header and auto-discovers the
+KG at `knowledge/KNOWLEDGE_GRAPH.md`. (A gitignored `.claude/codebase-kg.local.md` can override the
+header for one clone; see `templates/codebase-kg.local.md.example`.)
 
 ## What triggers a block
 

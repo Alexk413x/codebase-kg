@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _config import (  # noqa: E402
     find_kg,
     is_source_file,
+    kg_header_value,
     load_config,
     project_dir,
 )
@@ -81,6 +82,10 @@ def _run(data: dict[str, object]) -> None:
     kg = find_kg(proj, cfg)
     if kg is None:
         return  # no KG in this repo → nothing to keep in sync
+
+    # `root` comes from the committed KG header (shared); .local.md may override.
+    if not cfg.get("root"):
+        cfg["root"] = kg_header_value(kg, "root")
 
     edited = Path(fp).resolve()
 

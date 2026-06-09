@@ -1,5 +1,5 @@
 ---
-description: Install the codebase-kg pre-push gate into the current repo — a blocking hook that rejects a push when source changed but the KG wasn't updated. Vendors a stdlib-only checker into the repo's hooks (portable for all clones/CI). Writes per-repo config. Non-destructive to existing hooks.
+description: Install the codebase-kg pre-push gate into the current repo — a blocking hook that rejects a push when source changed but the KG wasn't updated. Vendors a stdlib-only checker into the repo's hooks (portable for all clones/CI). Config-free — the gate reads root from the committed KG header. Non-destructive to existing hooks.
 argument-hint: "[repo path | empty = current repo]"
 ---
 
@@ -11,10 +11,12 @@ under the KG's `root` changed but `KNOWLEDGE_GRAPH.md` wasn't updated to match (
 
 ## Steps
 
-### 1. Per-repo config
-If `.claude/codebase-kg.local.md` is missing, create it from `templates/codebase-kg.local.md.example`
-with `codebase`, `root` (the source dir — only changes under here trigger the gate), `kg_path`, and
-`counterpart` (the peer KG, for parity). Confirm the inferred values with the user once.
+### 1. Config — none needed (it's in the committed KG header)
+The gate reads `root` from the KG's own header (`codebase`/`root`/`counterpart`, §3) and
+auto-discovers the KG at `knowledge/KNOWLEDGE_GRAPH.md`. So there is **no config file to write** —
+the shared, committed KG header is the config. (Only create a gitignored
+`.claude/codebase-kg.local.md` if a particular clone needs to override the header — see the
+template.) If the repo has no KG yet, run `/codebase-kg:build` first.
 
 ### 2. Detect the repo's hooks setup
 Run `git config core.hooksPath`:

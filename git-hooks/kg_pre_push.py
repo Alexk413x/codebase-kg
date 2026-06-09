@@ -126,6 +126,17 @@ def kg_refreshed_today(kg_file: Path, today: str) -> bool:
     )
 
 
+def kg_header_value(kg_file: Path, key: str) -> str:
+    """Read one `key:` from the KG header block — the committed, shared config."""
+    try:
+        text = kg_file.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+    head = "\n".join(text.splitlines()[:40])
+    m = re.search(rf"(?mi)^\s*{re.escape(key)}:\s*(.+?)\s*$", head)
+    return re.sub(r"\s+#.*$", "", m.group(1)).strip() if m else ""
+
+
 def gate_decision(
     source_changed: bool, kg_in_changeset: bool, kg_fresh: bool
 ) -> tuple[bool, str]:
@@ -163,7 +174,9 @@ def main() -> int:
     kg_rel = find_kg_rel(repo, cfg)
     if kg_rel is None:
         return 0  # no KG in this repo → nothing to gate
-    root = cfg.get("root", "").replace("\\", "/").strip("/")
+    # `root` is the committed, shared config in the KG header; an optional per-dev
+    # .claude/codebase-kg.local.md may override it. No committed config file needed.
+    root = (cfg.get("root") or kg_header_value(repo / kg_rel, "root")).replace("\\", "/").strip("/")
     today = datetime.date.today().isoformat()
 
     rng = push_range()

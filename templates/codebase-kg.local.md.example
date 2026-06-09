@@ -1,9 +1,14 @@
 ---
-# Per-repo config for the codebase-kg plugin.
-# Copy to the TARGET repo as `.claude/codebase-kg.local.md` (gitignored there, or committed —
-# your call). The skills and MCP read these; everything repo-specific lives here, not in code.
+# OPTIONAL per-developer override for the codebase-kg plugin.
+#
+# You usually do NOT need this file. The project-level config (codebase / root / counterpart) lives
+# in the committed KG header — see SCHEMA.md §3/§7 — and the tools (MCP + pre-push gate) read it from
+# there. Create this file (as `.claude/codebase-kg.local.md`) ONLY to override the header for your
+# own clone. By the `.local` convention it is gitignored / not committed.
+#
+# Reasons to use it: a peer repo checked out at a non-standard relative path, or a custom kg_path.
 
-# Short name for this codebase. Used in `<codebase>-only` parity flags.
+# Short name for this codebase. Used in `<codebase>-only` parity flags. (Default: from KG header.)
 codebase: android
 
 # The code root this KG describes (repo-relative or absolute).

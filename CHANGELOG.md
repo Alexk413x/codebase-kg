@@ -4,6 +4,16 @@ All notable changes to the `codebase-kg` plugin.
 
 ## [Unreleased]
 
+### Changed — 2026-06-09 — project config lives in the committed KG header (not a `.local.md`)
+
+- The shared, project-level config (`codebase`/`root`/`counterpart`) is the **committed KG header**.
+  The pre-push gate and the advisory hook now read `root` from the header (auto-discovering the KG),
+  so **no committed config file is needed**. `.claude/codebase-kg.local.md` is now correctly an
+  **optional, gitignored per-developer override** (by the `.local` convention) — used only to
+  override the header for one clone. Resolves the contradiction of committing a `.local` file.
+  `SCHEMA.md` §7, the config template, the `install-hooks` command, and the git-hooks/hooks READMEs
+  updated. +1 test (36 passing).
+
 ### Changed — 2026-06-09 — `knowledge/` is the default KG location
 
 - The default KG location is now **`knowledge/KNOWLEDGE_GRAPH.md`** (a `knowledge/` subdirectory),

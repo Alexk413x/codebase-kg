@@ -59,3 +59,12 @@ def test_refreshed_today_legacy_phrase(tmp_path: Path) -> None:
     kg = tmp_path / "KNOWLEDGE_GRAPH.md"
     kg.write_text("# T\n\nBorn 2025-01-01; last refreshed 2026-06-09 — note.\n", encoding="utf-8")
     assert g.kg_refreshed_today(kg, "2026-06-09") is True
+
+
+def test_kg_header_value_reads_root_from_header(tmp_path: Path) -> None:
+    # The committed KG header is the shared config — root comes from here, not a .local.md.
+    kg = tmp_path / "KNOWLEDGE_GRAPH.md"
+    kg.write_text("# T\n\n```\ncodebase: x\nroot: app/src/main\ncounterpart: ../y\n```\n", encoding="utf-8")
+    assert g.kg_header_value(kg, "root") == "app/src/main"
+    assert g.kg_header_value(kg, "counterpart") == "../y"
+    assert g.kg_header_value(kg, "missing") == ""
