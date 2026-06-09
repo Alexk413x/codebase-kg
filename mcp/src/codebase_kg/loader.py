@@ -37,6 +37,9 @@ _KEY_ALIASES: dict[str, str] = {
     "parity": "parity",
     "counterpart": "counterpart",
     "divergence": "divergence",
+    "updated": "updated",
+    "last_updated": "updated",
+    "last-updated": "updated",
 }
 
 _HEADER_KEYS = {"codebase", "root", "counterpart", "language", "refreshed"}
@@ -134,6 +137,7 @@ def _finalize(fields: dict[str, str], section: str) -> Node | None:
         divergence=fields.get("divergence", "").strip() or None
         if "divergence" in fields
         else None,
+        updated=fields.get("updated", "").strip() or None if "updated" in fields else None,
         section=section,
     )
 

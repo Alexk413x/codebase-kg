@@ -48,6 +48,8 @@ each, write a node per `SCHEMA.md` §4:
   writing the anchor. Never write a line number.
 - `summary` — what it is/does in this codebase, pointer-dense, no copied code.
 - `edges` — ids of the nodes it depends on / relates to (intra-KG only).
+- `updated` — today's date (`YYYY-MM-DD`). Stamp **every** node at build time; `kg-refresh` later
+  bumps it only on the nodes it touches, so the lag becomes a per-node staleness signal.
 
 On a repo big enough that one pass would be shallow, fan out one `Task` sub-agent per subsystem
 (read-only Explore agents) that returns nodes in schema shape; then assemble. See

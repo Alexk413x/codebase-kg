@@ -59,6 +59,13 @@ def test_section_grouping(android_graph: Graph) -> None:
     assert n.section == "CORE DOMAIN MODEL"
 
 
+def test_updated_field_parsed(android_graph: Graph) -> None:
+    assert android_graph.by_id("saved_article") is not None
+    assert android_graph.by_id("saved_article").updated == "2026-06-08"  # type: ignore[union-attr]
+    assert android_graph.by_id("feed_ranker").updated == "2026-06-01"  # type: ignore[union-attr]
+    assert android_graph.by_id("bookmarks_screen").updated is None  # type: ignore[union-attr]
+
+
 def test_inbound_index(android_graph: Graph) -> None:
     # saved_article is referenced by bookmarks_screen and feed_ranker
     assert set(android_graph.inbound("saved_article")) == {"bookmarks_screen", "feed_ranker"}

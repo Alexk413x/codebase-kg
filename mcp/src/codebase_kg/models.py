@@ -21,6 +21,7 @@ class Node:
     parity: str | None = None  # matched | divergent | <codebase>-only
     counterpart: str | None = None  # "<peer-kg-path>#<node-id>"
     divergence: str | None = None  # one line; only when parity == divergent
+    updated: str | None = None  # YYYY-MM-DD this node was last added/verified vs source
     section: str = ""  # the "### SECTION" the node was grouped under (display only)
 
     def to_dict(self) -> dict[str, object]:
@@ -32,6 +33,8 @@ class Node:
             "edges": self.edges,
             "section": self.section,
         }
+        if self.updated is not None:
+            d["updated"] = self.updated
         if self.parity is not None:
             d["parity"] = self.parity
         if self.counterpart is not None:

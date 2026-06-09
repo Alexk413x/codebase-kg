@@ -28,6 +28,7 @@ Born <date>. <One line: what this doc is and how to use it as a search index.>
 | anchors     | `<path#Symbol>`, `<path#OtherSymbol>` |
 | summary     | <what it is/does — this codebase only; pointer-dense; no copied code> |
 | edges       | <other-node-id>, <other-node-id> |
+| updated     | <YYYY-MM-DD>                                # date this node was last verified vs source |
 | parity      | <matched | divergent | <codebase>-only>     # optional — multi-codebase only |
 | counterpart | <../other-repo/KNOWLEDGE_GRAPH.md#node-id>  # optional — omit if <codebase>-only |
 | divergence  | <one short line>                            # optional — only when parity = divergent |

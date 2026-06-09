@@ -20,6 +20,7 @@ dangling edge (`ghost_node`) and one ungreppable anchor (`theme/Theme.kt#Missing
 | anchors     | `room/SavedArticleEntity.kt#SavedArticleEntity` |
 | summary     | Persisted bookmark in the `saved_articles` table, indexed by articleId for dedup. |
 | edges       | bookmarks_screen |
+| updated     | 2026-06-08 |
 | parity      | matched |
 | counterpart | ../ios/KNOWLEDGE_GRAPH.md#saved_article |
 
@@ -41,6 +42,7 @@ dangling edge (`ghost_node`) and one ungreppable anchor (`theme/Theme.kt#Missing
 | parity      | divergent |
 | counterpart | ../ios/KNOWLEDGE_GRAPH.md#personalized_ranking |
 | divergence  | Android: pure, persisted, wired. iOS: actor, in-memory, unwired. |
+| updated     | 2026-06-01 |
 
 ### THEME
 

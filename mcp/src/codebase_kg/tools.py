@@ -45,6 +45,7 @@ def kg_search(
                 "section": n.section,
                 "summary": _truncate(n.summary, 240),
                 "parity": n.parity,
+                "updated": n.updated,
                 "score": score,
             }
         )
@@ -193,12 +194,21 @@ def kg_stats(graph: Graph) -> dict[str, object]:
     parity: dict[str, int] = {}
     sections: dict[str, int] = {}
     edge_count = 0
+    dates: list[str] = []
+    missing_updated = 0
     for n in graph.nodes:
         kinds[n.kind or "(none)"] = kinds.get(n.kind or "(none)", 0) + 1
         sections[n.section or "(none)"] = sections.get(n.section or "(none)", 0) + 1
         edge_count += len(n.edges)
         if n.parity:
             parity[n.parity] = parity.get(n.parity, 0) + 1
+        if n.updated:
+            dates.append(n.updated)
+        else:
+            missing_updated += 1
+    refreshed = graph.header.refreshed
+    # YYYY-MM-DD sorts lexicographically == chronologically, so string compare is safe.
+    stale = sum(1 for d in dates if refreshed and d < refreshed)
     return {
         "codebase": graph.header.codebase,
         "refreshed": graph.header.refreshed,
@@ -208,6 +218,13 @@ def kg_stats(graph: Graph) -> dict[str, object]:
         "kinds": dict(sorted(kinds.items(), key=lambda kv: -kv[1])),
         "parity": parity,
         "sections": sections,
+        "updated": {
+            "oldest": min(dates) if dates else None,
+            "newest": max(dates) if dates else None,
+            "missing": missing_updated,
+            # nodes last verified BEFORE the header refresh date — candidate stale nodes
+            "stale_vs_refreshed": stale,
+        },
     }
 
 

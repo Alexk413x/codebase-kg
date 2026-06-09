@@ -90,6 +90,7 @@ indexes like FEATURE → CODE MAP may use a wide one-row-per-entry table.)
 | anchors     | `path#Symbol`, `path#OtherSymbol`             |
 | summary     | what it is/does — THIS codebase only           |
 | edges       | other-node-id, other-node-id                  |
+| updated     | YYYY-MM-DD                                     |   ← optional; date this node was last verified vs source
 | parity      | matched | divergent | <codebase>-only         |   ← optional, multi-codebase only
 | counterpart | ../other-repo/KNOWLEDGE_GRAPH.md#other-node-id |   ← optional; omit if <codebase>-only
 | divergence  | one short line                                |   ← optional; only when parity = divergent
@@ -104,6 +105,7 @@ indexes like FEATURE → CODE MAP may use a wide one-row-per-entry table.)
 | `anchors` | ✅ | **Symbol-based pointers**: `path#Symbol`. Comma-separated. The `path` is repo-relative; `Symbol` is a grep-resolvable name (class/func/type/const). **Never line numbers** (see §4.1). A node with no symbol (e.g. a manifest, a config file) may anchor on the path alone. |
 | `summary` | ✅ | What it is/does, **in this codebase only**. Pointer-dense, no copied code. Mention the symbols it touches, the migration it added, the wiring it participates in. This is the payload an agent reads instead of opening every file. |
 | `edges` | ✅ | Intra-KG relationships: a list of other node `id`s this node depends on / relates to. Edges stay *within one KG*. (Cross-KG links are `counterpart`, not `edges`.) |
+| `updated` | ⬜ | `YYYY-MM-DD` the node was last **added or verified against source**. Finer-grained than the header `refreshed` (which is the *whole-KG* refresh date): after a partial `kg-refresh`, only the touched nodes get a new `updated`, so a node whose `updated` lags `refreshed` is a candidate **stale** node. `kg-build` stamps every node with the build date; `kg-refresh` bumps it only on nodes it changes. Surfaced by `kg_stats` (`updated.stale_vs_refreshed`) and on every `kg_node`. |
 | `parity` | ⬜ | Only in multi-codebase setups. One of `matched`, `divergent`, or `<codebase>-only` (e.g. `android-only`). The queryable gap flag. |
 | `counterpart` | ⬜ | A direct link to the paired node in the other repo's KG: `<path-to-other-KG>#<node-id>`. Omit when `parity` is `<codebase>-only`. Reciprocal by convention — the other side links back (validated, see §8). |
 | `divergence` | ⬜ | One short line naming *how* the two sides differ. Present only when `parity = divergent`. Detail stays in each side's `summary`; this is the headline. |

@@ -68,6 +68,19 @@ def test_stats(android_graph: Graph) -> None:
     assert out["parity"] == {"matched": 1, "divergent": 1, "android-only": 1}
 
 
+def test_node_includes_updated(android_graph: Graph) -> None:
+    out = tools.kg_node(android_graph, "saved_article")
+    assert out["updated"] == "2026-06-08"
+
+
+def test_stats_updated_summary(android_graph: Graph) -> None:
+    u = tools.kg_stats(android_graph)["updated"]
+    assert u["oldest"] == "2026-06-01"  # type: ignore[index]
+    assert u["newest"] == "2026-06-08"  # type: ignore[index]
+    assert u["missing"] == 2  # bookmarks_screen + night_digest have no `updated`  # type: ignore[index]
+    assert u["stale_vs_refreshed"] == 1  # feed_ranker 2026-06-01 < refreshed 2026-06-08  # type: ignore[index]
+
+
 def test_validate_android_with_source_and_peer(
     android_graph: Graph, ios_graph: Graph
 ) -> None:

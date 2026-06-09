@@ -39,6 +39,9 @@ For every changed file / feature, **read the current source** and reconcile its 
   `summary` to current behavior, update `edges`, update any version/migration/wiring claims.
 - **Deleted/renamed** units → **remove** or **rename** the node and fix every `edges` entry that
   pointed at it (no dangling edges).
+- For every node you **add or edit**, set its `updated` to today. **Leave untouched nodes'
+  `updated` unchanged** — that lag is the per-node staleness signal (`kg_stats` reports
+  `updated.stale_vs_refreshed`; `kg-audit` can prioritize the oldest-`updated` nodes).
 
 ### 3. Update edges + flows
 Refresh the `## EDGES` flows and the `## FEATURE → CODE MAP` for any path that changed. A new
