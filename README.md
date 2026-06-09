@@ -69,11 +69,29 @@ codebase-kg/
 │   ├── KNOWLEDGE_GRAPH.template.md
 │   └── codebase-kg.local.md.example
 ├── .mcp.json                 # registers the codebase-kg MCP server (uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp)
-├── commands/                 # /codebase-kg:build|refresh|audit|link|validate (thin → skills)
+├── commands/                 # /codebase-kg:build|refresh|audit|link|validate|install-hooks (thin → skills)
 ├── skills/                   # kg-build / kg-refresh / kg-audit / kg-link / kg-validate
 ├── mcp/                      # the markdown-KG query server (uvx-run Python, like a11y-kg)
-└── hooks/                    # advisory post-edit freshness nudge
+├── hooks/                    # advisory in-session post-edit freshness nudge (Claude Code hook)
+└── git-hooks/                # blocking pre-push gate, vendorable into any repo (stdlib-only)
 ```
+
+## Keeping the KG in sync with commits
+
+Two layers, both pointing at the same fix (`/codebase-kg:refresh`):
+
+- **In-session nudge** (`hooks/`): while Claude edits source, an advisory PostToolUse reminder to
+  refresh the KG. Never blocks.
+- **Pre-push gate** (`git-hooks/`): a blocking git hook — installed per-repo via
+  `/codebase-kg:install-hooks` — that rejects a push when source under the KG's `root` changed but
+  `KNOWLEDGE_GRAPH.md` isn't updated (`refreshed:` not today). Override: `git push --no-verify`. It's
+  stdlib-only and vendored into the repo, so it runs for every clone/CI.
+
+The gate is the *deterministic* half (does the KG ship with the code?); the *semantic* half — update
+the changed nodes, bump their `updated` dates, reconcile parity against the **peer** KG — is the
+agent's `/codebase-kg:refresh`. Because refresh reads the peer KG, two linked repos stay
+**eventually consistent**: each side reconciles parity when *it* commits, so you only ever manage one
+repo's commit at a time.
 
 ## Design lineage
 

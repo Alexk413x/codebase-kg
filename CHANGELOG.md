@@ -4,6 +4,18 @@ All notable changes to the `codebase-kg` plugin.
 
 ## [Unreleased]
 
+### Added — 2026-06-09 — pre-push KG gate (`git-hooks/`)
+
+- A blocking, **stdlib-only, vendorable** git pre-push hook (`git-hooks/kg_pre_push.py` + `pre-push`
+  wrapper) that rejects a push when tracked source under the KG's `root` changed but
+  `KNOWLEDGE_GRAPH.md` isn't in sync (not in the changeset, or header `refreshed:`/legacy
+  `last refreshed` not today). Override: `git push --no-verify`. No dependency on the MCP package, so
+  it runs for every clone/CI. The semantic update stays the agent's `/codebase-kg:refresh`.
+- `/codebase-kg:install-hooks` command — agent-guided, non-destructive install (vendors the checker,
+  wires `core.hooksPath`/`pre-push`, integrates into an existing hook rather than overwriting it).
+- +10 tests (35 passing). This is the **enforcement** layer complementing the in-session nudge; the
+  two linked repos stay eventually consistent because refresh reconciles parity vs the peer KG.
+
 ### Added — 2026-06-08 — per-node `updated` date
 
 - New optional per-node `updated: YYYY-MM-DD` field (finer-grained than the header `refreshed`).

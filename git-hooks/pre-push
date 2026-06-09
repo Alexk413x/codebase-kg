@@ -1,0 +1,10 @@
+#!/bin/sh
+# codebase-kg pre-push gate — blocks a push when tracked source under the KG's
+# `root` changed but KNOWLEDGE_GRAPH.md wasn't updated to match. Override with:
+#   git push --no-verify
+#
+# Vendored: keep kg_pre_push.py next to this file. If this repo already has a
+# pre-push hook, DON'T overwrite it — add the two lines below to it instead.
+DIR=$(dirname "$0")
+if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
+"$PY" "$DIR/kg_pre_push.py" || exit 1
