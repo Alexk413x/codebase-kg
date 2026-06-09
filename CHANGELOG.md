@@ -4,6 +4,14 @@ All notable changes to the `codebase-kg` plugin.
 
 ## [Unreleased]
 
+### Changed — 2026-06-09 — `knowledge/` is the default KG location
+
+- The default KG location is now **`knowledge/KNOWLEDGE_GRAPH.md`** (a `knowledge/` subdirectory),
+  not the repo root — a consistent home for the KG and related committed reference docs.
+  Auto-discovery in the MCP server, the pre-push gate, and the advisory hook now prefers
+  `knowledge/` and falls back to repo root. `SCHEMA.md`, the `kg-build` skill, `README.md`, and the
+  config template updated. (Existing root-level KGs still work via the fallback + explicit `kg_path`.)
+
 ### Added — 2026-06-09 — pre-push KG gate (`git-hooks/`)
 
 - A blocking, **stdlib-only, vendorable** git pre-push hook (`git-hooks/kg_pre_push.py` + `pre-push`

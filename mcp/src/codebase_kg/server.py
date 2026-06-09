@@ -37,7 +37,8 @@ def _resolve_graph_path() -> Path | None:
         return Path(env).resolve()
     cwd = Path.cwd()
     for base in (cwd, *cwd.parents):
-        for cand in (base / "KNOWLEDGE_GRAPH.md", base / "knowledge" / "KNOWLEDGE_GRAPH.md"):
+        # knowledge/ is the default convention; repo root is a fallback.
+        for cand in (base / "knowledge" / "KNOWLEDGE_GRAPH.md", base / "KNOWLEDGE_GRAPH.md"):
             if cand.is_file():
                 return cand.resolve()
     return None

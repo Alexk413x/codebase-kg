@@ -91,7 +91,8 @@ def find_kg_rel(repo: Path, cfg: dict[str, str]) -> str | None:
     """KG path relative to the repo root, as it appears in `git diff` output."""
     if cfg.get("kg_path"):
         return cfg["kg_path"].replace("\\", "/").lstrip("./")
-    for cand in ("KNOWLEDGE_GRAPH.md", "knowledge/KNOWLEDGE_GRAPH.md"):
+    # knowledge/ is the default convention; repo root is a fallback.
+    for cand in ("knowledge/KNOWLEDGE_GRAPH.md", "KNOWLEDGE_GRAPH.md"):
         if (repo / cand).is_file():
             return cand
     return None

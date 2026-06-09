@@ -28,8 +28,10 @@ One `KNOWLEDGE_GRAPH.md` per codebase, **identified by where it lives** (its rep
 not by a platform-prefixed filename. The iOS KG lives in the iOS repo; the Android KG lives in
 the Android repo. A repo's KG is generic — nothing in the schema is platform-specific.
 
-Default filename: `KNOWLEDGE_GRAPH.md`. Default location: repo root, or a `knowledge/`
-subdirectory. Location is **configurable** — see §7 and `templates/codebase-kg.local.md.example`.
+Default filename: `KNOWLEDGE_GRAPH.md`. **Default location: a `knowledge/` subdirectory**
+(`knowledge/KNOWLEDGE_GRAPH.md`) — the home for the KG and any related committed reference docs.
+Repo root is supported as a fallback, and the location is **configurable** — see §7 and
+`templates/codebase-kg.local.md.example`.
 
 ## 2. Document structure
 

@@ -36,8 +36,8 @@ Acme repos (it edits external repos — a user go-ahead step; see `docs/DOGFOOD.
 
 ## How it works
 
-Each repo gets a `KNOWLEDGE_GRAPH.md` (markdown is the source of truth — diffable, greppable;
-the MCP parses it into a graph). A node is a small key/value table:
+Each repo gets a `knowledge/KNOWLEDGE_GRAPH.md` (markdown is the source of truth — diffable,
+greppable; the MCP parses it into a graph). A node is a small key/value table:
 
 ```
 | id      | feed_ranker |

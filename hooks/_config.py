@@ -82,7 +82,8 @@ def find_kg(proj: Path, cfg: dict[str, object]) -> Path | None:
         if not p.is_absolute():
             p = proj / p
         return p.resolve() if p.is_file() else None
-    for cand in (proj / "KNOWLEDGE_GRAPH.md", proj / "knowledge" / "KNOWLEDGE_GRAPH.md"):
+    # knowledge/ is the default convention; repo root is a fallback.
+    for cand in (proj / "knowledge" / "KNOWLEDGE_GRAPH.md", proj / "KNOWLEDGE_GRAPH.md"):
         if cand.is_file():
             return cand.resolve()
     return None
