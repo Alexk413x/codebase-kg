@@ -4,6 +4,14 @@ All notable changes to the `codebase-kg` plugin.
 
 ## [Unreleased]
 
+### Added — 2026-06-08 — per-node `updated` date
+
+- New optional per-node `updated: YYYY-MM-DD` field (finer-grained than the header `refreshed`).
+  `kg-build` stamps every node; `kg-refresh` bumps only touched nodes, so a node whose `updated`
+  lags `refreshed` is a candidate stale node. Loader parses it (+ `last_updated`/`last-updated`
+  aliases); `kg_node` returns it, `kg_search` shows it, `kg_stats` reports
+  `updated.{oldest,newest,missing,stale_vs_refreshed}`. Schema/template/skills updated. +3 tests.
+
 ### Added — 2026-06-08 — Phases 2–6
 
 - **Phase 2 — MCP query server** (`mcp/`): FastMCP stdio server parsing `KNOWLEDGE_GRAPH.md` into a
