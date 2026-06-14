@@ -4,6 +4,15 @@ All notable changes to the `codebase-kg` plugin.
 
 ## [Unreleased]
 
+### Fixed — 2026-06-14 — `CODEBASE_KG_PATH` is now optional (server auto-discovers the KG)
+
+- `.mcp.json` referenced `${CODEBASE_KG_PATH}` as a **required** env var, so Claude Code refused to
+  launch the MCP server whenever it was undefined (`MCP server codebase-kg invalid: Missing
+  environment variables: CODEBASE_KG_PATH`). Changed to an empty default (`${CODEBASE_KG_PATH:-}`):
+  the var stays an **optional override**, and when unset the server falls through to its `knowledge/`
+  walk-up auto-discovery — so the KG is found in any repo with **no per-project config**. The
+  documented `CLI arg → $CODEBASE_KG_PATH → walk-up` resolution order is unchanged.
+
 ### Changed — 2026-06-09 — project config lives in the committed KG header (not a `.local.md`)
 
 - The shared, project-level config (`codebase`/`root`/`counterpart`) is the **committed KG header**.
