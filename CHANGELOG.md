@@ -4,6 +4,27 @@ All notable changes to the `codebase-kg` plugin.
 
 ## [Unreleased]
 
+### Changed — 2026-06-29 — `knowledge/` is the single KG location (no repo-root fallback)
+
+- The KG **always** lives at `knowledge/KNOWLEDGE_GRAPH.md`. The previous repo-root *fallback* is
+  removed everywhere: the `kg-build` skill now unconditionally creates the `knowledge/` folder and
+  writes there, and all three resolvers (advisory hook `find_kg`, pre-push gate `find_kg_rel`, MCP
+  server `_resolve_graph_path`) resolve a single rule — explicit `kg_path` override → else
+  `knowledge/KNOWLEDGE_GRAPH.md` — with no root candidate. `kg_path` now **defaults to**
+  `knowledge/KNOWLEDGE_GRAPH.md` (was empty/auto-discover), so everything points to one configurable
+  path. A repo without that file simply has no KG yet (hook + gate no-op). `SCHEMA.md` §1/§7, the
+  `kg-build` skill, `DESIGN.md`, the config template, and the MCP/server docs updated. 36 tests pass.
+  **Migration:** a repo with a root-level `KNOWLEDGE_GRAPH.md` must move it to `knowledge/` (or set
+  `kg_path` in `.claude/codebase-kg.local.md`); it is no longer discovered at the root.
+
+### Removed — 2026-06-29 — completed design docs (`docs/BUILD_PLAN.md`, `docs/MCP_SURFACE.md`)
+
+- Deleted the 6-phase build plan and the Phase-2 MCP-surface design spec now that all phases ship.
+  Their still-relevant content lives in the authoritative docs: locked decisions + dogfood target in
+  `docs/DESIGN.md`, the live tool surface in `mcp/README.md`, and the schema in `SCHEMA.md`. Fixed
+  the inbound references in `README.md`, `docs/DESIGN.md`, and `docs/examples/EXAMPLE_KG.md`; the
+  earlier dated changelog entry that lists both files is left as the historical record.
+
 ### Fixed — 2026-06-14 — `CODEBASE_KG_PATH` is now optional (server auto-discovers the KG)
 
 - `.mcp.json` referenced `${CODEBASE_KG_PATH}` as a **required** env var, so Claude Code refused to
@@ -57,15 +78,15 @@ All notable changes to the `codebase-kg` plugin.
   queryable graph; 7 tools (`kg_search` / `kg_node` / `kg_neighborhood` / `kg_find_by_kind` /
   `kg_parity_gaps` / `kg_stats` / `kg_validate`). `loader`+`tools` are stdlib-only with 21 passing
   tests over a cross-linked ios/android fixture pair + source tree. Loader tolerates legacy
-  Acme-Android field names (parses the real 700-line Android KG, 98 nodes). Root `.mcp.json`.
+  hand-written field names (parses a real 700-line Android KG, 98 nodes). Root `.mcp.json`.
 - **Phase 3 — skills + commands**: five advisory skills (`kg-build`, `kg-refresh`, `kg-audit`,
   `kg-link`, `kg-validate`) with references for the multi-agent ones; five thin slash commands.
 - **Phase 4 — advisory hook** (`hooks/`): PostToolUse freshness nudge; never blocks, fail-safe,
   state in OS temp; honors `codebase-kg.local.md`.
 - **Phase 5 — cross-codebase parity**: counterpart resolution + reciprocity in `kg_validate`,
   `kg_parity_gaps`, and the `kg-link` skill — verified end-to-end on the fixture pair.
-- **Phase 6 — dogfood** (`docs/DOGFOOD.md`): read-only validation against the real Acme Android KG;
-  live migration of the Acme repos staged as a go-ahead step.
+- **Phase 6 — dogfood** (`docs/DOGFOOD.md`): read-only validation against a real Android KG;
+  live migration of the external repos staged as a go-ahead step.
 - `.gitattributes` (LF normalization).
 
 ### Reviewed — 2026-06-08 — plugin-dev validator + skill-reviewer
@@ -100,4 +121,4 @@ All notable changes to the `codebase-kg` plugin.
 - Phase 3 — skills (`kg-build` / `kg-refresh` / `kg-audit` / `kg-link` / `kg-validate`).
 - Phase 4 — advisory post-edit freshness hook.
 - Phase 5 — `counterpart` resolution + `kg_parity_gaps`.
-- Phase 6 — dogfood on the Acme iOS↔Android pair.
+- Phase 6 — dogfood on a real iOS↔Android pair.

@@ -104,7 +104,7 @@ def test_validate_ios_flags_non_reciprocal(ios_graph: Graph, android_graph: Grap
     # bookmarks_view_model -> android#bookmarks_screen, which has no back-link
     msgs = [i["node"] for i in out["counterpart_issues"]]  # type: ignore[union-attr]
     assert "bookmarks_view_model" in msgs
-    # ios source root (AcmeApp) doesn't exist in fixtures -> anchors unchecked
+    # ios source root (App) doesn't exist in fixtures -> anchors unchecked
     assert out["source_checked"] is False
 
 

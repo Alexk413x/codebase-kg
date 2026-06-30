@@ -8,7 +8,7 @@ argument-hint: "[path to KNOWLEDGE_GRAPH.md | empty = auto-discover]"
 Run the structural drift check.
 
 1. Locate the KG: `$ARGUMENTS` if given, else the MCP server auto-discovers this repo's
-   `KNOWLEDGE_GRAPH.md`.
+   `knowledge/KNOWLEDGE_GRAPH.md`.
 2. **Invoke the `kg-validate` skill** — run the `kg_validate` MCP tool (or fall back to a manual
    Read + Grep pass) and report.
 

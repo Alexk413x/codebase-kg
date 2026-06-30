@@ -1,17 +1,17 @@
 # Design — locked decisions, resolved questions, principles
 
 The durable "why" behind the plugin. `SCHEMA.md` is the *what*; this is the rationale and the
-settled calls. The full multi-phase plan lives in `BUILD_PLAN.md`.
+settled calls.
 
 ## Locked design decisions
 
-Carried verbatim from the build plan §2 — change these only with a deliberate reason.
+These are locked — change them only with a deliberate reason.
 
 1. **Per-repo KG.** One `KNOWLEDGE_GRAPH.md` per codebase, identified by where it lives, not a
    platform-prefixed filename. The iOS KG lives in the iOS repo; the Android KG in the Android
    repo. Generic across repos.
-2. **Generic node schema** (language-agnostic): `id / kind / anchors / summary / edges / parity /
-   counterpart / divergence`. See `SCHEMA.md` §4.
+2. **Generic node schema** (language-agnostic): `id / kind / anchors / summary / edges / updated /
+   parity / counterpart / divergence`. See `SCHEMA.md` §4.
 3. **Symbol-based anchors** (`path#Symbol`), **never line numbers.** Line numbers rot on every
    edit (the #1 drift source) and barely help an agent that has `Grep`. Symbols are stable,
    greppable, and universal across languages.
@@ -28,13 +28,13 @@ Carried verbatim from the build plan §2 — change these only with a deliberate
 
 ## Resolved open questions
 
-The plan's §12 open calls, decided for this build:
+Open calls decided for this build:
 
 | Question | Decision | Note |
 |---|---|---|
 | **Plugin name** | `codebase-kg` | Matches the repo. Commands `/codebase-kg:kg-*`; MCP server `codebase-kg`. |
 | **Repo layout** | Standalone plugin at root | `plugin.json` at root + a thin `marketplace.json` so it installs. Not a multi-plugin marketplace. |
-| **KG location** | Per-repo `KNOWLEDGE_GRAPH.md`, location configurable | Repo root or `knowledge/`; set via `kg_path` in `codebase-kg.local.md`. |
+| **KG location** | Per-repo `knowledge/KNOWLEDGE_GRAPH.md` | Always `knowledge/` (no repo-root fallback); override the location per clone via `kg_path` in `.local.md`. |
 | **Storage format** | Markdown-as-source | Diffable, greppable, human-readable; the MCP parses it. JSON/YAML machine-first rejected as heavier (revisit only if parsing is too slow at scale). |
 | **Refresh engine** | Agent-driven first | The agent reads source and emits nodes — keeps it language-agnostic. Add static parsers later for speed if needed; never as the only path. |
 | **Counterpart direction** | Reciprocal | Both sides link; `kg-validate` checks consistency and flags one-directional or dangling links. |
@@ -55,16 +55,16 @@ The plan's §12 open calls, decided for this build:
 
 ## Dogfood target
 
-The **Acme iOS ↔ Android** pair (`BUILD_PLAN.md` §9):
+A real **iOS ↔ Android** app pair:
 
-- **Android** `acme-android` — `knowledge/KNOWLEDGE_GRAPH.md` was audited + refreshed to
-  current source on 2026-06-08. Use it as the reference node style; it needs symbol anchors +
-  parity/counterpart fields added to reach this schema.
-- **iOS** `acme-ios` — ships a *narrow* Quartz-only `KNOWLEDGE_GRAPH.md`. Plan: rename
-  it `KNOWLEDGE_GRAPH.legacy.md` (preserve-but-deletable), then `kg-build` the real one in place.
+- **Android** — an audited `knowledge/KNOWLEDGE_GRAPH.md`, refreshed to current source on
+  2026-06-08. Use it as the reference node style; it needs symbol anchors + parity/counterpart
+  fields added to reach this schema.
+- **iOS** — ships a *narrow*, single-feature `KNOWLEDGE_GRAPH.md`. Plan: rename it
+  `KNOWLEDGE_GRAPH.legacy.md` (preserve-but-deletable), then `kg-build` the real one in place.
 - Known cross-codebase cases to reproduce (already modeled in `docs/examples/EXAMPLE_KG.md`):
   matched (SavedArticle ↔ SavedArticleEntity), divergent (PersonalizedRankingService ↔
-  FeedRanker), android-only (Night Digest — iOS has it only in `AcmeApp/PRD.md`).
+  FeedRanker), android-only (a night-theme feature — iOS has it only in a product doc).
 
 Parity is expressed by **direct node cross-linking** (decision #5, `SCHEMA.md` §8) — there is no
 separate parity file. "Find all gaps" is the `kg_parity_gaps` query across both KGs.

@@ -14,7 +14,8 @@ on the codebase-kg MCP package, so it can be copied (vendored) straight into any
 repo's hooks and runs anywhere Python 3 + git exist.
 
 Config (optional) is read from `.claude/codebase-kg.local.md` in the repo root:
-`root` (only source under here triggers), `kg_path` (default: auto-discover).
+`root` (only source under here triggers), `kg_path` (default:
+`knowledge/KNOWLEDGE_GRAPH.md`; no repo-root fallback).
 """
 
 from __future__ import annotations
@@ -88,14 +89,13 @@ def load_config(repo: Path) -> dict[str, str]:
 
 
 def find_kg_rel(repo: Path, cfg: dict[str, str]) -> str | None:
-    """KG path relative to the repo root, as it appears in `git diff` output."""
-    if cfg.get("kg_path"):
-        return cfg["kg_path"].replace("\\", "/").lstrip("./")
-    # knowledge/ is the default convention; repo root is a fallback.
-    for cand in ("knowledge/KNOWLEDGE_GRAPH.md", "KNOWLEDGE_GRAPH.md"):
-        if (repo / cand).is_file():
-            return cand
-    return None
+    """KG path relative to the repo root, as it appears in `git diff` output.
+    Default: knowledge/KNOWLEDGE_GRAPH.md; an explicit kg_path in .local.md
+    overrides it. No root fallback — a repo without that file has no KG and isn't
+    gated."""
+    kg_path = cfg.get("kg_path") or "knowledge/KNOWLEDGE_GRAPH.md"
+    rel = kg_path.replace("\\", "/").lstrip("./")
+    return rel if (repo / rel).is_file() else None
 
 
 def is_source(rel: str, root: str, kg_rel: str | None) -> bool:

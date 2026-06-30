@@ -28,7 +28,7 @@ override of the nudge behavior or `root`; it is gitignored, not committed.
 post_edit_nudge: true     # master off-switch
 nudge_every: 5            # nudge once per N source edits since the KG was last touched
 root: app/src             # only edits under here count (default: whole repo)
-kg_path: knowledge/KNOWLEDGE_GRAPH.md   # default: auto-discover
+kg_path: knowledge/KNOWLEDGE_GRAPH.md   # this is the default; set only to override
 ---
 ```
 

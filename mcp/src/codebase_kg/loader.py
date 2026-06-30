@@ -1,7 +1,7 @@
 """Parse a KNOWLEDGE_GRAPH.md (markdown source of truth) into a `Graph`.
 
 Stdlib only. Tolerant of the new schema (SCHEMA.md §4) *and* the legacy
-Acme-Android field names (`type`/`files`/`details`/`deps`) so the parser works
+hand-written field names (`type`/`files`/`details`/`deps`) so the parser works
 against existing hand-written KGs during migration.
 """
 

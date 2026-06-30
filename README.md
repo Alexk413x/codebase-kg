@@ -20,19 +20,19 @@ state to reduce search cost. Nothing more.
 
 ## Status
 
-✅ **All six build phases complete.** Schema, MCP query server (7 tools, 21 passing tests), five
-skills + five slash commands, the advisory hook, cross-codebase parity, and a read-only dogfood
-against the real Acme Android KG. The one remaining action is the **live migration** of the two
-Acme repos (it edits external repos — a user go-ahead step; see `docs/DOGFOOD.md`).
+✅ **All six build phases complete.** Schema, MCP query server (7 tools, 36 passing tests), five
+skills + six slash commands, the advisory hook, cross-codebase parity, and a read-only dogfood
+against a real Android KG. The one remaining action is the **live migration** of the two
+external repos (a user go-ahead step; see `docs/DOGFOOD.md`).
 
 | Phase | What | State |
 |---|---|---|
 | 1 | Schema + format; one example KG | ✅ `SCHEMA.md`, `docs/examples/EXAMPLE_KG.md` |
-| 2 | MCP server (parse markdown KG → queryable graph; the §5 tools) | ✅ `mcp/` — 7 tools, 21 tests |
+| 2 | MCP server (parse markdown KG → queryable graph; the 7 query tools) | ✅ `mcp/` — 7 tools, 36 tests |
 | 3 | Skills — `kg-build` / `kg-refresh` / `kg-audit` / `kg-link` / `kg-validate` | ✅ `skills/` + `commands/` |
 | 4 | Advisory post-edit freshness hook | ✅ `hooks/` |
 | 5 | Cross-codebase parity (`counterpart` resolution + `kg_parity_gaps`) | ✅ in `mcp/` + `kg-link` |
-| 6 | Dogfood on the Acme iOS↔Android pair | ✅ read-only; live migration staged (`docs/DOGFOOD.md`) |
+| 6 | Dogfood on a real iOS↔Android pair | ✅ read-only; live migration staged (`docs/DOGFOOD.md`) |
 
 ## How it works
 
@@ -43,8 +43,8 @@ greppable; the MCP parses it into a graph). A node is a small key/value table:
 | id      | feed_ranker |
 | kind    | Domain (pure) |
 | anchors | `domain/FeedRanker.kt#FeedRanker`, `domain/FeedRanker.kt#ExploreExploitBalancer` |
-| summary | Ranks the feed by freshness + breaking + per-source/category weight. Wired in acme_view_model.fetch(). |
-| edges   | reading_event_entity, acme_view_model |
+| summary | Ranks the feed by freshness + breaking + per-source/category weight. Wired in feed_view_model.fetch(). |
+| edges   | reading_event_entity, feed_view_model |
 ```
 
 For a paired codebase, the node also carries `parity` / `counterpart` / `divergence` linking it
@@ -62,8 +62,6 @@ codebase-kg/
 ├── README.md
 ├── docs/
 │   ├── DESIGN.md             # locked design decisions, genericity rules, principles
-│   ├── MCP_SURFACE.md        # the planned MCP tool surface (Phase 2 design)
-│   ├── BUILD_PLAN.md         # the full 6-phase build plan (carried in)
 │   └── examples/EXAMPLE_KG.md
 ├── templates/
 │   ├── KNOWLEDGE_GRAPH.template.md
@@ -97,7 +95,7 @@ repo's commit at a time.
 
 Mirrors the structure of the author's `a11y` plugin (skill + MCP + advisory-hook) and its
 `a11y-kg` MCP query server, generalized past accessibility to *any* codebase. The node style is
-generalized from the Acme Android `KNOWLEDGE_GRAPH.md` (a real, audited 700-line KG): `type→kind`,
+generalized from a real, audited 700-line Android `KNOWLEDGE_GRAPH.md`: `type→kind`,
 `files→anchors` (now symbol-based), `details→summary`, `deps→edges`, plus the new
 `parity`/`counterpart`/`divergence` fields.
 

@@ -13,7 +13,7 @@ from pathlib import Path
 
 DEFAULTS: dict[str, object] = {
     "root": "",  # empty => the whole project
-    "kg_path": "",  # empty => auto-discover (KNOWLEDGE_GRAPH.md | knowledge/KNOWLEDGE_GRAPH.md)
+    "kg_path": "knowledge/KNOWLEDGE_GRAPH.md",  # the KG always lives here; a .local.md may override
     "post_edit_nudge": True,  # master off-switch for the hook
     "nudge_every": 5,  # nudge once per this many source edits since the KG was last touched
     # Generic doc/config exclusions (NOT language detection) — these edits don't imply KG drift.
@@ -77,17 +77,14 @@ def load_config(proj: Path) -> dict[str, object]:
 
 
 def find_kg(proj: Path, cfg: dict[str, object]) -> Path | None:
-    kg_path = str(cfg.get("kg_path") or "")
-    if kg_path:
-        p = Path(kg_path)
-        if not p.is_absolute():
-            p = proj / p
-        return p.resolve() if p.is_file() else None
-    # knowledge/ is the default convention; repo root is a fallback.
-    for cand in (proj / "knowledge" / "KNOWLEDGE_GRAPH.md", proj / "KNOWLEDGE_GRAPH.md"):
-        if cand.is_file():
-            return cand.resolve()
-    return None
+    """Resolve the KG from `kg_path` (default: knowledge/KNOWLEDGE_GRAPH.md). No
+    root fallback — if the file isn't there, the repo has no KG yet and the hook
+    no-ops."""
+    kg_path = str(cfg.get("kg_path") or "knowledge/KNOWLEDGE_GRAPH.md")
+    p = Path(kg_path)
+    if not p.is_absolute():
+        p = proj / p
+    return p.resolve() if p.is_file() else None
 
 
 def kg_header_value(kg_file: Path, key: str) -> str:

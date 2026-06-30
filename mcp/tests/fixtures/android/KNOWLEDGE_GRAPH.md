@@ -1,4 +1,4 @@
-# Acme Android — Knowledge Graph (FIXTURE)
+# App Android — Knowledge Graph (FIXTURE)
 
 ```
 codebase:    android

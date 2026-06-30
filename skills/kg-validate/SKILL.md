@@ -29,8 +29,8 @@ it never blocks a commit, build, or tool.**
 ## Workflow
 
 1. **Locate the KG.** If the user named a file, use it. Otherwise the MCP server auto-discovers the
-   repo's `KNOWLEDGE_GRAPH.md` (or `knowledge/KNOWLEDGE_GRAPH.md`). Confirm with `kg_stats` — note
-   the `refreshed` date and node count.
+   repo's `knowledge/KNOWLEDGE_GRAPH.md` (the only location — no repo-root fallback). Confirm with
+   `kg_stats` — note the `refreshed` date and node count.
 2. **Run `kg_validate`.** Call the MCP tool. It returns `dangling_edges`, `counterpart_issues`,
    `field_issues`, `anchor_issues`, plus `source_checked` (whether the source tree was reachable for
    the anchor check) and `anchors_checked`.

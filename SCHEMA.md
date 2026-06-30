@@ -28,10 +28,10 @@ One `KNOWLEDGE_GRAPH.md` per codebase, **identified by where it lives** (its rep
 not by a platform-prefixed filename. The iOS KG lives in the iOS repo; the Android KG lives in
 the Android repo. A repo's KG is generic — nothing in the schema is platform-specific.
 
-Default filename: `KNOWLEDGE_GRAPH.md`. **Default location: a `knowledge/` subdirectory**
+Filename: `KNOWLEDGE_GRAPH.md`. **Location: a `knowledge/` subdirectory**
 (`knowledge/KNOWLEDGE_GRAPH.md`) — the home for the KG and any related committed reference docs.
-Repo root is supported as a fallback, and the location is **configurable** — see §7 and
-`templates/codebase-kg.local.md.example`.
+This is the single convention: there is **no repo-root fallback**. The location is **configurable**
+per clone via `kg_path` — see §7 and `templates/codebase-kg.local.md.example`.
 
 ## 2. Document structure
 
@@ -131,8 +131,8 @@ bare path is acceptable.
 | id      | feed_ranker |
 | kind    | Domain (pure) |
 | anchors | `domain/FeedRanker.kt#FeedRanker`, `domain/FeedRanker.kt#ExploreExploitBalancer` |
-| summary | Ranks the main feed by a weighted sum of freshness, breaking, source and category scores (stable sort; cold-start = identity). `ExploreExploitBalancer` (ε-greedy, injectable `Random`) floats a fresh lower-half article to position 1 ~10% of the time. Wired in `acme_view_model.fetch()`. |
-| edges   | reading_event_entity, acme_view_model |
+| summary | Ranks the main feed by a weighted sum of freshness, breaking, source and category scores (stable sort; cold-start = identity). `ExploreExploitBalancer` (ε-greedy, injectable `Random`) floats a fresh lower-half article to position 1 ~10% of the time. Wired in `feed_view_model.fetch()`. |
+| edges   | reading_event_entity, feed_view_model |
 ```
 
 ## 5. The EDGES section
@@ -168,8 +168,8 @@ the committed KG header itself (§3)**. It is shared with the team because the K
 - `counterpart` — the paired repo's KG path (omit for single-codebase repos).
 - `language` — optional hint for symbol tooling (Grep always works; ctags/LSP are opportunistic).
 
-`kg_path` (where the KG file lives) is **auto-discovered** — `knowledge/KNOWLEDGE_GRAPH.md` by
-default, repo root as a fallback. Because all of the above is in the committed header, **no separate
+`kg_path` (where the KG file lives) defaults to `knowledge/KNOWLEDGE_GRAPH.md` — the one convention,
+with **no repo-root fallback**. Because all of the above is in the committed header, **no separate
 config file is needed**; the tools read the header.
 
 A `.claude/codebase-kg.local.md` is an **optional, per-developer override** — by the `.local`

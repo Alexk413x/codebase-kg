@@ -1,8 +1,8 @@
-# Acme iOS — Knowledge Graph (FIXTURE)
+# App iOS — Knowledge Graph (FIXTURE)
 
 ```
 codebase:    ios
-root:        AcmeApp
+root:        App
 counterpart: ../android/KNOWLEDGE_GRAPH.md
 language:    swift
 refreshed:   2026-06-08

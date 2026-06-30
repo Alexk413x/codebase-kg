@@ -26,7 +26,7 @@ KG path resolution order:
 
 1. First CLI arg (e.g. `codebase-kg /path/to/KNOWLEDGE_GRAPH.md`).
 2. `$CODEBASE_KG_PATH`.
-3. Walk up from the current working directory for `KNOWLEDGE_GRAPH.md` or `knowledge/KNOWLEDGE_GRAPH.md`.
+3. Walk up from the current working directory for `knowledge/KNOWLEDGE_GRAPH.md` (no repo-root fallback).
 
 When run as a plugin MCP server (cwd = the user's project), step 3 finds the repo's KG with no
 config. Set `CODEBASE_KG_PATH` to point at a KG elsewhere. The peer KG named in the header
@@ -64,6 +64,6 @@ mcp/
 └── tests/                    # fixtures = a cross-linked ios/android KG pair + a tiny source tree
 ```
 
-The loader is tolerant of the **legacy** Acme-Android field names (`type`/`files`/`details`/`deps`)
+The loader is tolerant of **legacy** hand-written field names (`type`/`files`/`details`/`deps`)
 as well as the new schema (`kind`/`anchors`/`summary`/`edges`), so it parses existing hand-written
 KGs during migration.

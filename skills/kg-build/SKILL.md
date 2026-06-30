@@ -29,10 +29,10 @@ symbols; never paste code). It is **descriptive**, not prescriptive.
 
 ### 1. Configure
 Read `.claude/codebase-kg.local.md` if present (`codebase`, `root`, `kg_path`, `counterpart`,
-`language`). If absent, infer: `root` = the main source dir, `codebase` = a short name, `kg_path` =
-`knowledge/KNOWLEDGE_GRAPH.md` (create the `knowledge/` folder if it doesn't exist — the default
-convention; repo root is a fallback). Confirm the inferred config with the user in one message
-before writing.
+`language`). If absent, infer: `root` = the main source dir, `codebase` = a short name. The KG is
+**always** written to `knowledge/KNOWLEDGE_GRAPH.md` — create the `knowledge/` folder if it doesn't
+exist. There is no repo-root fallback; only a `kg_path` override in `.local.md` changes the location.
+Confirm the inferred config with the user in one message before writing.
 
 ### 2. Survey the source tree
 `git ls-files` (or `Glob`) under `root` to inventory files. Group them into **subsystems** — the

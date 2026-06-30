@@ -12,13 +12,14 @@
 codebase: android
 
 # The code root this KG describes (repo-relative or absolute).
-root: app/src/main/java/com/example/acme/
+root: app/src/main/java/com/example/app/
 
-# Where the KG file lives in this repo. Default: repo root. Common alt: knowledge/.
+# Where the KG file lives in this repo. Default (the convention): knowledge/KNOWLEDGE_GRAPH.md.
+# Set this ONLY to override that default for your clone — there is no repo-root fallback.
 kg_path: knowledge/KNOWLEDGE_GRAPH.md
 
 # Optional — the paired repo's KG, for cross-codebase parity. Omit for a single-codebase repo.
-counterpart: ../acme-ios/KNOWLEDGE_GRAPH.md
+counterpart: ../app-ios/knowledge/KNOWLEDGE_GRAPH.md
 
 # Optional language hint for symbol tooling. Grep always works; this only enables
 # opportunistic ctags/LSP. Omit if unsure.

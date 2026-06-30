@@ -5,7 +5,7 @@ The peer KG named in the header `counterpart:` is loaded lazily for the
 cross-codebase parity checks.
 
 KG path resolution order: CLI arg → $CODEBASE_KG_PATH → walk up from CWD for a
-KNOWLEDGE_GRAPH.md.
+knowledge/KNOWLEDGE_GRAPH.md (no repo-root fallback).
 """
 
 from __future__ import annotations
@@ -37,10 +37,10 @@ def _resolve_graph_path() -> Path | None:
         return Path(env).resolve()
     cwd = Path.cwd()
     for base in (cwd, *cwd.parents):
-        # knowledge/ is the default convention; repo root is a fallback.
-        for cand in (base / "knowledge" / "KNOWLEDGE_GRAPH.md", base / "KNOWLEDGE_GRAPH.md"):
-            if cand.is_file():
-                return cand.resolve()
+        # The KG lives in knowledge/ by convention — no repo-root fallback.
+        cand = base / "knowledge" / "KNOWLEDGE_GRAPH.md"
+        if cand.is_file():
+            return cand.resolve()
     return None
 
 
