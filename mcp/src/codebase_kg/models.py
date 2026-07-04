@@ -81,7 +81,12 @@ class Graph:
     def __post_init__(self) -> None:
         self._by_id: dict[str, Node] = {}
         self._inbound: dict[str, list[str]] = {}
+        # SCHEMA.md §4: ids must be unique. Later nodes win the index, but the
+        # collisions are recorded so kg_validate can report them.
+        self.duplicate_ids: list[str] = []
         for n in self.nodes:
+            if n.id in self._by_id and n.id not in self.duplicate_ids:
+                self.duplicate_ids.append(n.id)
             self._by_id[n.id] = n
         for n in self.nodes:
             for e in n.edges:

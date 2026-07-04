@@ -20,6 +20,9 @@ _HEADER_LINE = re.compile(r"^([A-Za-z_][\w-]*):[ \t]*(.*)$")
 _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 # A token that looks like a node id (no spaces / parens / markdown).
 _ID_TOKEN = re.compile(r"^[A-Za-z0-9_./-]+$")
+# A markdown table separator cell: ---, :--, --:, :-: (Prettier/markdownlint
+# insert a `| --- | --- |` row after the first row of any table).
+_SEPARATOR_CELL = re.compile(r"^:?-+:?$")
 
 # Field-name aliases → canonical node field. Includes legacy Android-KG names.
 _KEY_ALIASES: dict[str, str] = {
@@ -42,7 +45,9 @@ _KEY_ALIASES: dict[str, str] = {
     "last-updated": "updated",
 }
 
-_HEADER_KEYS = {"codebase", "root", "counterpart", "language", "refreshed"}
+# Free-prose node fields where a literal " #…" tail may be meaningful content —
+# everything else gets inline `  # comment` tails stripped (see _strip_comment).
+_PROSE_FIELDS = {"summary", "divergence"}
 
 
 def _split_row(line: str) -> list[str] | None:
@@ -52,9 +57,11 @@ def _split_row(line: str) -> list[str] | None:
     return [c.strip() for c in m.group(1).split("|")]
 
 
-def _strip_header_comment(value: str) -> str:
-    # Header values never contain "path#Symbol", so a "  # comment" tail is safe
-    # to drop. Require whitespace before '#' so we never cut an inline anchor.
+def _strip_comment(value: str) -> str:
+    # In header and non-prose node values, '#' is only ever glued to a path
+    # (`path#Symbol`, `KG.md#node-id`) — never preceded by whitespace — so a
+    # "  # comment" tail is safe to drop. Requiring whitespace before '#'
+    # guarantees we never cut an inline anchor or counterpart link.
     return re.sub(r"\s+#.*$", "", value).strip()
 
 
@@ -103,7 +110,7 @@ def parse_header(text: str) -> Header:
         if not m:
             continue
         key = m.group(1).strip().lower()
-        val = _strip_header_comment(m.group(2))
+        val = _strip_comment(m.group(2))
         if not val or val.startswith("<"):  # template placeholder
             continue
         if key == "codebase":
@@ -170,6 +177,8 @@ def parse_nodes(text: str) -> list[Node]:
         if cells is None:
             flush()  # blank or prose line ends a node block
             continue
+        if cells and all(_SEPARATOR_CELL.match(c) for c in cells):
+            continue  # a formatter-inserted |---|---| row — not a terminator
         if len(cells) < 2:
             flush()  # malformed / not a kv row
             continue
@@ -180,9 +189,11 @@ def parse_nodes(text: str) -> list[Node]:
         # like "Bookmarks | Read Later | Highlights". Rejoin everything after the
         # key cell so internal pipes don't truncate the node mid-block.
         value = " | ".join(c.strip() for c in cells[1:]).strip() if len(cells) > 2 else cells[1].strip()
+        if canon is not None and canon not in _PROSE_FIELDS:
+            value = _strip_comment(value)
         if key == "id" or (canon == "id"):
             flush()
-            current = {"id": cells[1].strip()}
+            current = {"id": _strip_comment(cells[1].strip())}
         elif current is not None and canon is not None:
             current[canon] = value
         else:

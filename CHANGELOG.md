@@ -4,6 +4,58 @@ All notable changes to the `codebase-kg` plugin.
 
 ## [Unreleased]
 
+### Fixed — 2026-07-03 — code-review findings: live-reloading server, push-accurate gate, loader hardening
+
+- **MCP server reloads the KG (H1).** The KG path was resolved once at startup and the parsed
+  graph/peer cached forever — a repo with no KG at session start errored on every tool call even
+  after `/codebase-kg:build`, and `kg_validate` after an edit validated the pre-edit snapshot. Now
+  the path is re-resolved while unresolved, and both the graph and the peer KG are re-read whenever
+  the file's mtime/size changes. Module docstring + `mcp/README.md` reconciled. +2 tests.
+- **MCP server honors `.claude/codebase-kg.local.md` `kg_path` (M7).** SCHEMA.md §1/§7 said the
+  per-clone override applied to "the tools", but only the hooks and the pre-push gate read it. The
+  server's walk-up resolution now checks the `.local.md` frontmatter at each level too. +1 test.
+- **Pre-push gate reads git's stdin (M3).** The gate guessed the diff range from the checked-out
+  branch (`@{u}..HEAD` → `origin/main..HEAD` → `HEAD`), so pushing a different branch diffed the
+  wrong changeset, a repo whose remote default isn't main/master silently passed, and two-dot
+  ranges counted upstream-side changes. It now parses the
+  `<local_ref> <local_sha> <remote_ref> <remote_sha>` lines git feeds on stdin and gates exactly the
+  pushed refs: three-dot `remote_sha...local_sha` per ref, new branches diffed from the merge-base
+  with the remote default (else every not-yet-remote commit), ref deletions skipped. A manual run
+  without stdin falls back to `@{u}...HEAD` / `origin/main|master...HEAD` and **fails loudly** when
+  no base exists instead of silently passing. `git-hooks/README.md`, the `pre-push` wrapper, and
+  `/codebase-kg:install-hooks` note the stdin ordering requirement. +8 tests, verified end-to-end
+  against a real repo (existing ref / new branch / deletion / manual run).
+- **Anchor check understands `Type.method` (M1).** `kg_validate` grepped the anchor symbol as one
+  literal word, so the SCHEMA-endorsed `File.kt#Type.method` form was false-flagged ("symbol not
+  found"). Dotted symbols are now checked segment-wise. Also caches file contents per validate call
+  instead of re-reading a file once per anchor. +1 test.
+- **Loader strips inline `# comments` from node rows (M2).** The template showed `  # optional …`
+  tails on node-table rows but the loader only stripped comments on header lines, so garbage like
+  `matched    # optional — multi-codebase only` escaped into parity values. Non-prose node fields
+  (everything except `summary`/`divergence`) now drop a whitespace-preceded `#` tail — anchors and
+  counterparts are safe because their `#` is always glued to the path. The template's node rows
+  lost their inline comments (explanation moved to an HTML comment above the block). +1 test.
+- **Duplicate node ids are reported (M5).** Duplicate ids silently collapsed (last wins) while
+  `kg_validate` said ok, violating SCHEMA.md §4. The `Graph` now records collisions
+  (`duplicate_ids`) and `kg_validate` reports them (and fails `ok`). +2 tests.
+- **Table separator rows no longer truncate nodes (M6).** A `| --- | --- |` row (inserted by
+  Prettier/markdownlint) inside a node block flushed the node, cutting it to id-only. Separator
+  rows (dashes/colons cells) are now skipped. +1 test.
+- **Advisory hook command is portable (M4).** `hooks/hooks.json` hardcoded `python`, which doesn't
+  exist on stock macOS/many Linux. Now `python3 <script> || python <script>` — works under both
+  POSIX `sh` and Windows `cmd.exe`, and the double-run objection can't apply because the script is
+  fail-safe (always exits 0). Choice documented in `hooks/README.md`.
+- **Minor:** pre-push `kg_path.lstrip("./")` charset-strip → `removeprefix("./")`; legacy
+  `last refreshed` regex gains `(?i)` to match its sibling; the advisory hook's `exclude_ext` now
+  matches dotfiles like `.gitignore` (aligned with the pre-push twin); `kg_validate`'s
+  `root.strip("/")` no longer mangles roots (trailing slashes only; SCHEMA.md §3 + template now say
+  `root` is repo-relative); `/codebase-kg:install-hooks` references the vendored files via
+  `${CLAUDE_PLUGIN_ROOT}/git-hooks/…`; `docs/DESIGN.md` stale `/codebase-kg:kg-*` command names
+  corrected; dead `_HEADER_KEYS` removed from the loader; `.claude-plugin/plugin.json` gains
+  `"version": "0.1.0"` (matching `mcp/pyproject.toml`); `_suggest` sorts by `(-score, id)` so the
+  id tiebreak is no longer reversed; the five skills drop the nonstandard `when_to_use` frontmatter
+  key (unique bits folded into `description`). 36 → 52 tests, all passing.
+
 ### Changed — 2026-06-29 — `knowledge/` is the single KG location (no repo-root fallback)
 
 - The KG **always** lives at `knowledge/KNOWLEDGE_GRAPH.md`. The previous repo-root *fallback* is

@@ -1,7 +1,6 @@
 ---
 name: kg-refresh
-description: This skill should be used when the user asks to "refresh the knowledge graph", "update the KG", "re-sync KNOWLEDGE_GRAPH.md with the code", "the KG is stale", or after shipping a feature when the KG should reflect new/changed/deleted code. It comprehensively re-derives the affected nodes against current source — never a header-or-date-only edit.
-when_to_use: Use to bring an existing KG back in sync with current source after code changes. For a from-scratch KG use kg-build; for a read-only drift report use kg-audit or kg-validate.
+description: This skill should be used when the user asks to "refresh the knowledge graph", "update the KG", "re-sync KNOWLEDGE_GRAPH.md with the code", "the KG is stale", or after shipping a feature when the KG should reflect new/changed/deleted code. It comprehensively re-derives the affected nodes against current source — never a header-or-date-only edit. (For a from-scratch KG use kg-build; for a read-only drift report use kg-audit or kg-validate.)
 allowed-tools:
   - mcp__codebase-kg__kg_validate
   - mcp__codebase-kg__kg_stats

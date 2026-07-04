@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 # The pre-push checker is vendorable and lives outside the mcp package.
 HOOKS = Path(__file__).resolve().parent.parent.parent / "git-hooks"
 sys.path.insert(0, str(HOOKS))
@@ -68,3 +70,95 @@ def test_kg_header_value_reads_root_from_header(tmp_path: Path) -> None:
     assert g.kg_header_value(kg, "root") == "app/src/main"
     assert g.kg_header_value(kg, "counterpart") == "../y"
     assert g.kg_header_value(kg, "missing") == ""
+
+
+# --- stdin ref parsing -------------------------------------------------------
+ZEROS = "0" * 40
+
+
+def test_parse_push_refs_parses_ref_lines() -> None:
+    text = (
+        "refs/heads/main aaa111 refs/heads/main bbb222\n"
+        "\n"
+        "garbage\n"
+        f"refs/heads/gone {ZEROS} refs/heads/gone ccc333\n"
+    )
+    assert g.parse_push_refs(text) == [
+        ("refs/heads/main", "aaa111", "refs/heads/main", "bbb222"),
+        ("refs/heads/gone", ZEROS, "refs/heads/gone", "ccc333"),
+    ]
+
+
+def test_parse_push_refs_empty_stdin() -> None:
+    assert g.parse_push_refs("") == []
+
+
+# --- changed_files_for_push --------------------------------------------------
+def test_push_to_existing_ref_diffs_remote_to_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git(*args: str) -> str:
+        calls.append(args)
+        if args[0] == "diff":
+            return "src/A.kt\nsrc/B.kt\n"
+        return ""
+
+    monkeypatch.setattr(g, "_git", fake_git)
+    refs = [("refs/heads/x", "aaa111", "refs/heads/x", "bbb222")]
+    # The pushed branch's own range — NOT the checked-out branch, NOT @{u}..HEAD.
+    assert g.changed_files_for_push(refs) == ["src/A.kt", "src/B.kt"]
+    assert ("diff", "--name-only", "bbb222...aaa111") in calls
+
+
+def test_new_branch_push_diffs_from_remote_default_merge_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_git(*args: str) -> str:
+        if args[0] == "merge-base" and args[1] == "origin/HEAD":
+            return "base123\n"
+        if args[0] == "diff" and args[-1] == "base123..aaa111":
+            return "src/New.kt\n"
+        return ""
+
+    monkeypatch.setattr(g, "_git", fake_git)
+    refs = [("refs/heads/new", "aaa111", "refs/heads/new", ZEROS)]
+    assert g.changed_files_for_push(refs) == ["src/New.kt"]
+
+
+def test_new_branch_push_without_remote_base_lists_unpushed_commits(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_git(*args: str) -> str:
+        if args[0] == "merge-base":
+            return ""  # no origin/HEAD|main|master at all
+        if args[0] == "rev-list":
+            return "c1\nc2\n"
+        if args[0] == "diff-tree":
+            return {"c1": "src/A.kt\n", "c2": "src/A.kt\nsrc/B.kt\n"}[args[-1]]
+        return ""
+
+    monkeypatch.setattr(g, "_git", fake_git)
+    refs = [("refs/heads/new", "aaa111", "refs/heads/new", ZEROS)]
+    # union across commits, deduped
+    assert g.changed_files_for_push(refs) == ["src/A.kt", "src/B.kt"]
+
+
+def test_deleted_ref_push_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_git(*args: str) -> str:
+        raise AssertionError("a ref deletion pushes no commits — no git calls expected")
+
+    monkeypatch.setattr(g, "_git", fake_git)
+    refs = [("(delete)", ZEROS, "refs/heads/x", "bbb222")]
+    assert g.changed_files_for_push(refs) == []
+
+
+# --- push_range fallback (manual invocation, no stdin) -----------------------
+def test_push_range_prefers_upstream_three_dot(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_git(*args: str) -> str:
+        return "origin/main\n" if args[0] == "rev-parse" and "--abbrev-ref" in args else ""
+
+    monkeypatch.setattr(g, "_git", fake_git)
+    assert g.push_range() == "@{u}...HEAD"
+
+
+def test_push_range_none_when_no_base_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    # No upstream, no origin/main|master: the caller must fail loudly, never
+    # silently pass on a guessed empty range.
+    monkeypatch.setattr(g, "_git", lambda *a: "")
+    assert g.push_range() is None

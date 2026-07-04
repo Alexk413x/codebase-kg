@@ -25,14 +25,16 @@ Run `git config core.hooksPath`:
   `.git/hooks/` is not committed, so other clones wouldn't get the gate).
 
 ### 3. Vendor the checker
-Copy `git-hooks/kg_pre_push.py` (from the plugin) into the hooks dir. It is **stdlib-only**, so it
-runs for every clone/CI with no plugin install.
+Copy `${CLAUDE_PLUGIN_ROOT}/git-hooks/kg_pre_push.py` into the hooks dir. It is **stdlib-only**, so
+it runs for every clone/CI with no plugin install.
 
 ### 4. Wire the `pre-push`
-- **No existing `pre-push`** → copy `git-hooks/pre-push` into the hooks dir; `chmod +x` it.
+- **No existing `pre-push`** → copy `${CLAUDE_PLUGIN_ROOT}/git-hooks/pre-push` into the hooks dir;
+  `chmod +x` it.
 - **Existing `pre-push`** (e.g. a repo that already runs tests/lint on push) → **do not overwrite
-  it.** Add these two lines near the top (after `set -e` if present), and if it already has its own
-  ad-hoc KG-freshness check, replace that block with this call:
+  it.** Add these two lines near the top (after `set -e` if present, and **before anything that
+  reads stdin** — git feeds the pushed refs on stdin and the checker consumes them), and if it
+  already has its own ad-hoc KG-freshness check, replace that block with this call:
   ```sh
   if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
   "$PY" "$(dirname "$0")/kg_pre_push.py" || exit 1

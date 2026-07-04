@@ -115,6 +115,10 @@ def is_source_file(path: Path, proj: Path, cfg: dict[str, object], kg: Path) -> 
         except ValueError:
             return False
     excl = {e.lower() for e in cfg.get("exclude_ext", [])}  # type: ignore[union-attr]
-    if path.suffix.lower() in excl:
+    # Match the pre-push gate's suffix logic so dotfiles work: Path(".gitignore")
+    # has no .suffix, but ".gitignore" itself is the extension to exclude.
+    name = path.name.lower()
+    suffix = ("." + name.rsplit(".", 1)[1]) if "." in name else ""
+    if suffix in excl:
         return False
     return True

@@ -26,11 +26,16 @@ KG path resolution order:
 
 1. First CLI arg (e.g. `codebase-kg /path/to/KNOWLEDGE_GRAPH.md`).
 2. `$CODEBASE_KG_PATH`.
-3. Walk up from the current working directory for `knowledge/KNOWLEDGE_GRAPH.md` (no repo-root fallback).
+3. Walk up from the current working directory, honoring an optional `kg_path` override in
+   `.claude/codebase-kg.local.md` (SCHEMA.md §7 — same file the hooks read), else
+   `knowledge/KNOWLEDGE_GRAPH.md` (no repo-root fallback).
 
 When run as a plugin MCP server (cwd = the user's project), step 3 finds the repo's KG with no
-config. Set `CODEBASE_KG_PATH` to point at a KG elsewhere. The peer KG named in the header
-`counterpart:` is loaded lazily for the parity/reciprocity checks.
+config. Set `CODEBASE_KG_PATH` to point at a KG elsewhere. The graph loads **lazily** and is
+**re-read whenever the file changes** on disk (mtime/size) — a KG created after session start
+(`/codebase-kg:build`) or edited mid-session is picked up on the next tool call, no restart. The
+peer KG named in the header `counterpart:` is loaded and refreshed the same way for the
+parity/reciprocity checks.
 
 ## Run
 

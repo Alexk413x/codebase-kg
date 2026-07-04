@@ -35,7 +35,8 @@ git config core.hooksPath .githooks
 ```
 
 **Repo that already has a pre-push hook** (don't overwrite it): copy `kg_pre_push.py` into the
-hooks dir and add this near the top of the existing `pre-push`:
+hooks dir and add this near the top of the existing `pre-push` — **before anything that reads
+stdin**, because git feeds the pushed refs on stdin and the checker consumes them:
 ```sh
 if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
 "$PY" "$(dirname "$0")/kg_pre_push.py" || exit 1
@@ -51,6 +52,21 @@ header for one clone; see `templates/codebase-kg.local.md.example`.)
   not a doc/config like `.md`/`.json`/`.toml`, not in `build/`, `node_modules/`, `.git/`, …), **and**
 - `KNOWLEDGE_GRAPH.md` is **not** in the same push range, **or** its header `refreshed:` (or legacy
   `last refreshed`) isn't today's date.
+
+## How the push range is computed
+
+The checker reads git's pre-push **stdin** (one `<local_ref> <local_sha> <remote_ref> <remote_sha>`
+line per pushed ref), so it gates **exactly what is being pushed** — whichever branch, not the one
+checked out:
+
+- Existing remote ref → `remote_sha...local_sha` (three-dot: remote-side commits don't count).
+- New branch → diffed from the merge-base with the remote default branch (`origin/HEAD` /
+  `origin/main` / `origin/master`); if no remote base exists at all, every commit not on any
+  remote-tracking ref.
+- Ref deletions (all-zeros local sha) push no commits and are skipped.
+
+Run **manually** (no stdin), it falls back to `@{u}...HEAD`, else `origin/main|master...HEAD` — and
+if no such base exists it **fails loudly** (exit 1 with a message) rather than silently passing.
 
 No source change → never blocks. The freshness check is intentionally cheap and dependency-free;
 deeper structural drift (dangling edges, ungreppable anchors, parity reciprocity) is the agent's

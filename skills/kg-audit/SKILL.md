@@ -1,7 +1,6 @@
 ---
 name: kg-audit
-description: This skill should be used when the user asks to "audit the knowledge graph", "check the KG against the source", "is the KG accurate", "find stale or inaccurate nodes", or wants a source-vs-KG verification sweep. It is the deep, SEMANTIC, multi-agent sweep: it partitions the KG, verifies each node's anchors and claims against current source, and reports STALE / MISSING / INACCURATE — advisory output, no edits. (For the fast, deterministic STRUCTURAL check, use kg-validate instead.)
-when_to_use: Use for a deep, read-only accuracy check of an existing KG against the codebase (the proven multi-agent verification sweep). For the cheap deterministic structural check use kg-validate; to actually fix what the audit finds use kg-refresh.
+description: This skill should be used when the user asks to "audit the knowledge graph", "check the KG against the source", "is the KG accurate", "find stale or inaccurate nodes", or wants a source-vs-KG verification sweep. It is the deep, SEMANTIC, multi-agent sweep: it partitions the KG, verifies each node's anchors and claims against current source, and reports STALE / MISSING / INACCURATE — advisory output, no edits. (For the fast, deterministic STRUCTURAL check, use kg-validate instead; to actually fix what the audit finds, use kg-refresh.)
 allowed-tools:
   - mcp__codebase-kg__kg_stats
   - mcp__codebase-kg__kg_node

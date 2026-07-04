@@ -1,7 +1,6 @@
 ---
 name: kg-link
-description: This skill should be used when the user asks to "link two knowledge graphs", "set up parity between iOS and Android", "find feature gaps between the apps", "add counterpart links", "map parity across codebases", or wants to track what matches/diverges between a codebase and its port. It reads BOTH codebases' KGs and source, then sets reciprocal counterpart + parity + divergence fields.
-when_to_use: Use to establish or maintain cross-codebase parity between two repos that each have a KG (e.g. an app and its platform port). Requires read access to both codebases. For single-codebase work use kg-build / kg-refresh.
+description: This skill should be used when the user asks to "link two knowledge graphs", "set up parity between iOS and Android", "find feature gaps between the apps", "add counterpart links", "map parity across codebases", or wants to track what matches/diverges between a codebase and its port (both repos must have a KG and be readable). It reads BOTH codebases' KGs and source, then sets reciprocal counterpart + parity + divergence fields. (For single-codebase work use kg-build / kg-refresh.)
 allowed-tools:
   - mcp__codebase-kg__kg_parity_gaps
   - mcp__codebase-kg__kg_validate

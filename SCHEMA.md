@@ -71,11 +71,15 @@ Immediately under the title. Carries config (the MCP and skills read it) and pro
 
 ```
 codebase:    <name>                 # e.g. "android", "ios", "web", "backend"
-root:        <path to the code root, repo-relative or absolute>
+root:        <path to the code root, repo-relative>
 counterpart: <path to a paired repo's KNOWLEDGE_GRAPH.md>   # optional; only for parity
 language:    <hint, optional>       # e.g. "kotlin", "swift", "typescript" — for symbol tooling only
 refreshed:   <YYYY-MM-DD>           # last comprehensive refresh (see §6)
 ```
+
+`root` must be **repo-relative** (e.g. `app/src/main`): the KG file is committed and shared,
+and the pre-push gate / advisory hook compare it against repo-relative paths — an absolute
+`root` is per-clone and won't match.
 
 Then one short paragraph: born date, last refresh action, and the one-line "what this doc is."
 Then the **update policy** (§6), copied verbatim, so every reader sees the anti-drift contract.

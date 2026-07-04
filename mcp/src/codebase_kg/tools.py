@@ -75,7 +75,7 @@ def _suggest(graph: Graph, id: str, limit: int = 5) -> list[str]:
     q = id.lower()
     scored = [(sum(t in nid.lower() for t in _tokens(q)) + (q in nid.lower()), nid) for nid in graph.ids]
     scored = [s for s in scored if s[0] > 0]
-    scored.sort(reverse=True)
+    scored.sort(key=lambda s: (-s[0], s[1]))  # best score first, id as tiebreak
     return [nid for _, nid in scored[:limit]]
 
 
@@ -238,7 +238,9 @@ def _resolve_source_base(graph: Graph, repo_root: str | None) -> Path | None:
     rels = [r for r in rels if r]
     if not rels:
         return None
-    root = graph.header.root.strip().strip("/")
+    # `root` is expected to be repo-relative (SCHEMA.md §3). Strip only trailing
+    # slashes — a leading '/' would be part of an absolute path, not noise.
+    root = graph.header.root.strip().rstrip("/")
     candidates: list[Path] = []
     if repo_root:
         rp = Path(repo_root)
@@ -254,18 +256,32 @@ def _resolve_source_base(graph: Graph, repo_root: str | None) -> Path | None:
     return best[1] if best else None
 
 
+def _symbol_in_source(symbol: str, src: str) -> bool:
+    """True when the anchor's symbol appears in the source. A `Type.method`
+    anchor (SCHEMA.md §4.1) rarely appears literally — check each dotted
+    segment on its own word boundary instead."""
+    return all(
+        re.search(r"\b" + re.escape(seg) + r"\b", src)
+        for seg in symbol.split(".")
+        if seg
+    )
+
+
 def kg_validate(
     graph: Graph, peer: Graph | None = None, repo_root: str | None = None
 ) -> dict[str, object]:
     """Deterministic drift checks. Advisory — never blocks anything.
 
-    Reports: dangling edges, counterpart problems (missing target / not
-    reciprocal), parity/counterpart field inconsistencies, and ungreppable
-    anchors (symbol no longer in the source file).
+    Reports: duplicate node ids, dangling edges, counterpart problems (missing
+    target / not reciprocal), parity/counterpart field inconsistencies, and
+    ungreppable anchors (symbol no longer in the source file).
     """
     dangling_edges: list[dict[str, str]] = []
     field_issues: list[dict[str, str]] = []
     counterpart_issues: list[dict[str, str]] = []
+    # SCHEMA.md §4: ids must be unique — the loader keeps the last node per id
+    # but records the collisions.
+    duplicate_ids: list[str] = list(getattr(graph, "duplicate_ids", []))
 
     ids = graph.ids
     for n in graph.nodes:
@@ -298,6 +314,7 @@ def kg_validate(
     checked = 0
     base = _resolve_source_base(graph, repo_root)
     if base is not None:
+        src_cache: dict[str, str | None] = {}  # many anchors share a file — read once
         for n in graph.nodes:
             for a in n.anchors:
                 rel, _, symbol = a.partition("#")
@@ -309,22 +326,29 @@ def kg_validate(
                     anchor_issues.append({"node": n.id, "anchor": a, "issue": "file not found"})
                     continue
                 if symbol:
-                    try:
-                        src = fp.read_text(encoding="utf-8", errors="ignore")
-                    except OSError:
+                    if rel not in src_cache:
+                        try:
+                            src_cache[rel] = fp.read_text(encoding="utf-8", errors="ignore")
+                        except OSError:
+                            src_cache[rel] = None
+                    src = src_cache[rel]
+                    if src is None:
                         continue
-                    if not re.search(r"\b" + re.escape(symbol) + r"\b", src):
+                    if not _symbol_in_source(symbol, src):
                         anchor_issues.append(
                             {"node": n.id, "anchor": a, "issue": "symbol not found in file"}
                         )
 
-    ok = not (dangling_edges or field_issues or counterpart_issues or anchor_issues)
+    ok = not (
+        duplicate_ids or dangling_edges or field_issues or counterpart_issues or anchor_issues
+    )
     return {
         "ok": ok,
         "advisory": True,
         "source_checked": base is not None,
         "source_base": str(base) if base else None,
         "anchors_checked": checked,
+        "duplicate_ids": duplicate_ids,
         "dangling_edges": dangling_edges,
         "counterpart_issues": counterpart_issues,
         "field_issues": field_issues,

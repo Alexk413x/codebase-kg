@@ -11,7 +11,7 @@
 # Short name for this codebase. Used in `<codebase>-only` parity flags. (Default: from KG header.)
 codebase: android
 
-# The code root this KG describes (repo-relative or absolute).
+# The code root this KG describes (repo-relative — see SCHEMA.md §3).
 root: app/src/main/java/com/example/app/
 
 # Where the KG file lives in this repo. Default (the convention): knowledge/KNOWLEDGE_GRAPH.md.

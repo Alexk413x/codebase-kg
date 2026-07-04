@@ -1,16 +1,21 @@
 """FastMCP server entry point for codebase-kg.
 
-Seven read-only tools over one repo's KNOWLEDGE_GRAPH.md (parsed once at start).
-The peer KG named in the header `counterpart:` is loaded lazily for the
-cross-codebase parity checks.
+Seven read-only tools over one repo's KNOWLEDGE_GRAPH.md. The graph loads
+lazily on the first tool call and is re-read whenever the file changes on disk
+(mtime/size), so tools always see the current KG — including one created after
+the server started. The peer KG named in the header `counterpart:` is loaded
+the same way for the cross-codebase parity checks.
 
-KG path resolution order: CLI arg → $CODEBASE_KG_PATH → walk up from CWD for a
-knowledge/KNOWLEDGE_GRAPH.md (no repo-root fallback).
+KG path resolution order: CLI arg → $CODEBASE_KG_PATH → walk up from CWD
+honoring an optional `kg_path` in `.claude/codebase-kg.local.md`, else
+knowledge/KNOWLEDGE_GRAPH.md (no repo-root fallback). While unresolved, the
+path is re-resolved on every tool call so a freshly built KG is picked up.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -24,9 +29,39 @@ from .models import Graph
 mcp: FastMCP[Any] = FastMCP("codebase-kg")
 
 _graph: Graph | None = None
+_graph_sig: tuple[float, int] | None = None  # (mtime, size) of the loaded KG file
 _peer: Graph | None = None
-_peer_loaded = False
+_peer_sig: tuple[float, int] | None = None
 _graph_path: Path | None = None
+
+
+def _local_kg_path(base: Path) -> Path | None:
+    """Honor an optional per-clone `kg_path` override in
+    `.claude/codebase-kg.local.md` (SCHEMA.md §7) — same frontmatter format the
+    hooks and the pre-push gate read."""
+    local = base / ".claude" / "codebase-kg.local.md"
+    try:
+        if not local.is_file():
+            return None
+        lines = local.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    if not lines or lines[0].strip() != "---":
+        return None
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if ":" not in line or line.lstrip().startswith("#"):
+            continue
+        key, _, val = line.partition(":")
+        if key.strip().lower() != "kg_path":
+            continue
+        val = re.sub(r"\s+#.*$", "", val).strip().strip("'\"")
+        if not val or val.startswith("<"):
+            return None
+        p = Path(val)
+        return p if p.is_absolute() else base / p
+    return None
 
 
 def _resolve_graph_path() -> Path | None:
@@ -37,6 +72,10 @@ def _resolve_graph_path() -> Path | None:
         return Path(env).resolve()
     cwd = Path.cwd()
     for base in (cwd, *cwd.parents):
+        # An optional per-clone .claude/codebase-kg.local.md may override kg_path.
+        override = _local_kg_path(base)
+        if override is not None and override.is_file():
+            return override.resolve()
         # The KG lives in knowledge/ by convention — no repo-root fallback.
         cand = base / "knowledge" / "KNOWLEDGE_GRAPH.md"
         if cand.is_file():
@@ -44,30 +83,53 @@ def _resolve_graph_path() -> Path | None:
     return None
 
 
+def _file_sig(p: Path) -> tuple[float, int] | None:
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return (st.st_mtime, st.st_size)
+
+
 def _get_graph() -> Graph:
-    global _graph
-    if _graph is None:
-        if _graph_path is None or not _graph_path.is_file():
-            raise FileNotFoundError(
-                "No KNOWLEDGE_GRAPH.md found. Pass its path as the first CLI arg "
-                "or set $CODEBASE_KG_PATH."
-            )
+    global _graph, _graph_sig, _graph_path, _peer, _peer_sig
+    if _graph_path is None or not _graph_path.is_file():
+        # Re-resolve while unresolved (or if the file went away) — the KG may
+        # have been created after the server started (e.g. /codebase-kg:build).
+        _graph_path = _resolve_graph_path()
+    if _graph_path is None or not _graph_path.is_file():
+        raise FileNotFoundError(
+            "No KNOWLEDGE_GRAPH.md found. Pass its path as the first CLI arg "
+            "or set $CODEBASE_KG_PATH."
+        )
+    sig = _file_sig(_graph_path)
+    if _graph is None or sig != _graph_sig:
         _graph = load_graph(_graph_path)
+        _graph_sig = sig
+        # The header may now name a different counterpart — drop the peer
+        # cache so it re-resolves on next use.
+        _peer = None
+        _peer_sig = None
     return _graph
 
 
 def _get_peer() -> Graph | None:
-    """Lazy-load the counterpart KG named in the header, if any."""
-    global _peer, _peer_loaded
-    if _peer_loaded:
-        return _peer
-    _peer_loaded = True
-    g = _get_graph()
+    """Load the counterpart KG named in the header, if any. Cached, but
+    re-read whenever the peer file changes on disk."""
+    global _peer, _peer_sig
+    g = _get_graph()  # reloading the main KG drops the peer cache too
     cp = g.header.counterpart
-    if cp and g.path:
-        peer_path = (Path(g.path).parent / cp).resolve()
-        if peer_path.is_file():
-            _peer = load_graph(peer_path)
+    if not cp or not g.path:
+        return None
+    peer_path = (Path(g.path).parent / cp).resolve()
+    sig = _file_sig(peer_path)
+    if sig is None:
+        _peer = None
+        _peer_sig = None
+        return None
+    if _peer is None or sig != _peer_sig:
+        _peer = load_graph(peer_path)
+        _peer_sig = sig
     return _peer
 
 
@@ -125,10 +187,10 @@ def kg_stats() -> dict[str, Any]:
 
 @mcp.tool()
 def kg_validate() -> dict[str, Any]:
-    """Advisory drift check (never blocks). Reports dangling edges, counterpart
-    problems (missing target / not reciprocal with the peer KG), parity field
-    inconsistencies, and ungreppable anchors (a `path#Symbol` whose symbol no
-    longer appears in source — the strongest staleness signal)."""
+    """Advisory drift check (never blocks). Reports duplicate node ids, dangling
+    edges, counterpart problems (missing target / not reciprocal with the peer
+    KG), parity field inconsistencies, and ungreppable anchors (a `path#Symbol`
+    whose symbol no longer appears in source — the strongest staleness signal)."""
     return _tools.kg_validate(_get_graph(), _get_peer())
 
 
@@ -138,7 +200,8 @@ def main() -> None:
     # The graph loads lazily on the first tool call — so the server still starts
     # cleanly in a repo that has no KNOWLEDGE_GRAPH.md yet (e.g. before the user
     # runs /codebase-kg:build). A missing KG surfaces as a clear error on first
-    # use, not as a server that refuses to start.
+    # use, not as a server that refuses to start — and once the file exists (or
+    # changes), the next tool call picks it up automatically.
     mcp.run()
 
 

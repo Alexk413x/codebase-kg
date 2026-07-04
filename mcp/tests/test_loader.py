@@ -138,3 +138,112 @@ def test_legacy_field_aliases() -> None:
     assert a.anchors == ["domain/Article.kt", "domain/Source.kt"]  # files -> anchors
     assert a.summary == "The core article model."  # details -> summary
     assert a.edges == ["category"]  # deps -> edges
+
+
+COMMENTED_KG = """# C — Knowledge Graph
+
+```
+codebase: c
+root: src
+refreshed: 2026-01-01
+```
+
+## NODES
+
+### N
+
+| id | feed_ranker   # the node |
+| kind | Domain (pure)   # role |
+| anchors | `domain/FeedRanker.kt#FeedRanker`   # main anchor |
+| summary | Ranks the feed — see #ranking notes. |
+| edges | saved_article   # dep |
+| updated | 2026-06-01   # date this node was last verified vs source |
+| parity | matched    # optional — multi-codebase only |
+| counterpart | ../ios/KNOWLEDGE_GRAPH.md#personalized_ranking  # optional |
+"""
+
+
+def test_inline_comments_stripped_from_non_prose_fields() -> None:
+    # Regression: template-style `  # comment` tails on node rows must not leak
+    # into values; '#' glued to a path (anchor/counterpart) must survive.
+    g = parse_graph(COMMENTED_KG, path="x")
+    n = g.by_id("feed_ranker")
+    assert n is not None
+    assert n.kind == "Domain (pure)"
+    assert n.anchors == ["domain/FeedRanker.kt#FeedRanker"]
+    assert n.edges == ["saved_article"]
+    assert n.updated == "2026-06-01"
+    assert n.parity == "matched"
+    assert n.counterpart == "../ios/KNOWLEDGE_GRAPH.md#personalized_ranking"
+    # summary is free prose — a literal " #…" there is content, not a comment
+    assert n.summary == "Ranks the feed — see #ranking notes."
+
+
+SEPARATOR_KG = """# S — Knowledge Graph
+
+```
+codebase: s
+root: src
+refreshed: 2026-01-01
+```
+
+## NODES
+
+### N
+
+| id | article |
+| :-- | ---: |
+| kind | Model |
+| --- | --- |
+| anchors | `domain/Article.kt#Article` |
+| summary | Core model. |
+| edges | category |
+
+| id | category |
+| kind | Enum |
+| anchors | `domain/Category.kt#Category` |
+| summary | Content categories. |
+"""
+
+
+def test_table_separator_row_does_not_truncate_node() -> None:
+    # Regression: a formatter-inserted `| --- | --- |` row must not flush the
+    # node and truncate it to id-only.
+    g = parse_graph(SEPARATOR_KG, path="x")
+    n = g.by_id("article")
+    assert n is not None
+    assert n.kind == "Model"
+    assert n.anchors == ["domain/Article.kt#Article"]
+    assert n.edges == ["category"]
+
+
+DUP_KG = """# D — Knowledge Graph
+
+```
+codebase: d
+root: src
+refreshed: 2026-01-01
+```
+
+## NODES
+
+### N
+
+| id | article |
+| kind | Model |
+| summary | First. |
+
+| id | article |
+| kind | Enum |
+| summary | Second — same id. |
+"""
+
+
+def test_duplicate_ids_recorded() -> None:
+    # SCHEMA.md §4: ids must be unique. The index keeps the last node, but the
+    # collision is recorded for kg_validate to report.
+    g = parse_graph(DUP_KG, path="x")
+    assert len(g.nodes) == 2
+    assert g.duplicate_ids == ["article"]
+    n = g.by_id("article")
+    assert n is not None and n.kind == "Enum"  # last wins the index

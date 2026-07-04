@@ -34,6 +34,14 @@ kg_path: knowledge/KNOWLEDGE_GRAPH.md   # this is the default; set only to overr
 
 ## Notes
 
+- **Interpreter portability.** `hooks.json` invokes
+  `python3 <script> || python <script>`. Stock macOS/most Linux have only
+  `python3`; stock Windows installs usually have only `python` — and both `||`
+  forms work in POSIX `sh` *and* `cmd.exe` (a `command -v` probe would not).
+  The usual objection to `a || b` chains — the script failing under `python3`
+  and running twice — cannot apply here: `kg_post_edit_check.py` is fail-safe
+  by contract (it swallows every error and always exits 0), so the fallback
+  only fires when the `python3` interpreter itself is missing.
 - Hooks load at session start — restart Claude Code after changing `hooks.json`.
 - Test a hook directly: pipe a JSON event to `python hooks/kg_post_edit_check.py` (see the plugin's
   build history for example events). Malformed input → no output, exit 0 (by design).

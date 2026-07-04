@@ -1,7 +1,6 @@
 ---
 name: kg-build
-description: This skill should be used when the user asks to "build a knowledge graph", "bootstrap a KG", "create a KNOWLEDGE_GRAPH.md", "map this codebase", "generate the code graph", or onboard a repo that has no KG yet. It reads the source tree and emits a source-derived, symbol-anchored KNOWLEDGE_GRAPH.md per the codebase-kg schema.
-when_to_use: Use to create a KG from scratch for a repo that does not have one (or whose KG is too narrow to keep). For updating an existing KG against changed source, use kg-refresh instead.
+description: This skill should be used when the user asks to "build a knowledge graph", "bootstrap a KG", "create a KNOWLEDGE_GRAPH.md", "map this codebase", "generate the code graph", or onboard a repo that has no KG yet (or whose KG is too narrow to keep). It reads the source tree and emits a source-derived, symbol-anchored KNOWLEDGE_GRAPH.md per the codebase-kg schema. (For updating an existing KG against changed source, use kg-refresh instead.)
 allowed-tools:
   - mcp__codebase-kg__kg_validate
   - mcp__codebase-kg__kg_stats

@@ -32,7 +32,7 @@ Open calls decided for this build:
 
 | Question | Decision | Note |
 |---|---|---|
-| **Plugin name** | `codebase-kg` | Matches the repo. Commands `/codebase-kg:kg-*`; MCP server `codebase-kg`. |
+| **Plugin name** | `codebase-kg` | Matches the repo. Commands `/codebase-kg:build\|refresh\|audit\|link\|validate\|install-hooks`; MCP server `codebase-kg`. |
 | **Repo layout** | Standalone plugin at root | `plugin.json` at root + a thin `marketplace.json` so it installs. Not a multi-plugin marketplace. |
 | **KG location** | Per-repo `knowledge/KNOWLEDGE_GRAPH.md` | Always `knowledge/` (no repo-root fallback); override the location per clone via `kg_path` in `.local.md`. |
 | **Storage format** | Markdown-as-source | Diffable, greppable, human-readable; the MCP parses it. JSON/YAML machine-first rejected as heavier (revisit only if parsing is too slow at scale). |

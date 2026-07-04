@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from codebase_kg import tools
 from codebase_kg.loader import parse_graph
 from codebase_kg.models import Graph
+
+FIX = Path(__file__).resolve().parent / "fixtures"
 
 
 def _ids(results: list[dict[str, object]]) -> set[str]:
@@ -135,3 +139,65 @@ def test_validate_field_issue_divergent_missing_divergence() -> None:
     out = tools.kg_validate(g)
     issues = [i["issue"] for i in out["field_issues"]]  # type: ignore[union-attr]
     assert any("divergence" in m for m in issues)
+
+
+DOTTED_ANCHOR_KG = """# A — Knowledge Graph
+
+```
+codebase: android
+root: src
+refreshed: 2026-01-01
+```
+
+## NODES
+
+### N
+
+| id | feed_ranker |
+| kind | Domain |
+| anchors | `domain/FeedRanker.kt#FeedRanker.rank`, `domain/FeedRanker.kt#FeedRanker.missingMethod` |
+| summary | Ranks. |
+| edges | |
+"""
+
+
+def test_validate_dotted_type_method_anchor() -> None:
+    # SCHEMA.md §4.1 endorses `File.ext#Type.method` anchors — "FeedRanker.rank"
+    # never appears literally, but both segments do, so it must validate; a
+    # dotted anchor whose method is gone must still be flagged.
+    g = parse_graph(DOTTED_ANCHOR_KG, path=str(FIX / "android" / "KNOWLEDGE_GRAPH.md"))
+    out = tools.kg_validate(g)
+    assert out["source_checked"] is True
+    issues = out["anchor_issues"]
+    assert [i["anchor"] for i in issues] == [  # type: ignore[union-attr]
+        "domain/FeedRanker.kt#FeedRanker.missingMethod"
+    ]
+
+
+DUP_ID_KG = """# D — Knowledge Graph
+
+```
+codebase: d
+root: src
+refreshed: 2026-01-01
+```
+
+## NODES
+
+### N
+
+| id | article |
+| kind | Model |
+| summary | First. |
+
+| id | article |
+| kind | Enum |
+| summary | Second — same id. |
+"""
+
+
+def test_validate_reports_duplicate_ids() -> None:
+    g = parse_graph(DUP_ID_KG, path="")
+    out = tools.kg_validate(g)
+    assert out["duplicate_ids"] == ["article"]
+    assert out["ok"] is False

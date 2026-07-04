@@ -2,7 +2,7 @@
 
 ```
 codebase:    <name>                 # e.g. android | ios | web | backend
-root:        <path to the code root, repo-relative or absolute>
+root:        <path to the code root, repo-relative>
 counterpart: <../other-repo/KNOWLEDGE_GRAPH.md>   # optional — only for a paired codebase
 language:    <hint, optional>       # e.g. kotlin | swift | typescript (for symbol tooling)
 refreshed:   <YYYY-MM-DD>
@@ -23,15 +23,20 @@ Born <date>. <One line: what this doc is and how to use it as a search index.>
 
 ### <SECTION — e.g. APP ENTRY>
 
+<!-- updated = date this node was last verified vs source. parity / counterpart /
+     divergence are optional, multi-codebase only: omit counterpart when parity is
+     <codebase>-only; give divergence only when parity = divergent. Do NOT put
+     inline `# comments` inside table rows — they become part of the value. -->
+
 | id          | <stable-slug> |
 | kind        | <free-text role: Composable / ViewModel / Service / module / actor / @Model / …> |
 | anchors     | `<path#Symbol>`, `<path#OtherSymbol>` |
 | summary     | <what it is/does — this codebase only; pointer-dense; no copied code> |
 | edges       | <other-node-id>, <other-node-id> |
-| updated     | <YYYY-MM-DD>                                # date this node was last verified vs source |
-| parity      | <matched | divergent | <codebase>-only>     # optional — multi-codebase only |
-| counterpart | <../other-repo/KNOWLEDGE_GRAPH.md#node-id>  # optional — omit if <codebase>-only |
-| divergence  | <one short line>                            # optional — only when parity = divergent |
+| updated     | <YYYY-MM-DD> |
+| parity      | <matched | divergent | <codebase>-only> |
+| counterpart | <../other-repo/KNOWLEDGE_GRAPH.md#node-id> |
+| divergence  | <one short line> |
 
 <!-- repeat the node block per component; add ### sections that fit this codebase -->
 
