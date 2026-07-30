@@ -2,6 +2,12 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.1.1] — 2026-07-29
+
+### Fixed
+
+- **`kg-audit` skill frontmatter now parses.** Its `description` was an unquoted YAML scalar containing `: ` (`…the deep, SEMANTIC, multi-agent sweep: it partitions the KG…`), which YAML reads as a key/value separator. The frontmatter failed to parse, and Claude Code drops **all** frontmatter fields when that happens — so the skill loaded with no `name`, `description`, or `allowed-tools`, meaning it could not trigger reliably and its tool allowlist was silently lost. Converted to a `>-` block scalar; text unchanged.
+
 ## [Unreleased]
 
 ### Fixed — 2026-07-03 — code-review findings: live-reloading server, push-accurate gate, loader hardening
