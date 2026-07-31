@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 
 # Bumped whenever the DDL below changes in a way a reader must know about.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # 'CKG1' as a big-endian int32, stamped into the SQLite header so `file(1)` and
 # our own tooling can identify the artifact without opening it.
@@ -126,6 +126,29 @@ CREATE TABLE anchor (
     CHECK (instr(path, char(92)) = 0),
     -- SCHEMA.md §4.1: symbol anchors, never line numbers.
     CHECK (symbol IS NULL OR symbol NOT GLOB '[0-9]*')
+) WITHOUT ROWID;
+
+-- What the anchored source looked like when the graph was built.
+--
+-- This is what turns "the symbol still exists" into "the code behind this
+-- description has not changed": a rename-preserving refactor that guts a class
+-- passes the symbol check cleanly but changes this digest. `kg_validate`
+-- reports a mismatch as `changed_since_built` — a prompt to re-read, not a
+-- claim that anything is broken.
+--
+-- Keyed by path rather than carried on `anchor`, because the digest is a fact
+-- about the *file*: on the RPN calculator 142 anchors span 91 files, so storing
+-- it per anchor would repeat 64 bytes 51 times for nothing. Not authored by
+-- hand either — `build.py` computes it from source, since a typed hash would be
+-- worse than no hash at all.
+CREATE TABLE source (
+    path TEXT PRIMARY KEY,
+    sha  TEXT NOT NULL,
+    CHECK (path <> ''),
+    CHECK (instr(path, char(92)) = 0),
+    -- A full lowercase SHA-256; a truncated or upper-case digest would compare
+    -- unequal forever and read as permanent staleness.
+    CHECK (length(sha) = 64 AND sha NOT GLOB '*[^0-9a-f]*')
 ) WITHOUT ROWID;
 
 CREATE INDEX anchor_path ON anchor(path);

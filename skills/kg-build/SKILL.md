@@ -101,11 +101,17 @@ Write the JSON, then run the builder. Iterate on any node it names until it writ
 
 ### 5. Validate
 Run `kg_validate` (or the `kg-validate` skill) and fix what it finds — chiefly ungreppable anchors
-and uncovered source. Run `kg_stats` and report the shape (node/edge counts, kinds) to the user.
+and `coverage.gaps`. Run `kg_stats` and report the shape (node/edge counts, kinds) to the user.
+
+If `coverage.declared` is `false`, go back to step 2 and write `covers`. A graph that has not
+declared its scope cannot report a file type it never covered, so a clean result at this point is
+not evidence of anything.
 
 ### 6. Commit
-Add `knowledge/code_graph.db binary` to the repo's `.gitattributes`, then commit the graph. It is a
-committed artifact — that is the point of it.
+Add `knowledge/code_graph.db binary diff=codegraph` to the repo's `.gitattributes`, then commit the
+graph. It is a committed artifact — that is the point of it. The `diff=codegraph` half makes the
+file reviewable once a clone runs `/codebase-kg:setup-diff`; committing the attribute means every
+clone gets the wiring even though the driver itself is local config.
 
 ### 7. Parity (only if paired)
 If a `counterpart` repo exists, leave parity fields out of this pass and hand off to `kg-link`,

@@ -92,6 +92,77 @@ def test_a_comment_tail_does_not_silently_disable_the_hook() -> None:
     assert "#" not in str(root)
 
 
+# --- the copied glob matcher -------------------------------------------------
+# `kg_pre_push` carries a verbatim copy of coverage.py's pattern helpers, for
+# the same reason as everything above: it runs in repos with no plugin install.
+# Drift here would mean the push hook and `kg_validate` disagree about which
+# files are in scope — silently, and in the direction of saying nothing.
+GLOB_CASES = [
+    ("app/src/**/*.kt", "app/src/Main.kt", True),
+    ("app/src/**/*.kt", "app/src/a/b/Main.kt", True),
+    ("app/src/**/*.kt", "app/other/Main.kt", False),
+    ("app/*.kt", "app/a/b/Main.kt", False),          # * must not cross a '/'
+    ("**/*.gradle.kts", "build.gradle.kts", True),
+    ("**/*.gradle.kts", "app/build.gradle.kts", True),
+    ("res/", "res/values/strings.xml", True),        # trailing / means "beneath"
+    ("res/", "resources/x.xml", False),
+    ("?.kt", "A.kt", True),
+    ("?.kt", "AB.kt", False),
+    ("a+b/*.kt", "a+b/X.kt", True),                  # regex metachars stay literal
+]
+
+
+@pytest.mark.parametrize("pattern, path, expected", GLOB_CASES)
+def test_both_glob_matchers_agree(pattern: str, path: str, expected: bool) -> None:
+    from codebase_kg import coverage
+
+    pkg = coverage.matches_any(path, coverage.compile_patterns([pattern]))
+    hook = kg_pre_push.matches_any(path, kg_pre_push.compile_patterns([pattern]))
+    assert pkg == hook == expected
+
+
+def test_copied_helpers_are_textually_identical() -> None:
+    """Behavioural cases cover what someone thought to test; this covers the rest.
+
+    Comparing the source text catches drift in a branch no case exercises, which
+    is precisely how `IGNORE_DIRS` drifted before anyone noticed.
+    """
+    import inspect
+
+    from codebase_kg import coverage
+
+    for name in ("glob_to_regex", "compile_patterns", "matches_any", "parse_patterns"):
+        pkg_src = inspect.getsource(getattr(coverage, name))
+        hook_src = inspect.getsource(getattr(kg_pre_push, name))
+        assert _body(pkg_src) == _body(hook_src), f"{name} has drifted"
+
+
+def _body(src: str) -> str:
+    """The function's executable logic, normalized.
+
+    Parsed and re-emitted rather than diffed as text: the two copies legitimately
+    differ in docstring wording, comments, and type annotations (the package
+    version is annotated, the vendored one cannot rely on
+    `from __future__ import annotations` in an arbitrary repo's Python). None of
+    that is drift. Round-tripping through the AST — minus the docstring and the
+    signature — leaves exactly the statements, which is the thing that must match.
+    """
+    import ast
+    import textwrap
+
+    fn = ast.parse(textwrap.dedent(src)).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    body = fn.body
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]  # drop the docstring
+    return "\n".join(ast.unparse(stmt) for stmt in body)
+
+
 def test_both_parsers_ignore_a_file_without_frontmatter() -> None:
     body = "graph_path: custom.db\n"
     assert _config._parse_frontmatter(body) == {}

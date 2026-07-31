@@ -56,7 +56,16 @@ half-filled parity triple is a failed write rather than a validation finding. A 
 means a regeneration lands whole or not at all — there is no truncated-file state. This moved most
 of `kg_validate`'s old job from "report afterwards" to "cannot happen", and what remains in the
 report is only what a file genuinely cannot know about itself: whether its anchors still point at
-real code.
+real code, whether anything in scope went unmapped, and whether the source moved after the
+description was written.
+
+That last pair arrived in v3, after a gap this section had glossed over. Reporting "which files does
+no node cover?" by *inferring* the source extensions from what was already anchored is silent for a
+category with zero coverage — the graph could describe none of a repo's build configuration and
+nothing would say so. Scope is now declared (`meta.covers`), so every file lands in a named bucket
+and there is no invisible state. And a resolving anchor was never evidence that a *description* was
+still true, so the `source` table records what the code looked like at build time; a refactor that
+keeps a name and replaces the body now shows up.
 
 **Load cost that stops growing.** Parsing Markdown was O(nodes) and paid on every cold load —
 ~12 ms at 175 nodes, ~820 ms at 10,500. Opening the store is ~1 ms at any size. That is a change of

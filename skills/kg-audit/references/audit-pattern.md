@@ -51,9 +51,11 @@ Run all group agents concurrently (one message, multiple `Task` calls).
 ## Consolidation
 
 - Merge the group findings; dedup MISSING candidates against the full node set (an agent only saw
-  its group, so it may flag a unit another group documents). `kg_validate`'s `uncovered_sources` is
+  its group, so it may flag a unit another group documents). `kg_validate`'s `coverage.gaps` is
   the exact version of this list — prefer it, and use the agents' MISSING for judgement about which
-  uncovered files actually deserve a node.
+  uncovered files actually deserve a node. When `coverage.declared` is `false`, that list is only as
+  wide as the extensions already anchored, so the agents' MISSING is the *only* signal for a file
+  type the graph has never touched.
 - Fold in `kg_validate`'s other findings (ungreppable anchors, non-reciprocal counterparts).
 - Sort STALE → INACCURATE → MISSING → structural. Report; recommend `kg-refresh`.
 

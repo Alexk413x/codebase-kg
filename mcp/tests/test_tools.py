@@ -233,19 +233,80 @@ def test_validate_without_a_peer_skips_reciprocity(android_graph: CodeGraph) -> 
     assert all("reciprocal" not in i["issue"] for i in v["counterpart_issues"])
 
 
-# --- uncovered_sources -------------------------------------------------------
-def test_uncovered_sources_uses_the_graphs_own_extensions(
+# --- coverage ----------------------------------------------------------------
+def test_undeclared_coverage_falls_back_to_anchored_extensions_and_says_so(
     android_graph: CodeGraph, built_fixtures: Path
 ) -> None:
-    missing = tools.uncovered_sources(android_graph, built_fixtures / "android" / "src")
-    # Only .kt is considered, because that is what this graph anchors on —
-    # nothing about Kotlin is hardcoded anywhere.
-    assert all(m.endswith(".kt") for m in missing)
+    cov = tools.coverage_report(android_graph, built_fixtures / "android" / "src")
+    # No `covers` in this fixture, so the old inferred rule still applies...
+    assert all(m.endswith(".kt") for m in cov.gaps)
+    # ...but the report must admit that it cannot see a file type with no
+    # coverage at all, rather than presenting an incomplete answer as complete.
+    assert cov.declared is False
+    assert "invisible" in str(cov.to_dict()["warning"])
 
 
-def test_uncovered_sources_is_empty_without_anchors(
-    tmp_path: Path, sample_meta: object
-) -> None:
+def test_declared_coverage_reports_a_file_type_with_zero_coverage(tmp_path: Path) -> None:
+    """The regression this whole mechanism exists for.
+
+    Under the inferred rule a category nothing anchors contributes no extension,
+    so it is never examined and never reported. On the real RPN graph that hid
+    34 XML files, 3 Gradle scripts and a version catalog behind a green check.
+    """
+    from codebase_kg.models import Anchor, Meta, Node
+    from codebase_kg.writer import build
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "Main.kt").write_text("class Main", encoding="utf-8")
+    (tmp_path / "build.gradle.kts").write_text("plugins {}", encoding="utf-8")
+    (tmp_path / "icon.png").write_bytes(b"\x89PNG")
+
+    db = tmp_path / "g.db"
+    meta = Meta(
+        codebase="x",
+        root="",
+        generated="2026-07-30",
+        covers=["src/**/*.kt", "**/*.gradle.kts"],
+    )
+    build(db, meta, [Node(id="main", kind="K", anchors=[Anchor("src/Main.kt", "Main")])])
+    g = CodeGraph(db)
+    try:
+        cov = tools.coverage_report(g, tmp_path)
+        assert cov.declared is True
+        assert cov.covered == 1
+        assert cov.gaps == ["build.gradle.kts"]  # invisible before this change
+        assert cov.out_of_scope == 2  # icon.png and the graph itself
+    finally:
+        g.close()
+
+
+def test_exempt_subtracts_from_covers(tmp_path: Path) -> None:
+    from codebase_kg.models import Anchor, Meta, Node
+    from codebase_kg.writer import build
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "Main.kt").write_text("class Main", encoding="utf-8")
+    (tmp_path / "src" / "GeneratedThing.kt").write_text("class G", encoding="utf-8")
+
+    db = tmp_path / "g.db"
+    meta = Meta(
+        codebase="x",
+        root="",
+        generated="2026-07-30",
+        covers=["src/**/*.kt"],
+        exempt=["**/Generated*.kt"],
+    )
+    build(db, meta, [Node(id="main", kind="K", anchors=[Anchor("src/Main.kt", "Main")])])
+    g = CodeGraph(db)
+    try:
+        cov = tools.coverage_report(g, tmp_path)
+        assert cov.gaps == []
+        assert cov.exempt == 1
+    finally:
+        g.close()
+
+
+def test_coverage_is_empty_without_anchors_or_declaration(tmp_path: Path) -> None:
     from codebase_kg.models import Meta, Node
     from codebase_kg.writer import build
 
@@ -253,6 +314,6 @@ def test_uncovered_sources_is_empty_without_anchors(
     build(db, Meta(codebase="x", root="", generated="2026-07-30"), [Node(id="a", kind="K")])
     g = CodeGraph(db)
     try:
-        assert tools.uncovered_sources(g, tmp_path) == []
+        assert tools.coverage_report(g, tmp_path).gaps == []
     finally:
         g.close()

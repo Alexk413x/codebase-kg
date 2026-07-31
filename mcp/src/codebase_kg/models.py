@@ -26,6 +26,9 @@ class Anchor:
     `anchor.path` directly. The alternative is each of the nine read sites
     re-normalizing, two of which are vendored files that cannot share a helper.
     A CHECK constraint backs this up so a hand-written row cannot break it.
+
+    The digest of the anchored file lives in the `source` table, keyed by path —
+    it is a fact about the file rather than about any one anchor into it.
     """
 
     path: str
@@ -99,6 +102,11 @@ class Meta:
     counterpart: str | None = None  # peer code_graph.db path, for parity
     language: str | None = None
     generated: str = ""  # YYYY-MM-DD
+    # Which files the graph is expected to cover, and which are excused. Both
+    # are glob patterns relative to `root` (see coverage.py). Declaring them is
+    # what makes a coverage gap reportable instead of invisible.
+    covers: list[str] = field(default_factory=list)
+    exempt: list[str] = field(default_factory=list)
     extra: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
@@ -111,4 +119,8 @@ class Meta:
             d["counterpart"] = self.counterpart
         if self.language is not None:
             d["language"] = self.language
+        if self.covers:
+            d["covers"] = list(self.covers)
+        if self.exempt:
+            d["exempt"] = list(self.exempt)
         return d

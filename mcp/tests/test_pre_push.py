@@ -239,14 +239,14 @@ def test_push_range_none_when_no_base_exists(monkeypatch: pytest.MonkeyPatch) ->
 
 
 # --- graph reading -----------------------------------------------------------
-def test_read_graph_returns_root_and_anchored_paths(tmp_path: Path) -> None:
+def test_read_graph_returns_root_anchors_and_the_coverage_declaration(tmp_path: Path) -> None:
     db = tmp_path / "code_graph.db"
     build(
         db,
         Meta(codebase="x", root="src", generated="2026-07-30"),
         [Node(id="a", kind="K", anchors=[Anchor("ui/Known.kt", "Known")])],
     )
-    assert g.read_graph(db) == ("src", {"ui/Known.kt"})
+    assert g.read_graph(db) == ("src", {"ui/Known.kt"}, [], [])
 
 
 def test_read_graph_of_a_non_database_is_none(tmp_path: Path) -> None:

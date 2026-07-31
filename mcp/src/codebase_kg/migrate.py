@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import clean, markdown, writer
+from .coverage import resolve_source_base
 from .models import Anchor, Meta, Node
 
 LEGACY_NAME = "KNOWLEDGE_GRAPH.md"
@@ -38,6 +39,8 @@ class MigrationReport:
     nodes: int = 0
     edges: int = 0
     anchors: int = 0
+    hashed: int = 0
+    source_base: str | None = None
     descriptions_scrubbed: int = 0
     chars_removed: int = 0
     dropped_edges: list[dict[str, str]] = field(default_factory=list)
@@ -139,7 +142,13 @@ def _normalize_anchors(node: Node, report: MigrationReport) -> None:
     node.anchors = kept
 
 
-def convert(source: Path, target: Path, *, generated: str | None = None) -> MigrationReport:
+def convert(
+    source: Path,
+    target: Path,
+    *,
+    generated: str | None = None,
+    source_root: str | Path | None = None,
+) -> MigrationReport:
     """Read the markdown graph at `source` and write `target`. Returns a report."""
     report = MigrationReport(source=str(source), target=str(target))
     meta, nodes = markdown.load(source)
@@ -167,10 +176,18 @@ def convert(source: Path, target: Path, *, generated: str | None = None) -> Migr
         _normalize_anchors(node, report)
         _normalize_parity(node, report)
 
-    build = writer.build(target, meta, nodes, dangling="drop")
+    # Hash against the working tree the markdown described, so a migrated graph
+    # starts with a real baseline instead of having to wait for its first
+    # rebuild to acquire one.
+    rels = [a.path for n in nodes for a in n.anchors]
+    base = resolve_source_base(target.resolve().parent, meta.root, rels, source_root)
+
+    build = writer.build(target, meta, nodes, dangling="drop", source_root=base)
     report.nodes = build.nodes
     report.edges = build.edges
     report.anchors = build.anchors
+    report.hashed = build.hashed
+    report.source_base = str(base) if base else None
     report.dropped_edges = [{"src": s, "dst": d} for s, d in build.dropped_edges]
     return report
 

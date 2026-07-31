@@ -13,19 +13,24 @@ The JSON is a *transport*, not a second source of truth. It is not committed;
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .models import Anchor, Meta, Node
 
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+
 # Keys of the top-level document that are graph config rather than node data.
-_META_KEYS = ("codebase", "root", "counterpart", "language", "generated")
+_META_KEYS = ("codebase", "root", "counterpart", "language", "generated", "covers", "exempt")
 
 
 class DecodeError(ValueError):
     """The JSON document is not a graph this can build."""
 
 
-def to_dict(meta: Meta, nodes: list[Node]) -> dict[str, Any]:
+def to_dict(
+    meta: Meta, nodes: list[Node], sources: dict[str, str] | None = None
+) -> dict[str, Any]:
     # Both shapes are defined once, on the model. Restating the field list here
     # is how an added field silently stops round-tripping: a test that feeds
     # `to_dict` straight into `from_dict` cannot notice a field that `to_dict`
@@ -34,6 +39,11 @@ def to_dict(meta: Meta, nodes: list[Node]) -> dict[str, Any]:
     if meta.extra:
         doc["extra"] = dict(meta.extra)
     doc["nodes"] = [_node_to_dict(n) for n in nodes]
+    # Carried through the round trip so a refresh keeps the baselines it did not
+    # re-verify. Emitted last and keyed by path — it is machine-maintained data
+    # an author reads past, not something anyone edits by hand.
+    if sources:
+        doc["sources"] = dict(sorted(sources.items()))
     return doc
 
 
@@ -44,7 +54,7 @@ def _node_to_dict(n: Node) -> dict[str, Any]:
     return d
 
 
-def from_dict(doc: Any) -> tuple[Meta, list[Node]]:
+def from_dict(doc: Any) -> tuple[Meta, list[Node], dict[str, str]]:
     """Parse an interchange document. Raises `DecodeError` with a usable message.
 
     The messages matter more than usual here: the author is an agent that just
@@ -63,6 +73,8 @@ def from_dict(doc: Any) -> tuple[Meta, list[Node]]:
         counterpart=_str(doc, "counterpart") or None,
         language=_str(doc, "language") or None,
         generated=_str(doc, "generated"),
+        covers=_str_list(doc, "covers", "meta"),
+        exempt=_str_list(doc, "exempt", "meta"),
     )
     extra = doc.get("extra")
     if isinstance(extra, dict):
@@ -71,12 +83,25 @@ def from_dict(doc: Any) -> tuple[Meta, list[Node]]:
     # rather than dropping it silently. `_`-prefixed keys are the exception —
     # they are comments (the authoring template uses them) and are ignored.
     for key, value in doc.items():
-        if key in _META_KEYS or key in {"nodes", "extra"} or str(key).startswith("_"):
+        if key in _META_KEYS or key in {"nodes", "extra", "sources"} or str(key).startswith("_"):
             continue
         if isinstance(value, (str, int, float)):
             meta.extra.setdefault(str(key), str(value))
 
-    return meta, [_node_from_dict(raw, i) for i, raw in enumerate(raw_nodes)]
+    raw_sources = doc.get("sources")
+    sources: dict[str, str] = {}
+    if isinstance(raw_sources, dict):
+        # A malformed digest is dropped rather than rejected: a bad baseline is
+        # recoverable (the next build re-hashes that file) whereas failing the
+        # whole build over machine-written data the author never touched is not
+        # a useful place to be strict.
+        sources = {
+            str(k).replace("\\", "/"): v
+            for k, v in raw_sources.items()
+            if isinstance(v, str) and _SHA256.fullmatch(v)
+        }
+
+    return meta, [_node_from_dict(raw, i) for i, raw in enumerate(raw_nodes)], sources
 
 
 def _str(doc: dict[str, Any], key: str) -> str:

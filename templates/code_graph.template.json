@@ -20,6 +20,26 @@
   "counterpart": "<optional: ../peer-repo/knowledge/code_graph.db>",
   "generated": "<YYYY-MM-DD>",
 
+  "_covers": [
+    "Which files this graph is expected to cover, as globs relative to `root`.",
+    "WRITE THIS. Without it, coverage is inferred from the extensions already",
+    "anchored — which means a file type with NO coverage is invisible rather than",
+    "reported. Build config, manifests and resource files are the usual casualties.",
+    "`exempt` subtracts: in scope, deliberately unmapped, and recorded as a decision",
+    "rather than looking identical to an oversight.",
+    "`**/` spans directories, `*` and `?` stay inside one, a trailing `/` means",
+    "everything beneath."
+  ],
+  "covers": [
+    "**/*.kt",
+    "**/*.gradle.kts",
+    "gradle/libs.versions.toml"
+  ],
+  "exempt": [
+    "**/test/**",
+    "**/generated/**"
+  ],
+
   "nodes": [
     {
       "_comment": "Minimal node. id + kind are required; description is all but required.",

@@ -74,7 +74,14 @@ Nothing gates on it, so it is not a substitute for doing step 2.
 
 ### 4. Build and validate
 Run the builder. Then `kg_validate` — fix ungreppable anchors, and add nodes for anything under
-`uncovered_sources` that deserves one. Run `kg_stats` and report the delta.
+`coverage.gaps` that deserves one (or add it to `exempt`, which records the decision instead of
+leaving it looking like an oversight). Run `kg_stats` and report the delta.
+
+For every node you actually re-read against source, the rebuild re-baselines it. Nodes you did not
+touch keep their old baseline and keep appearing in `changed_since_built` — that is deliberate.
+Do **not** reach for `--rebaseline` to silence it; that asserts you checked everything, and using it
+to clear a report you did not act on destroys the only signal that distinguishes a verified
+description from a plausible one.
 
 ### 5. Commit
 Commit `knowledge/code_graph.db` alongside the source change.

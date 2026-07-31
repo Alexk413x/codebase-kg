@@ -72,9 +72,55 @@ Config and provenance, as key/value rows. The MCP server and the hooks read it.
 | `generated` | ✅ | `YYYY-MM-DD` the artifact was last built. **Provenance, not a contract** — nothing gates on it (§7). |
 | `counterpart` | ⬜ | Path to a paired repo's `code_graph.db`, for parity. Omit for a single-codebase repo. |
 | `language` | ⬜ | Hint for symbol tooling only. Grep always works; ctags/LSP are opportunistic. |
+| `covers` | ⬜ | Globs, one per line, of files a node is expected to exist for. **Declare this** — §3.1. |
+| `exempt` | ⬜ | Globs, one per line, subtracted from `covers`: in scope, deliberately unmapped. |
 
 `root` must be repo-relative: the graph is committed and shared, so an absolute `root` is per-clone
 and won't match anywhere else.
+
+### 3.1 Declare `covers` — an undeclared graph cannot report what it is missing
+
+Before this existed, "which files should be covered?" was answered by inference: the source
+extensions were whatever extensions the graph *already* anchored. That is genuinely
+language-agnostic, and it is silent by construction — a file type with zero coverage contributes
+zero extensions, so it is never examined, so it never warns.
+
+It was not hypothetical. On the RPN calculator all 142 anchors were `.kt`, and so:
+
+| | files | uncovered | reported? |
+|---|---|---|---|
+| `.kt` | 92 | 1 | ✅ |
+| `.xml` | 34 | **34** | ❌ invisible |
+| `.kts` | 3 | **3** | ❌ invisible |
+| `.properties` | 5 | **5** | ❌ invisible |
+| `.toml`, `.pro` | 2 | **2** | ❌ invisible |
+
+`kg_validate` was green on a graph that described none of the build config, and there was no
+question you could ask it that would say so.
+
+With `covers`, every file under `root` lands in exactly one bucket — `covered`, `gap`, `exempt`,
+or `out_of_scope`. There is no fifth invisible state. `exempt` is what says "yes, in scope, and
+deliberately not mapped" so a real decision is recorded rather than looking identical to an
+oversight.
+
+Patterns are gitignore-flavoured: `**/` spans path segments, `*` and `?` stay within one, a
+trailing `/` means everything beneath. They match paths relative to `root`.
+
+```
+covers: app/src/**/*.kt
+        **/*.gradle.kts
+        gradle/libs.versions.toml
+        app/src/main/AndroidManifest.xml
+exempt: **/test/**/*.kt
+        app/src/main/res/**
+```
+
+A graph with no `covers` still works and still reports what it can — but `kg_validate` returns
+`coverage.declared: false` with an explicit warning that the answer is incomplete, rather than
+presenting a partial check as a clean bill of health.
+
+The same declaration drives the pre-push hook, so all three surfaces agree on scope instead of
+each carrying its own guess.
 
 ## 4. The `node` table
 
@@ -152,7 +198,34 @@ One row per relationship: `(src, dst)`, both foreign keys into `node(id)`.
 
 Edges stay *within one graph*. Cross-graph links are `counterpart` (§9), not edges.
 
-### 6.3 `node_fts` — the search index
+### 6.3 `source` — what the code looked like when the graph was built
+
+One row per anchored file: `(path, sha)`, a SHA-256 of the file's bytes at build time.
+
+This is what makes a green `kg_validate` mean something. Checking that a symbol still exists proves
+the *pointer* resolves; it says nothing about whether the *description* still fits. A refactor that
+keeps a class name and rewrites everything inside it passes the symbol check cleanly while turning
+the description into a lie. Comparing the digest catches exactly that.
+
+Keyed by path rather than carried on `anchor`, because the digest is a fact about the file: on the
+RPN calculator 142 anchors span 91 files, so per-anchor storage would repeat 64 bytes 51 times for
+nothing.
+
+Never authored by hand — `build.py` computes it from source. A typed hash would be worse than none.
+
+Two rules keep the signal honest:
+
+- **A mismatch is not a failure.** `kg_validate` reports it as `changed_since_built` and leaves `ok`
+  true. Folding it into `ok` would fail every graph the moment anyone edited a covered file — the
+  same false-alarm problem as the date-based gate this replaced.
+- **A rebuild does not re-bless what nobody re-read.** Baselines already on record survive
+  export → edit → build, so a node the author never looked at keeps flagging. Re-baselining is
+  `--rebaseline`, an explicit claim that the descriptions were re-checked.
+
+A graph built with no source tree in reach simply has no rows here, reported as `unhashed` — which
+reads as "no baseline", never as "nothing changed".
+
+### 6.4 `node_fts` — the search index
 
 An FTS5 table over each node's id, kind, description and anchors. CamelCase identifiers are indexed
 in split form as well as whole, so `video playback` finds `VideoPlaybackService`.
@@ -169,8 +242,9 @@ bumped without the nodes changing.
 
 Staleness is answered by comparing the graph to the code:
 
-- **`kg_validate`** — anchors whose file or symbol no longer exists, and source files under `root`
-  that no node covers. Both are facts about the source tree.
+- **`kg_validate`** — anchors whose file or symbol no longer exists, files under `root` that
+  `covers` says should be mapped and aren't (§3.1), and files whose contents changed since the
+  graph was built (§6.3). All three are facts about the source tree.
 - **the pre-push check** — the same two questions, scoped to the commits you are pushing. It reports
   and exits 0. It never blocks.
 - **the post-edit hook** — says so the first time you edit a file no node anchors on.

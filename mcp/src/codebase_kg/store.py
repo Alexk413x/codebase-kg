@@ -16,6 +16,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
+from .coverage import COVERS_KEY, EXEMPT_KEY, parse_patterns
 from .models import Anchor, Meta, Node
 from .schema import READ_PRAGMAS, SCHEMA_VERSION, split_identifier
 
@@ -88,13 +89,18 @@ class CodeGraph:
     @property
     def meta(self) -> Meta:
         rows = {r["key"]: r["value"] for r in self._q("SELECT key, value FROM meta")}
-        known = {"schema_version", "codebase", "root", "counterpart", "language", "generated"}
+        known = {
+            "schema_version", "codebase", "root", "counterpart", "language",
+            "generated", COVERS_KEY, EXEMPT_KEY,
+        }
         return Meta(
             codebase=rows.get("codebase", ""),
             root=rows.get("root", ""),
             counterpart=rows.get("counterpart"),
             language=rows.get("language"),
             generated=rows.get("generated", ""),
+            covers=parse_patterns(rows.get(COVERS_KEY)),
+            exempt=parse_patterns(rows.get(EXEMPT_KEY)),
             extra={k: v for k, v in rows.items() if k not in known},
         )
 
@@ -351,6 +357,15 @@ class CodeGraph:
 
     def anchor_paths(self) -> list[str]:
         return [r["path"] for r in self._q("SELECT DISTINCT path FROM anchor ORDER BY path")]
+
+    def sources(self) -> dict[str, str]:
+        """`path -> sha` for every anchored file that has a recorded baseline.
+
+        The baselines a build carries forward, and what `kg_validate` compares
+        the working tree against. Empty for a graph built with no source tree in
+        reach — which reads as "no baseline", never as "nothing changed".
+        """
+        return {r["path"]: r["sha"] for r in self._q("SELECT path, sha FROM source ORDER BY path")}
 
     def all_anchors(self) -> list[tuple[str, Anchor]]:
         """Every anchor, **ordered by path** so a caller reading the source can

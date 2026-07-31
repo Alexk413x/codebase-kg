@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
                 sys.stderr.write(f"[codebase-kg] no such node(s): {', '.join(missing)}\n")
         else:
             nodes = graph.all_nodes()
-        doc = codec.to_dict(graph.meta, nodes)
+        doc = codec.to_dict(graph.meta, nodes, graph.sources())
     finally:
         graph.close()
 

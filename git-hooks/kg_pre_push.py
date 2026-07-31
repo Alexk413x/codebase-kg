@@ -41,7 +41,11 @@ from pathlib import Path
 
 DEFAULT_GRAPH = "knowledge/code_graph.db"
 
-# Generic doc/config exclusions — changing these does not imply graph drift.
+# Fallback only. When the graph declares `covers` (schema v3+) that declaration
+# wins outright, because it is the repo's own statement of what should be mapped
+# rather than this file's guess. These extensions are what a graph with no
+# declaration falls back to — and a graph in that state cannot report a file
+# type it has never covered, which is exactly why `covers` exists.
 EXCLUDE_EXT = {
     ".md", ".markdown", ".txt", ".json", ".lock", ".yaml", ".yml", ".toml",
     ".cfg", ".ini", ".gitignore", ".gitattributes", ".pro",
@@ -184,7 +188,73 @@ def find_graph_rel(repo: Path, cfg: dict[str, str]) -> str | None:
     return rel if (repo / rel).is_file() else None
 
 
-def is_source(rel: str, root: str, graph_rel: str | None) -> bool:
+# --- declared coverage (verbatim copy of codebase_kg/coverage.py) -------------
+# Copied rather than imported: this file is vendored into repos that have no
+# plugin install. tests/test_hook_parity.py asserts the two stay identical.
+def glob_to_regex(pattern: str) -> str:
+    """One gitignore-flavoured glob as a regex source string."""
+    pattern = pattern.strip().replace("\\", "/")
+    if not pattern:
+        return "(?!)"
+    if pattern.endswith("/"):
+        pattern += "**"
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        if pattern.startswith("**/", i):
+            out.append("(?:[^/]+/)*")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return "".join(out)
+
+
+def compile_patterns(patterns):
+    """All patterns as one alternation, or None when there are none."""
+    parts = [glob_to_regex(p) for p in patterns if p and p.strip()]
+    if not parts:
+        return None
+    return re.compile("^(?:" + "|".join(parts) + ")$")
+
+
+def matches_any(path: str, compiled) -> bool:
+    if compiled is None:
+        return False
+    return compiled.match(path.replace("\\", "/")) is not None
+
+
+def parse_patterns(raw):
+    """A stored meta value back into a pattern list."""
+    if not raw:
+        return []
+    out: list[str] = []
+    for line in raw.replace(",", "\n").splitlines():
+        item = line.strip()
+        if item and not item.startswith("#"):
+            out.append(item)
+    return out
+
+
+# --- end verbatim copy --------------------------------------------------------
+
+
+def is_source(rel: str, root: str, graph_rel: str | None, covers=None, exempt=None) -> bool:
+    """Does a changed file count as source the graph should have mapped?
+
+    With a `covers` declaration the answer comes from the repo's own statement
+    of scope; without one it falls back to the extension deny-list, which cannot
+    see a file type nobody has ever covered.
+    """
     rel = rel.replace("\\", "/")
     if graph_rel and rel == graph_rel:
         return False
@@ -193,14 +263,17 @@ def is_source(rel: str, root: str, graph_rel: str | None) -> bool:
     parts = rel.split("/")
     if {p.lower() for p in parts[:-1]} & _IGNORE_LOWER:
         return False
+    if covers is not None:
+        key = _rel_to_root(rel, root)
+        return matches_any(key, covers) and not matches_any(key, exempt)
     suffix = ("." + rel.rsplit(".", 1)[1].lower()) if "." in parts[-1] else ""
     if suffix in EXCLUDE_EXT:
         return False
     return True
 
 
-def read_graph(db: Path) -> tuple[str, set[str]] | None:
-    """`(root, anchored_paths)` from the store, or None if it can't be read.
+def read_graph(db: Path) -> tuple[str, set[str], list[str], list[str]] | None:
+    """`(root, anchored_paths, covers, exempt)`, or None if it can't be read.
 
     Unreadable is not an error worth shouting about in a push hook — the check
     simply doesn't run.
@@ -210,13 +283,23 @@ def read_graph(db: Path) -> tuple[str, set[str]] | None:
     except sqlite3.Error:
         return None
     try:
-        root_row = conn.execute("SELECT value FROM meta WHERE key = 'root'").fetchone()
+        meta = {
+            r[0]: r[1]
+            for r in conn.execute(
+                "SELECT key, value FROM meta WHERE key IN ('root', 'covers', 'exempt')"
+            )
+        }
         paths = {r[0].replace("\\", "/") for r in conn.execute("SELECT DISTINCT path FROM anchor")}
     except sqlite3.DatabaseError:
         return None
     finally:
         conn.close()
-    return ((root_row[0] if root_row else ""), paths)
+    return (
+        meta.get("root", ""),
+        paths,
+        parse_patterns(meta.get("covers")),
+        parse_patterns(meta.get("exempt")),
+    )
 
 
 def _rel_to_root(rel: str, root: str) -> str:
@@ -234,13 +317,20 @@ def _rel_to_root(rel: str, root: str) -> str:
 
 
 def analyze(
-    changed: list[tuple[str, str]], root: str, graph_rel: str | None, anchored: set[str]
+    changed: list[tuple[str, str]],
+    root: str,
+    graph_rel: str | None,
+    anchored: set[str],
+    covers: list[str] | None = None,
+    exempt: list[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Split the changeset into `(unmapped_new, anchored_but_deleted)`."""
+    covers_re = compile_patterns(covers or [])
+    exempt_re = compile_patterns(exempt or [])
     unmapped: list[str] = []
     deleted: list[str] = []
     for status, rel in changed:
-        if not is_source(rel, root, graph_rel):
+        if not is_source(rel, root, graph_rel, covers_re, exempt_re):
             continue
         key = _rel_to_root(rel, root)
         if status == "D":
@@ -286,7 +376,7 @@ def main() -> int:
     loaded = read_graph(repo / graph_rel)
     if loaded is None:
         return 0  # unreadable store → stay silent rather than nag
-    graph_root, anchored = loaded
+    graph_root, anchored, covers, exempt = loaded
 
     # `root` is the committed, shared config in the graph itself; an optional
     # per-dev .claude/codebase-kg.local.md may override it.
@@ -304,7 +394,7 @@ def main() -> int:
             return 0  # nothing to compare against — advisory checks stay quiet
         changed = changed_files(rng)
 
-    unmapped, deleted = analyze(changed, root, graph_rel, anchored)
+    unmapped, deleted = analyze(changed, root, graph_rel, anchored, covers, exempt)
     if unmapped or deleted:
         _emit(unmapped, deleted, graph_rel)
     return 0  # advisory, always

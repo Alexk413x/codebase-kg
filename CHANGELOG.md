@@ -2,6 +2,91 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.2.1] — 2026-07-31 — coverage is declared, and drift is detectable
+
+**Schema v3.** Existing graphs upgrade in place with `python -m codebase_kg.upgrade` — every node,
+anchor and edge is preserved verbatim. A v2 file is refused by the store until it is upgraded,
+rather than being read with two of its answers silently missing.
+
+That is a breaking change carrying a patch version, deliberately: the plugin has a single user and
+four repos, all of which upgrade with one command. Read the number as bookkeeping, not as a promise
+that a v2 graph still loads — it does not. Once anyone else depends on this, a schema bump gets a
+minor version.
+
+### Fixed — a file type with no coverage was invisible, not merely uncovered
+
+`uncovered_sources` derived the set of "source extensions" from the extensions the graph *already*
+anchored. That is language-agnostic and it is **silent by construction**: a category with zero
+coverage contributes zero extensions, so it was never examined and never reported.
+
+Measured on the RPN calculator, where all 142 anchors were `.kt`:
+
+| | files | uncovered | reported before? |
+|---|---|---|---|
+| `.kt` | 92 | 1 | ✅ |
+| `.xml` | 34 | **34** | ❌ |
+| `.kts` (Gradle) | 3 | **3** | ❌ |
+| `.properties` | 5 | **5** | ❌ |
+| `.toml`, `.pro` | 2 | **2** | ❌ |
+
+`kg_validate` reported one missing file and returned otherwise clean, on a graph that described none
+of the build configuration. No question you could ask it would have said so.
+
+Coverage is now **declared**, via `meta.covers` / `meta.exempt` (glob patterns, gitignore-flavoured).
+Every file under `root` lands in exactly one bucket — `covered`, `gap`, `exempt`, `out_of_scope` —
+so there is no invisible state left. `exempt` records a deliberate decision, which previously looked
+identical to an oversight.
+
+A graph with no declaration keeps working and keeps reporting what it can, but says
+`coverage.declared: false` with an explicit warning that the answer is incomplete. An incomplete
+check that admits it is a different thing from one that looks clean.
+
+The pre-push hook reads the same declaration out of the graph, so the three surfaces that had three
+different notions of "source file" (inferred extensions, a hardcoded deny-list, and the post-edit
+hook's own list) now agree.
+
+### Added — source baselines, so a green check means something
+
+The `source` table records a SHA-256 of each anchored file as it stood when the graph was built.
+`kg_validate` reports `changed_since_built` when the working tree no longer matches.
+
+This closes the gap the anchor check cannot: a refactor that keeps a class name and rewrites its
+body passes "symbol still found" cleanly while making the description false. 142/142 anchors
+resolving never meant the descriptions were accurate — now there is a signal that distinguishes them.
+
+Two decisions keep it honest:
+
+- **Drift does not set `ok: false`.** It means "go look", not "something is broken". Folding it in
+  would fail every graph the moment anyone edited a covered file — the false-alarm failure mode of
+  the date-based gate 0.2.0 removed.
+- **A rebuild does not silently re-bless nodes nobody re-read.** Baselines survive the
+  export → edit → build round trip, so untouched nodes keep flagging. `--rebaseline` is the explicit
+  way to assert "I have re-checked these", and it shows up in review as a `sources` change.
+
+### Added — readable diffs for the committed database
+
+`.gitattributes` now marks the graph `diff=codegraph`, and `/codebase-kg:setup-diff` configures a
+textconv driver so `git diff` / `show` / `log -p` render the graph as its JSON export instead of
+`Binary files differ`. What is committed is unchanged; a clone that skips the setup sees the old
+behaviour rather than an error. Merge-conflict resolution via export → merge → rebuild is documented
+in [`docs/REVIEW.md`](docs/REVIEW.md), and works because the build is byte-deterministic.
+
+### Added
+
+- **`python -m codebase_kg.upgrade`** — in-place v2 → v3, with `--covers` / `--exempt` to declare
+  coverage at the same time. Reads the old shape with raw sqlite3 rather than loosening the store's
+  version check for every reader.
+- **`codebase-kg-export`** console script — git's textconv driver invokes a command, not a module.
+- `build --rebaseline`, `build --source-root`, `build --no-hash`.
+
+### Changed
+
+- `kg_validate` replaces `uncovered_sources` with a `coverage` object (`declared`, `covered`,
+  `gaps`, `exempt`, `out_of_scope`) and adds `changed_since_built`.
+- `tools.uncovered_sources()` → `tools.coverage_report()`.
+- `codec.from_dict()` returns `(meta, nodes, sources)`; `codec.to_dict()` takes an optional
+  `sources` map. This is what makes the round trip lossless now that baselines exist.
+
 ## [0.2.0] — 2026-07-30 — the graph is a committed database
 
 **Breaking.** The per-repo artifact changes from `knowledge/KNOWLEDGE_GRAPH.md` to a committed

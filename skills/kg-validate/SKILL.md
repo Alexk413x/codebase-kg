@@ -49,14 +49,17 @@ that was never at risk:
 1. **Locate the graph.** If the user named a file, use it. Otherwise the MCP server auto-discovers
    `knowledge/code_graph.db` (the only location — no repo-root fallback). Confirm with `kg_stats` —
    note the `generated` date and node count.
-2. **Run `kg_validate`.** It returns `anchor_issues`, `uncovered_sources`, `counterpart_issues`,
-   `description_issues`, plus `source_checked` (whether the source tree was reachable) and
-   `anchors_checked`.
-3. **Report** in the format below. Sort by severity: ungreppable anchors first (they break
-   navigation), then uncovered sources, then counterpart issues.
-4. **Recommend, do not act.** Point each finding at its fix — usually `kg-refresh` for stale anchors
-   and uncovered source, `kg-link` for counterpart issues. Do not edit the graph from this skill
-   unless the user asks.
+2. **Run `kg_validate`.** It returns `anchor_issues`, `coverage`, `changed_since_built`,
+   `counterpart_issues`, `description_issues`, plus `source_checked` (whether the source tree was
+   reachable) and `anchors_checked`.
+3. **Check `coverage.declared` first.** If it is `false`, the coverage answer is *incomplete* — the
+   graph has no `covers`, so file types it has never mapped were not looked at. Report that as the
+   headline finding, not a footnote: a clean coverage number from an undeclared graph means nothing.
+4. **Report** in the format below. Sort by severity: ungreppable anchors first (they break
+   navigation), then coverage gaps, then drift, then counterpart issues.
+5. **Recommend, do not act.** Point each finding at its fix — `kg-refresh` for stale anchors and
+   coverage gaps, `kg-link` for counterpart issues. Do not edit the graph from this skill unless the
+   user asks.
 
 ## Report format
 
@@ -68,8 +71,11 @@ Anchors checked: <N>
 Ungreppable anchors (<n>):
 - <node-id>: `<path#Symbol>` — <file not found | symbol not found in file>  → run kg-refresh
 
-Uncovered sources (<n>):
-- <path> — no node anchors on it  → run kg-refresh
+Coverage: <N covered, N gaps, N exempt, N out of scope>   [declared | NOT DECLARED]
+- <path> — in `covers`, no node anchors it  → run kg-refresh
+
+Changed since built (<n>):
+- <node-id>: `<path>` — source edited after this description was written  → re-read and confirm
 
 Counterpart issues (<n>):
 - <node-id>: <not reciprocal | target id not in peer graph | file not found>  → run kg-link
@@ -80,14 +86,19 @@ consistent parity, symbol-only anchors.
 Verdict: <clean | N advisory findings — none blocking>
 ```
 
-If `kg_validate` returns `ok: true`, say so plainly: "Graph is clean against source as of
-`<generated>`."
+If `kg_validate` returns `ok: true`, say so — but qualify it honestly. `ok` covers structure and
+coverage, **not** accuracy: it means the anchors resolve and nothing in `covers` is unmapped. It does
+not mean the descriptions are still true. Say "clean against source as of `<generated>`", and if
+`changed_since_built` is non-zero name that number in the same breath.
 
 ## Notes
 
 - A skipped source check (`source_checked: false`) is not a failure — it means anchor paths couldn't
   be resolved to files (wrong `root`, or source not checked out). Say so; don't imply the anchors
   are fine.
-- `uncovered_sources` is capped at 50 entries. If it is at the cap, say the list is truncated rather
-  than reporting 50 as the total.
+- `coverage.gaps` is capped at 50 entries; `coverage.truncated` says when the cap was hit. Report it
+  as truncated rather than reporting 50 as the total.
+- `changed_since_built` is deliberately **not** part of `ok`. A changed file is a prompt to re-read,
+  not a defect — treat it that way in the report. `unhashed` counts files with no recorded baseline
+  (a graph built without source in reach); those are unknown, not unchanged.
 - This skill reads; it does not write. Drift is surfaced as advice.

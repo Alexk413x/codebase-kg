@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from . import clean
+from .coverage import CoverageReport, classify, resolve_source_base
 from .models import Anchor, Node
 from .store import CodeGraph, tokenize
+from .writer import file_sha
 
 # Directories that are never source (mirrors the pre-push gate's list).
 IGNORE_DIRS = {
@@ -248,27 +251,10 @@ def kg_stats(graph: CodeGraph) -> dict[str, Any]:
 # kg_validate  (the advisory drift detector)
 # --------------------------------------------------------------------------- #
 def _resolve_source_base(graph: CodeGraph, repo_root: str | None) -> Path | None:
-    """Find the directory anchor paths are relative to.
-
-    Tries the explicit repo_root, then the meta `root` joined onto a few
-    candidate bases, and picks whichever resolves the most anchors.
-    """
-    rels = graph.anchor_paths()
-    if not rels:
-        return None
-    root = graph.meta.root.strip().rstrip("/")
-    candidates: list[Path] = []
-    if repo_root:
-        rp = Path(repo_root)
-        candidates += [rp / root, rp]
-    graph_dir = graph.path.parent
-    candidates += [graph_dir / root, graph_dir.parent / root, graph_dir, graph_dir.parent]
-    best: tuple[int, Path] | None = None
-    for base in candidates:
-        hits = sum(1 for r in rels[:25] if (base / r).is_file())
-        if hits > 0 and (best is None or hits > best[0]):
-            best = (hits, base)
-    return best[1] if best else None
+    """Find the directory anchor paths are relative to."""
+    return resolve_source_base(
+        graph.path.parent, graph.meta.root, graph.anchor_paths(), repo_root
+    )
 
 
 def _word_pattern(segment: str, _cache: dict[str, re.Pattern[str]] = {}) -> re.Pattern[str]:
@@ -300,22 +286,44 @@ def _symbol_in_source(symbol: str, src: str) -> bool:
     return True
 
 
-def _check_anchors(graph: CodeGraph, base: Path) -> tuple[list[dict[str, str]], int]:
+@dataclass
+class AnchorCheck:
+    """What checking every anchor against real source turned up."""
+
+    issues: list[dict[str, str]] = field(default_factory=list)
+    checked: int = 0  # anchors
+    changed: list[dict[str, str]] = field(default_factory=list)
+    unhashed: int = 0  # anchored *files* with no recorded baseline
+
+
+def _check_anchors(graph: CodeGraph, base: Path) -> AnchorCheck:
     """Every anchor against real source. The strongest staleness signal there is.
 
-    `all_anchors()` yields in path order, so each file is stat-ed and read once
-    and only the current file's text is held — rather than caching the whole
-    source tree in memory to avoid re-reads.
+    Two different questions, and the difference is the point:
+
+    - *Does the target still exist?* A missing file or symbol is a broken
+      pointer — reported as an issue.
+    - *Has the file changed since the description was written?* The stored `sha`
+      answers that, and it is what catches the case the symbol check cannot: a
+      refactor that keeps a class name but guts its behaviour passes "symbol
+      found" cleanly while making the description a lie. Reported separately as
+      `changed_since_built`, because a changed file is a prompt to re-read, not
+      proof that anything is wrong.
+
+    `all_anchors()` yields in path order, so each file is stat-ed, read and
+    hashed once and only the current file's text is held — rather than caching
+    the whole source tree in memory to avoid re-reads.
     """
-    issues: list[dict[str, str]] = []
-    checked = 0
+    out = AnchorCheck()
+    baselines = graph.sources()
     current: str | None = None
     src: str | None = None
+    drifted = False
     exists = False
     for node_id, anchor in graph.all_anchors():
-        checked += 1
+        out.checked += 1
         if anchor.path != current:
-            current, src = anchor.path, None
+            current, src, drifted = anchor.path, None, False
             fp = base / anchor.path
             exists = fp.is_file()
             if exists:
@@ -323,45 +331,58 @@ def _check_anchors(graph: CodeGraph, base: Path) -> tuple[list[dict[str, str]], 
                     src = fp.read_text(encoding="utf-8", errors="ignore")
                 except OSError:
                     src = None
+                recorded = baselines.get(anchor.path)
+                if recorded is None:
+                    out.unhashed += 1
+                else:
+                    drifted = file_sha(fp) != recorded
         if not exists:
-            issues.append({"node": node_id, "anchor": str(anchor), "issue": "file not found"})
+            out.issues.append({"node": node_id, "anchor": str(anchor), "issue": "file not found"})
             continue
         if anchor.symbol and src is not None and not _symbol_in_source(anchor.symbol, src):
-            issues.append(
+            out.issues.append(
                 {"node": node_id, "anchor": str(anchor), "issue": "symbol not found in file"}
             )
-    return issues, checked
+        if drifted:
+            out.changed.append(
+                {
+                    "node": node_id,
+                    "anchor": str(anchor),
+                    "issue": "source changed since the graph was built — re-read and "
+                    "confirm the description still fits",
+                }
+            )
+    return out
 
 
-def uncovered_sources(graph: CodeGraph, base: Path, limit: int = 50) -> list[str]:
-    """Source files under the root that no node anchors on.
+def walk_sources(base: Path) -> list[str]:
+    """Every file under `base`, relative and posix-separated, ignored dirs pruned.
 
-    Language-agnostic by construction: the "source extensions" for a repo are
-    whatever extensions the graph already anchors on. A repo of Kotlin nodes
-    looks for `.kt`; a TypeScript one looks for `.ts`. Nothing is hardcoded.
+    os.walk with in-place pruning, not rglob: rglob descends into
+    node_modules/.git/build in full and only filters afterwards, so the ignored
+    99% of a real tree gets walked and sorted before being discarded.
     """
-    anchored = set(graph.anchor_paths())  # already posix-normalized by the store
-    exts = {Path(p).suffix.lower() for p in anchored if Path(p).suffix}
-    if not exts:
-        return []
-    missing: list[str] = []
-    # os.walk with in-place pruning, not rglob: rglob descends into
-    # node_modules/.git/build in full and only filters afterwards, so the
-    # ignored 99% of a real tree gets walked and sorted before being discarded.
+    out: list[str] = []
     for dirpath, dirnames, filenames in os.walk(base):
         dirnames[:] = [d for d in dirnames if d.lower() not in _IGNORE_LOWER]
         dirnames.sort()
         rel_dir = Path(dirpath).relative_to(base).as_posix()
         prefix = "" if rel_dir == "." else rel_dir + "/"
-        for name in sorted(filenames):
-            if Path(name).suffix.lower() not in exts:
-                continue
-            rel = prefix + name
-            if rel not in anchored:
-                missing.append(rel)
-                if len(missing) >= limit:
-                    return missing
-    return missing
+        out += [prefix + name for name in sorted(filenames)]
+    return out
+
+
+def coverage_report(graph: CodeGraph, base: Path, limit: int = 50) -> CoverageReport:
+    """Which files the graph was supposed to cover, and which it missed.
+
+    The declaration lives in the graph (`meta.covers` / `meta.exempt`), so this
+    reports a genuine gap rather than the previous "whatever extensions happen
+    to be anchored already" rule, under which a file type with no coverage at
+    all produced no warning — see coverage.py for why that mattered.
+    """
+    meta = graph.meta
+    anchored = set(graph.anchor_paths())  # already posix-normalized by the store
+    return classify(walk_sources(base), anchored, meta.covers, meta.exempt, limit)
 
 
 def kg_validate(
@@ -392,22 +413,30 @@ def kg_validate(
             )
 
     base = _resolve_source_base(graph, repo_root)
-    anchor_issues: list[dict[str, str]] = []
-    uncovered: list[str] = []
-    checked = 0
+    checks = AnchorCheck()
+    cov = CoverageReport()
     if base is not None:
-        anchor_issues, checked = _check_anchors(graph, base)
-        uncovered = uncovered_sources(graph, base)
+        checks = _check_anchors(graph, base)
+        cov = coverage_report(graph, base)
 
-    ok = not (counterpart_issues or description_issues or anchor_issues or uncovered)
+    # `changed_since_built` is deliberately *not* part of `ok`: it means "go
+    # look", not "something is broken". Folding it in would make `ok` false for
+    # every graph the moment anyone edits a covered file, which is the failure
+    # mode the old date-based freshness gate had.
+    ok = not (counterpart_issues or description_issues or checks.issues or cov.gaps)
     return {
         "ok": ok,
         "advisory": True,
         "source_checked": base is not None,
         "source_base": str(base) if base else None,
-        "anchors_checked": checked,
-        "anchor_issues": anchor_issues,
-        "uncovered_sources": {"count": len(uncovered), "files": uncovered},
+        "anchors_checked": checks.checked,
+        "anchor_issues": checks.issues,
+        "changed_since_built": {
+            "count": len(checks.changed),
+            "anchors": checks.changed[:50],
+            "unhashed": checks.unhashed,
+        },
+        "coverage": cov.to_dict(),
         "counterpart_issues": counterpart_issues,
         "description_issues": description_issues,
         "guaranteed_by_schema": [
@@ -465,6 +494,7 @@ __all__ = [
     "kg_parity_gaps",
     "kg_stats",
     "kg_validate",
-    "uncovered_sources",
+    "coverage_report",
+    "walk_sources",
     "Anchor",
 ]

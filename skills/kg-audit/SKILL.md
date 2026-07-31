@@ -59,8 +59,10 @@ Fan out one `Task` sub-agent per group (read-only). Each agent, for every node i
 See `references/audit-pattern.md` for the exact agent contract.
 
 ### 3. Reverse pass (MISSING)
-`kg_validate` already reports `uncovered_sources` — source files under `root` no node anchors on.
-Start there; it is exact and free. Then use judgement about which of them deserve a node (a
+`kg_validate` already reports `coverage.gaps` — files `covers` says should be mapped and aren't.
+Start there; it is exact and free. If `coverage.declared` is `false` the graph has no `covers`, so
+that list only sees file types already anchored — say so, and treat declaring `covers` as the first
+MISSING finding, because until it exists an entire category can be absent without registering. Then use judgement about which of them deserve a node (a
 one-line extension file may not; a new service does). Supplement with `git ls-files` for units that
 *are* anchored but whose containing feature is under-modeled.
 

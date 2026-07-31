@@ -31,14 +31,14 @@ def test_round_trip_preserves_every_field() -> None:
         ),
         Node(id="b", kind="K", description="Other."),
     ]
-    meta2, nodes2 = codec.from_dict(codec.to_dict(meta, nodes))
+    meta2, nodes2, _ = codec.from_dict(codec.to_dict(meta, nodes))
     assert meta2 == meta
     assert nodes2 == nodes
 
 
 def test_whole_file_anchor_survives_the_round_trip() -> None:
     nodes = [Node(id="a", kind="K", anchors=[Anchor("AndroidManifest.xml")])]
-    _, out = codec.from_dict(codec.to_dict(Meta(), nodes))
+    _, out, _ = codec.from_dict(codec.to_dict(Meta(), nodes))
     assert out[0].anchors == [Anchor("AndroidManifest.xml", None)]
 
 
@@ -50,35 +50,35 @@ def test_export_then_build_is_byte_identical(
     src = built_fixtures / "android" / "code_graph.db"
     g = CodeGraph(src)
     try:
-        doc = codec.to_dict(g.meta, g.all_nodes())
+        doc = codec.to_dict(g.meta, g.all_nodes(), g.sources())
     finally:
         g.close()
-    meta, nodes = codec.from_dict(doc)
+    meta, nodes, sources = codec.from_dict(doc)
     rebuilt = tmp_path / "code_graph.db"
-    build(rebuilt, meta, nodes)
+    build(rebuilt, meta, nodes, sources=sources)
     assert rebuilt.read_bytes() == src.read_bytes()
 
 
 # --- tolerant decoding -------------------------------------------------------
 def test_missing_optional_fields_default() -> None:
-    _, nodes = codec.from_dict({"nodes": [{"id": "a", "kind": "K"}]})
+    _, nodes, _ = codec.from_dict({"nodes": [{"id": "a", "kind": "K"}]})
     n = nodes[0]
     assert n.description == "" and n.anchors == [] and n.edges == []
     assert n.parity is None and n.section == ""
 
 
 def test_a_bare_string_is_accepted_where_a_list_belongs() -> None:
-    _, nodes = codec.from_dict({"nodes": [{"id": "a", "kind": "K", "edges": "b"}]})
+    _, nodes, _ = codec.from_dict({"nodes": [{"id": "a", "kind": "K", "edges": "b"}]})
     assert nodes[0].edges == ["b"]
 
 
 def test_unknown_top_level_config_is_carried_not_dropped() -> None:
-    meta, _ = codec.from_dict({"team": "mobile", "nodes": []})
+    meta, _, _ = codec.from_dict({"team": "mobile", "nodes": []})
     assert meta.extra["team"] == "mobile"
 
 
 def test_whitespace_is_trimmed() -> None:
-    _, nodes = codec.from_dict({"nodes": [{"id": "  a  ", "kind": " K "}]})
+    _, nodes, _ = codec.from_dict({"nodes": [{"id": "  a  ", "kind": " K "}]})
     assert nodes[0].id == "a" and nodes[0].kind == "K"
 
 

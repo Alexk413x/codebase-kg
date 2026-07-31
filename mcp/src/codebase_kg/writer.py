@@ -16,6 +16,7 @@ than surfacing as a bare SQLite IntegrityError.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sqlite3
 import tempfile
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import Iterable, Literal
 
 from . import clean
+from .coverage import COVERS_KEY, EXEMPT_KEY, format_patterns
 from .models import Meta, Node
 from .schema import APPLICATION_ID, DDL, PAGE_SIZE, SCHEMA_VERSION, split_identifier
 
@@ -38,7 +40,9 @@ class BuildReport:
     nodes: int = 0
     edges: int = 0
     anchors: int = 0
+    hashed: int = 0  # anchors stamped with a source digest
     dropped_edges: list[tuple[str, str]] = field(default_factory=list)
+    missing_sources: list[str] = field(default_factory=list)
 
 
 class BuildError(ValueError):
@@ -57,6 +61,61 @@ def _fts_text(node: Node) -> str:
         if a.symbol:
             parts += split_identifier(a.symbol)
     return " ".join(p for p in parts if p)
+
+
+def file_sha(path: Path) -> str | None:
+    """SHA-256 of a file's bytes, or None if it cannot be read.
+
+    Bytes, not decoded text: the point is to notice *any* change to the source,
+    and decoding with `errors="ignore"` would silently collapse edits inside
+    invalid sequences. Read in chunks so a large generated file does not have to
+    fit in memory just to be fingerprinted.
+    """
+    h = hashlib.sha256()
+    try:
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def stamp_hashes(
+    nodes: list[Node], base: Path, report: BuildReport, existing: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Digest every anchored file, keeping any baseline already recorded.
+
+    `existing` wins wherever it has an entry. That is what makes the refresh
+    loop honest: export → edit → build carries the old baselines through, so a
+    node the author never re-read keeps flagging `changed_since_built` instead of
+    being silently re-blessed. Only anchors with no baseline get one, and
+    `--rebaseline` is the explicit way to say "I have checked all of these".
+
+    Keeping the old value also preserves the byte-identical round trip: an
+    unedited export→build reproduces the same file, so a no-op refresh leaves
+    the git diff empty.
+
+    A file that cannot be read simply gets no entry — the graph is still valid,
+    that path just has no baseline to compare against.
+    """
+    digests: dict[str, str] = dict(existing or {})
+    for node in nodes:
+        for anchor in node.anchors:
+            if anchor.path in digests:
+                continue
+            sha = file_sha(base / anchor.path)
+            if sha is None:
+                report.missing_sources.append(anchor.path)
+            else:
+                digests[anchor.path] = sha
+    report.missing_sources = sorted(dict.fromkeys(report.missing_sources))
+    # Only paths this graph actually anchors — a stale entry for a file no node
+    # points at any more would otherwise ride along forever.
+    anchored = {a.path for n in nodes for a in n.anchors}
+    kept = {p: s for p, s in digests.items() if p in anchored}
+    report.hashed = len(kept)
+    return kept
 
 
 def _validate(
@@ -103,7 +162,13 @@ def _validate(
     return sorted(seen.values(), key=lambda n: n.id)
 
 
-def _write(conn: sqlite3.Connection, meta: Meta, nodes: list[Node], report: BuildReport) -> None:
+def _write(
+    conn: sqlite3.Connection,
+    meta: Meta,
+    nodes: list[Node],
+    sources: dict[str, str],
+    report: BuildReport,
+) -> None:
     conn.executescript(DDL)
 
     rows_meta = {
@@ -116,6 +181,12 @@ def _write(conn: sqlite3.Connection, meta: Meta, nodes: list[Node], report: Buil
         rows_meta["counterpart"] = meta.counterpart
     if meta.language:
         rows_meta["language"] = meta.language
+    # Stored newline-separated rather than as JSON: the vendored pre-push hook
+    # reads these straight out of SQL and deliberately carries no JSON parser.
+    if meta.covers:
+        rows_meta[COVERS_KEY] = format_patterns(meta.covers)
+    if meta.exempt:
+        rows_meta[EXEMPT_KEY] = format_patterns(meta.exempt)
     rows_meta.update(meta.extra)
     conn.executemany(
         "INSERT INTO meta (key, value) VALUES (?, ?)",
@@ -139,6 +210,9 @@ def _write(conn: sqlite3.Connection, meta: Meta, nodes: list[Node], report: Buil
         ],
     )
     conn.executemany(
+        "INSERT INTO source (path, sha) VALUES (?, ?)", sorted(sources.items())
+    )
+    conn.executemany(
         "INSERT INTO edge (src, dst) VALUES (?, ?)",
         [(n.id, dst) for n in nodes for dst in n.edges],
     )
@@ -158,8 +232,17 @@ def build(
     nodes: Iterable[Node],
     *,
     dangling: DanglingPolicy = "error",
+    source_root: str | Path | None = None,
+    sources: dict[str, str] | None = None,
+    rebaseline: bool = False,
 ) -> BuildReport:
     """Write `nodes` to a fresh `code_graph.db` at `path`, atomically.
+
+    `sources` are the baselines already on record (from a previous build, via
+    export). `source_root` is where anchor paths resolve from; given one, any
+    path without a baseline gets hashed. `rebaseline=True` discards the recorded
+    baselines and re-hashes everything — say that only when the descriptions
+    have actually been re-checked against the code.
 
     Returns a `BuildReport`. Raises `BuildError` (having written nothing) when
     the input cannot produce a valid graph.
@@ -167,6 +250,14 @@ def build(
     target = Path(path)
     report = BuildReport()
     ordered = _validate(list(nodes), dangling, report)
+
+    carried = {} if rebaseline else dict(sources or {})
+    if source_root is not None:
+        resolved = stamp_hashes(ordered, Path(source_root), report, carried)
+    else:
+        anchored = {a.path for n in ordered for a in n.anchors}
+        resolved = {p: s for p, s in carried.items() if p in anchored}
+        report.hashed = len(resolved)
 
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
@@ -187,7 +278,7 @@ def build(
             conn.execute("PRAGMA journal_mode = DELETE")
             conn.execute("PRAGMA foreign_keys = ON")
             with conn:
-                _write(conn, meta, ordered, report)
+                _write(conn, meta, ordered, resolved, report)
             # Packs the file and drops free pages, so the byte layout depends on
             # the data alone rather than on the order pages happened to be filled.
             conn.execute("VACUUM")

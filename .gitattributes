@@ -12,5 +12,11 @@
 # The committed code graph is a SQLite file. Marking it binary stops git from
 # mangling it with eol conversion and stops it flooding a diff — git's packfile
 # delta still compresses it across refreshes, so history stays small.
-*.db binary
-code_graph.db binary
+#
+# `diff=codegraph` makes it reviewable anyway: with the driver configured, git
+# renders the graph as its JSON export, so `git diff` / `show` / `log -p` show
+# which nodes changed instead of "Binary files differ". Without the driver
+# nothing breaks — git falls back to treating it as opaque. Configure with:
+#     /codebase-kg:setup-diff        (or see docs/REVIEW.md)
+*.db binary diff=codegraph
+code_graph.db binary diff=codegraph

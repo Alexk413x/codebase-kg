@@ -73,7 +73,7 @@ Eight read-only MCP tools over the graph:
 | `kg_find_by_kind` | every `ViewModel` / `Service` / `@Entity` |
 | `kg_parity_gaps` | the cross-codebase gap report, as a query |
 | `kg_stats` | cold-start orientation: counts, kinds, sections, isolated nodes |
-| `kg_validate` | advisory drift check against real source |
+| `kg_validate` | advisory drift check against real source: anchors that no longer resolve, declared coverage gaps, and files edited since the graph was built |
 
 ## Migrating from `KNOWLEDGE_GRAPH.md`
 
@@ -87,7 +87,19 @@ It **converts, not regenerates** — ids, kinds, anchors, edges and parity survi
 scrubs ticket refs, dates and change narrative out of the summaries, drops any dangling edges, and
 reports everything it changed. The markdown file is left untouched; delete it once you are happy.
 
-Add `knowledge/code_graph.db binary` to the repo's `.gitattributes` and commit the result.
+Add `knowledge/code_graph.db binary diff=codegraph` to the repo's `.gitattributes` and commit the
+result, then run `/codebase-kg:setup-diff` so the graph shows up as a readable diff in review.
+
+### Already on a `code_graph.db`?
+
+A graph built before schema v3 has no declared coverage and no source baselines, so it cannot report
+a file type it never mapped or a description whose code moved underneath it. Upgrade in place:
+
+```sh
+python -m codebase_kg.upgrade --covers 'app/src/**/*.kt' --covers '**/*.gradle.kts'
+```
+
+Every node, anchor and edge is preserved verbatim; the upgrade only adds what v3 can answer.
 
 ## Layout
 
