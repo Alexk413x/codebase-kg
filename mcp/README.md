@@ -1,74 +1,75 @@
 # codebase-kg MCP server
 
-A local **stdio** MCP server that parses one repo's `KNOWLEDGE_GRAPH.md` (markdown is the source
-of truth — see [`../SCHEMA.md`](../SCHEMA.md)) into an in-memory graph and exposes **seven
-read-only, typed queries**. So an agent answers "where does X live / what depends on it / what
-diverges from the peer" in one tool call instead of re-grepping every session.
+A local **stdio** MCP server over one repo's committed `knowledge/code_graph.db` (see
+[`../SCHEMA.md`](../SCHEMA.md)), exposing **eight read-only, typed queries** — so an agent answers
+"where does X live / what depends on it / what diverges from the peer" in one tool call instead of
+re-grepping every session.
 
-Mirrors the author's `a11y-kg` server (FastMCP, `uvx`-run). `loader` and `tools` are **stdlib
-only** — testable without FastMCP installed; only `server` imports FastMCP.
+Mirrors the author's `a11y-kg` server (FastMCP, `uvx`-run). Everything except `server` is **stdlib
+only** — the whole graph layer is testable without FastMCP installed.
 
 ## Tools
 
 | Tool | Returns |
 |---|---|
-| `kg_search(query, kind?)` | Nodes by token match on id / kind / summary / anchors. Ranked, capped at 10. |
-| `kg_node(id)` | One full node — anchors, summary, edges, parity, counterpart, divergence, inbound edges. `did_you_mean` on miss. |
-| `kg_neighborhood(id, depth=1)` | A node + outbound/inbound edges + counterpart, N hops (1–2). |
+| `kg_search(query, kind?)` | Ranked FTS5 search over id / kind / description / anchors. CamelCase identifiers match in split form ("video playback" finds `VideoPlaybackService`). Capped at 10. |
+| `kg_node(id)` | One full node — anchors, description, edges, parity, counterpart, divergence, inbound edges. `did_you_mean` on miss. |
+| `kg_find_by_path(path)` | **Reverse lookup**: which node(s) own a source file, and what connects to them. Accepts a repo-relative path or a bare filename. |
+| `kg_neighborhood(id, depth=1)` | A node + everything within 1–3 hops, following edges either way, with hop counts. |
 | `kg_find_by_kind(kind)` | All nodes whose free-text `kind` matches (substring). |
 | `kg_parity_gaps(status?)` | Nodes flagged `divergent` / `<codebase>-only` — the gap report as a query. |
-| `kg_stats()` | Counts by kind / section / parity, edge total, `refreshed` date. |
-| `kg_validate()` | Advisory drift check: dangling edges, counterpart problems (missing / not reciprocal), parity field inconsistencies, ungreppable anchors. Never blocks. |
+| `kg_stats()` | Counts by kind / section / parity, edge and anchor totals, isolated nodes, `generated` date. |
+| `kg_validate()` | Advisory drift check against real source: ungreppable anchors, uncovered source files, counterpart problems. Never blocks. |
 
-## How it finds the KG
+## CLIs
 
-KG path resolution order:
+The server is read-only. Writing goes through three small commands:
 
-1. First CLI arg (e.g. `codebase-kg /path/to/KNOWLEDGE_GRAPH.md`).
+```sh
+python -m codebase_kg.migrate knowledge/KNOWLEDGE_GRAPH.md   # one-time: markdown → db
+python -m codebase_kg.export -o graph.json                   # db → JSON
+python -m codebase_kg.build graph.json -o knowledge/code_graph.db
+```
+
+`export` → `build` with no edits is byte-identical, so a no-op refresh leaves the git diff empty.
+
+## How it finds the graph
+
+Path resolution order:
+
+1. First CLI arg (e.g. `codebase-kg /path/to/code_graph.db`).
 2. `$CODEBASE_KG_PATH`.
-3. Walk up from the current working directory, honoring an optional `kg_path` override in
-   `.claude/codebase-kg.local.md` (SCHEMA.md §7 — same file the hooks read), else
-   `knowledge/KNOWLEDGE_GRAPH.md` (no repo-root fallback).
+3. Walk up from the current working directory, honoring an optional `graph_path` override in
+   `.claude/codebase-kg.local.md` (SCHEMA.md §8 — same file the hooks read; the older `kg_path` key
+   is still accepted), else `knowledge/code_graph.db`. **No repo-root fallback.**
 
-When run as a plugin MCP server (cwd = the user's project), step 3 finds the repo's KG with no
-config. Set `CODEBASE_KG_PATH` to point at a KG elsewhere. The graph loads **lazily** and is
-**re-read whenever the file changes** on disk (mtime/size) — a KG created after session start
-(`/codebase-kg:build`) or edited mid-session is picked up on the next tool call, no restart. The
-peer KG named in the header `counterpart:` is loaded and refreshed the same way for the
-parity/reciprocity checks.
+While unresolved, the path is re-resolved on every tool call, so a graph created after the server
+started (e.g. by `/codebase-kg:build`) is picked up without a restart. If the repo still has a
+pre-0.2 `KNOWLEDGE_GRAPH.md`, the error names the migration command rather than just saying "not
+found".
 
-## Run
+The graph is **opened per tool call and closed again**. That is affordable because opening a store
+is constant-time (~1 ms) rather than a parse whose cost grows with the graph — there is nothing to
+amortize. It also matters on Windows, where a held-open handle blocks the file from being replaced:
+caching the connection would make `/codebase-kg:refresh` fail to write its own output whenever the
+server was running.
 
-```bash
-# from a repo that has a KNOWLEDGE_GRAPH.md (auto-discovered):
-uvx --from /path/to/codebase-kg/mcp codebase-kg
-# or point explicitly:
-uvx --from /path/to/codebase-kg/mcp codebase-kg /path/to/KNOWLEDGE_GRAPH.md
+## Module map
+
+| Module | Role |
+|---|---|
+| `schema.py` | The DDL. Constraints make dangling edges, duplicate ids, inconsistent parity and line-number anchors unwritable. |
+| `models.py` | `Node` / `Anchor` / `Meta` dataclasses — the write shape. |
+| `clean.py` | The `description` contract (no ticket refs, dates or change narrative) and its scrubber. |
+| `writer.py` | Transactional, deterministic build. Validates first; writes to a temp file and renames. |
+| `store.py` | `CodeGraph` — read-only query facade over one connection. |
+| `tools.py` | The read-only queries the MCP tools wrap. |
+| `codec.py` | The JSON interchange shape shared by `build` and `export`. |
+| `markdown.py` | The pre-0.2 markdown parser. **Migration only** — nothing on the query path imports it. |
+
+## Development
+
+```sh
+uv sync
+uv run pytest -q
 ```
-
-The plugin wires this via the root [`../.mcp.json`](../.mcp.json) (`uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp …`).
-
-## Develop / test
-
-```bash
-cd mcp
-python -m pytest -q          # loader + tools (stdlib only — no FastMCP needed)
-uv run --with fastmcp python -c "import codebase_kg.server"   # server import smoke
-```
-
-Layout:
-
-```
-mcp/
-├── pyproject.toml            # fastmcp; console script: codebase-kg
-├── src/codebase_kg/
-│   ├── models.py             # Node / Header / Graph (dataclasses)
-│   ├── loader.py             # parse KNOWLEDGE_GRAPH.md → Graph (new schema + legacy aliases)
-│   ├── tools.py              # the 7 queries
-│   └── server.py             # FastMCP("codebase-kg") wiring
-└── tests/                    # fixtures = a cross-linked ios/android KG pair + a tiny source tree
-```
-
-The loader is tolerant of **legacy** hand-written field names (`type`/`files`/`details`/`deps`)
-as well as the new schema (`kind`/`anchors`/`summary`/`edges`), so it parses existing hand-written
-KGs during migration.

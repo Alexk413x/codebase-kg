@@ -1,0 +1,93 @@
+{
+  "_comment": [
+    "A worked cross-codebase example: the Android half of an Android ↔ iOS pair.",
+    "It exists to show the three parity shapes on real-looking nodes. Build it with:",
+    "    python -m codebase_kg.build docs/examples/EXAMPLE_GRAPH.json -o /tmp/example.db",
+    "then poke at it with the kg_* tools. See SCHEMA.md §9 for the parity contract."
+  ],
+
+  "codebase": "android",
+  "root": "app/src/main/java/com/example/acme",
+  "language": "kotlin",
+  "counterpart": "../../acme-ios/knowledge/code_graph.db",
+  "generated": "2026-07-30",
+
+  "nodes": [
+    {
+      "id": "saved_article",
+      "kind": "Room @Entity",
+      "description": "Persisted bookmark in the saved_articles table, indexed by articleId for dedup.",
+      "section": "DOMAIN",
+      "anchors": ["data/room/SavedArticleEntity.kt#SavedArticleEntity"],
+      "edges": ["saved_article_dao", "bookmarks_screen"],
+      "parity": "matched",
+      "counterpart": "../../acme-ios/knowledge/code_graph.db#saved_article",
+      "_note": "MATCHED — SwiftData @Model on the iOS side. Platform tooling differing is expected and is not divergence."
+    },
+    {
+      "id": "saved_article_dao",
+      "kind": "Room @Dao",
+      "description": "Queries saved_articles: observeAll, findByUrl, insert, deleteByUrl, count.",
+      "section": "DATA",
+      "anchors": ["data/room/SavedArticleDao.kt#SavedArticleDao"],
+      "edges": ["saved_article"]
+    },
+    {
+      "id": "bookmarks_screen",
+      "kind": "View (Composable)",
+      "description": "Bookmarks list; renders saved articles with swipe-to-delete and an empty state.",
+      "section": "VIEWS",
+      "anchors": ["ui/bookmarks/BookmarksScreen.kt#BookmarksScreen"],
+      "edges": ["saved_article", "bookmarks_view_model"]
+    },
+    {
+      "id": "bookmarks_view_model",
+      "kind": "ViewModel",
+      "description": "Backs the bookmarks screen; exposes the saved list as state and removes entries.",
+      "section": "VIEW MODELS",
+      "anchors": ["ui/bookmarks/BookmarksViewModel.kt#BookmarksViewModel"],
+      "edges": ["saved_article_dao"]
+    },
+    {
+      "id": "feed_ranker",
+      "kind": "Domain (pure)",
+      "description": "Ranks the feed by freshness, breaking flag and normalized source/category weight; stable sort, identity on cold start.",
+      "section": "DOMAIN",
+      "anchors": [
+        "domain/FeedRanker.kt#FeedRanker",
+        "domain/FeedRanker.kt#ExploreExploitBalancer"
+      ],
+      "edges": ["feed_view_model"],
+      "parity": "divergent",
+      "counterpart": "../../acme-ios/knowledge/code_graph.db#personalized_ranking",
+      "divergence": "Android: pure, persisted signals, wired into the feed. iOS: actor, in-memory, unwired.",
+      "_note": "DIVERGENT — both sides have it, implemented differently enough to flag. counterpart AND divergence are both required here."
+    },
+    {
+      "id": "feed_view_model",
+      "kind": "ViewModel",
+      "description": "Loads articles, applies the ranker, and exposes feed state with pull-to-refresh.",
+      "section": "VIEW MODELS",
+      "anchors": ["ui/feed/FeedViewModel.kt#FeedViewModel"],
+      "edges": ["feed_ranker"]
+    },
+    {
+      "id": "night_digest",
+      "kind": "Theme",
+      "description": "Time-windowed warm-amber theme applied between local sunset and sunrise.",
+      "section": "THEME",
+      "anchors": ["ui/theme/Theme.kt#NightDigest"],
+      "edges": ["main_activity"],
+      "parity": "android-only",
+      "_note": "ANDROID-ONLY — iOS mentions this in a product doc, but there is no code. A doc mention does not count; verify against source. NO counterpart, NO divergence."
+    },
+    {
+      "id": "main_activity",
+      "kind": "App (Activity)",
+      "description": "Single activity host; sets the theme and hosts the navigation graph.",
+      "section": "APP ENTRY",
+      "anchors": ["MainActivity.kt#MainActivity"],
+      "edges": ["bookmarks_screen", "feed_view_model", "night_digest"]
+    }
+  ]
+}

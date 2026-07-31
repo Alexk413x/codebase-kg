@@ -1,0 +1,70 @@
+{
+  "_comment": [
+    "Authoring template for a codebase-kg code graph. This JSON is the INPUT format;",
+    "the committed artifact is knowledge/code_graph.db, built from it with:",
+    "",
+    "    python -m codebase_kg.build graph.json -o knowledge/code_graph.db",
+    "",
+    "Delete this file after building — it is a working file, not an artifact. To edit an",
+    "existing graph, get this shape back with `python -m codebase_kg.export -o graph.json`.",
+    "Keys starting with _ are ignored by the builder. See SCHEMA.md for the full contract.",
+    "",
+    "Every id in an `edges` list must be a node in this same document — the builder refuses",
+    "the whole file otherwise, which is how dangling edges are made impossible. This template",
+    "builds as-is; keep it that way as you edit."
+  ],
+
+  "codebase": "<short name: android | ios | web | backend>",
+  "root": "<code root, repo-relative, e.g. app/src/main/java/com/example/app>",
+  "language": "<optional hint: kotlin | swift | typescript | python>",
+  "counterpart": "<optional: ../peer-repo/knowledge/code_graph.db>",
+  "generated": "<YYYY-MM-DD>",
+
+  "nodes": [
+    {
+      "_comment": "Minimal node. id + kind are required; description is all but required.",
+      "id": "feed_ranker",
+      "kind": "Domain (pure)",
+      "description": "Ranks the main feed by freshness, breaking flag and normalized source/category weight; stable sort, identity on cold start.",
+      "section": "DOMAIN",
+      "anchors": [
+        "domain/FeedRanker.kt#FeedRanker",
+        "domain/FeedRanker.kt#ExploreExploitBalancer"
+      ],
+      "edges": ["saved_article"]
+    },
+    {
+      "_comment": "A node with a peer in another codebase. parity=matched REQUIRES counterpart and must NOT carry divergence.",
+      "id": "saved_article",
+      "kind": "Room @Entity",
+      "description": "Persisted bookmark in the saved_articles table, indexed by articleId for dedup.",
+      "section": "DOMAIN",
+      "anchors": ["room/SavedArticleEntity.kt#SavedArticleEntity"],
+      "edges": [],
+      "parity": "matched",
+      "counterpart": "../../app-ios/knowledge/code_graph.db#saved_article"
+    },
+    {
+      "_comment": "parity=divergent REQUIRES both counterpart and a one-line divergence.",
+      "id": "personalized_ranking",
+      "kind": "Service",
+      "description": "Scores articles per category from in-memory signals; defined but not wired into the feed.",
+      "section": "SERVICES",
+      "anchors": ["services/PersonalizedRankingService.kt#PersonalizedRankingService"],
+      "edges": [],
+      "parity": "divergent",
+      "counterpart": "../../app-ios/knowledge/code_graph.db#feed_ranker",
+      "divergence": "Android: pure, persisted, wired. iOS: actor, in-memory, unwired."
+    },
+    {
+      "_comment": "parity=<codebase>-only must have NEITHER counterpart NOR divergence.",
+      "id": "night_digest",
+      "kind": "Theme",
+      "description": "Time-windowed warm-amber theme applied between 22:00 and 06:00 local.",
+      "section": "THEME",
+      "anchors": ["theme/Theme.kt#NightDigest"],
+      "edges": [],
+      "parity": "android-only"
+    }
+  ]
+}

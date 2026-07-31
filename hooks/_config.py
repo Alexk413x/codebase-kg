@@ -9,25 +9,36 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
 from pathlib import Path
 
 DEFAULTS: dict[str, object] = {
     "root": "",  # empty => the whole project
-    "kg_path": "knowledge/KNOWLEDGE_GRAPH.md",  # the KG always lives here; a .local.md may override
+    # The graph always lives here; a .local.md may override via `graph_path`
+    # (`kg_path` is still honored for checkouts predating the rename).
+    "graph_path": "knowledge/code_graph.db",
     "post_edit_nudge": True,  # master off-switch for the hook
-    "nudge_every": 5,  # nudge once per this many source edits since the KG was last touched
-    # Generic doc/config exclusions (NOT language detection) — these edits don't imply KG drift.
+    "nudge_every": 5,  # nudge once per this many source edits since the graph was touched
+    # Generic doc/config exclusions (NOT language detection) — these edits don't
+    # imply graph drift. Kept identical to the pre-push gate's EXCLUDE_EXT; the
+    # two are asserted equal by test_hook_parity.py, because the copies had
+    # silently drifted when only a comment held them together.
     "exclude_ext": [
-        ".md", ".markdown", ".txt", ".json", ".lock", ".yaml", ".yml",
-        ".toml", ".cfg", ".ini", ".gitignore", ".gitattributes",
+        ".md", ".markdown", ".txt", ".json", ".lock", ".yaml", ".yml", ".toml",
+        ".cfg", ".ini", ".gitignore", ".gitattributes", ".pro",
     ],
 }
 
-# Directories whose edits never imply KG drift.
+# Directories whose edits never imply graph drift. Identical to the pre-push
+# gate's IGNORE_DIRS — see the note above.
 IGNORE_DIRS = {
-    ".git", ".claude", ".github", "node_modules", "build", "dist", "out",
-    ".venv", "venv", "__pycache__", ".gradle", ".idea", ".vscode", "target",
+    ".git", ".github", ".githooks", ".claude", "node_modules", "build", "dist",
+    "out", ".venv", "venv", "__pycache__", ".gradle", ".idea", ".vscode",
+    "target", "Pods", "DerivedData", ".next", "vendor",
 }
+# Precomputed: the set is not all-lowercase (Pods, DerivedData), so the
+# comparison must fold case — and rebuilding it per call was pure waste.
+_IGNORE_LOWER = {d.lower() for d in IGNORE_DIRS}
 
 
 def project_dir(cwd: str | None) -> Path:
@@ -49,6 +60,13 @@ def _coerce(value: str) -> object:
 
 
 def _parse_frontmatter(text: str) -> dict[str, object]:
+    """Same rules as the pre-push gate and the MCP server: strip an inline
+    `# comment` tail and ignore `<placeholder>` values.
+
+    Those two rules are not cosmetic. Without the comment strip, a perfectly
+    ordinary `root: app/src  # java only` yields a path that matches nothing, and
+    this hook goes silent for the whole repo with no error anywhere.
+    """
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return {}
@@ -60,7 +78,8 @@ def _parse_frontmatter(text: str) -> dict[str, object]:
             continue
         key, _, val = line.partition(":")
         key = key.strip().lower()
-        if key and val.strip():
+        val = re.sub(r"\s+#.*$", "", val).strip()
+        if key and val and not val.startswith("<"):
             out[key] = _coerce(val)
     return out
 
@@ -76,37 +95,61 @@ def load_config(proj: Path) -> dict[str, object]:
     return cfg
 
 
-def find_kg(proj: Path, cfg: dict[str, object]) -> Path | None:
-    """Resolve the KG from `kg_path` (default: knowledge/KNOWLEDGE_GRAPH.md). No
-    root fallback — if the file isn't there, the repo has no KG yet and the hook
-    no-ops."""
-    kg_path = str(cfg.get("kg_path") or "knowledge/KNOWLEDGE_GRAPH.md")
-    p = Path(kg_path)
+def find_graph(proj: Path, cfg: dict[str, object]) -> Path | None:
+    """Resolve the graph from `graph_path` (default: knowledge/code_graph.db). No
+    root fallback — if the file isn't there, the repo has no graph yet and the
+    hook no-ops."""
+    raw = cfg.get("graph_path") or cfg.get("kg_path") or "knowledge/code_graph.db"
+    p = Path(str(raw))
     if not p.is_absolute():
         p = proj / p
     return p.resolve() if p.is_file() else None
 
 
-def kg_header_value(kg_file: Path, key: str) -> str:
-    """Read one `key:` from the KG header block — the committed, shared config
-    (so `root` etc. don't depend on a per-dev `.local.md`)."""
+def _rows(graph_file: Path, sql: str, params: tuple[object, ...] = ()) -> list[tuple]:
+    """Query the graph read-only. Any failure is "no rows" — this is an advisory
+    hook and must never turn a bad graph file into a broken edit."""
     try:
-        head = "\n".join(kg_file.read_text(encoding="utf-8").splitlines()[:40])
-    except OSError:
-        return ""
-    m = re.search(rf"(?mi)^\s*{re.escape(key)}:\s*(.+?)\s*$", head)
-    return re.sub(r"\s+#.*$", "", m.group(1)).strip() if m else ""
+        conn = sqlite3.connect(f"{graph_file.as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return []
+    try:
+        return conn.execute(sql, params).fetchall()
+    except sqlite3.DatabaseError:
+        return []
+    finally:
+        conn.close()
 
 
-def is_source_file(path: Path, proj: Path, cfg: dict[str, object], kg: Path) -> bool:
-    """True when an edit to `path` plausibly affects the KG (a code unit under
-    `root`, not a doc/config, not in an ignored dir, not the KG itself)."""
+def graph_meta(graph_file: Path, key: str) -> str:
+    """Read one key from the graph's `meta` table — the committed, shared config
+    (so `root` etc. don't depend on a per-dev `.local.md`)."""
+    rows = _rows(graph_file, "SELECT value FROM meta WHERE key = ?", (key,))
+    return str(rows[0][0]) if rows else ""
+
+
+def is_anchored(graph_file: Path, rel_path: str) -> bool:
+    """Does any node anchor on this path? An indexed probe, not a full scan.
+
+    This runs on every source edit, so it has to be a probe: pulling every
+    anchor path into a set to answer one boolean cost ~83 ms at 100k anchors
+    against ~0.5 ms here.
+    """
+    return bool(
+        _rows(graph_file, "SELECT 1 FROM anchor WHERE path = ? LIMIT 1", (rel_path,))
+    )
+
+
+def is_source_file(path: Path, proj: Path, cfg: dict[str, object]) -> bool:
+    """True when an edit to `path` plausibly affects the graph (a code unit under
+    `root`, not a doc/config, not in an ignored dir). The caller checks whether
+    the file *is* the graph."""
     try:
         rel = path.relative_to(proj)
     except ValueError:
         return False  # outside the project
     dir_parts = {p.lower() for p in rel.parts[:-1]}
-    if dir_parts & {d.lower() for d in IGNORE_DIRS}:
+    if dir_parts & _IGNORE_LOWER:
         return False
     root = str(cfg.get("root") or "")
     if root:

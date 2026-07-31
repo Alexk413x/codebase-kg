@@ -1,53 +1,53 @@
 ---
-description: Install the codebase-kg pre-push gate into the current repo — a blocking hook that rejects a push when source changed but the KG wasn't updated. Vendors a stdlib-only checker into the repo's hooks (portable for all clones/CI). Config-free — the gate reads root from the committed KG header. Non-destructive to existing hooks.
+description: Install the codebase-kg pre-push staleness check into the current repo — an advisory hook that reports when a push adds source no node covers, or deletes source the graph still anchors on. Vendors a stdlib-only checker into the repo's hooks (portable for all clones/CI). Config-free — it reads root from the committed graph. Non-destructive to existing hooks.
 argument-hint: "[repo path | empty = current repo]"
 ---
 
 # /codebase-kg:install-hooks
 
-Wire the pre-push KG freshness gate into a repo. The gate **blocks** a push when tracked source
-under the KG's `root` changed but `KNOWLEDGE_GRAPH.md` wasn't updated to match (overridable with
-`git push --no-verify`). See `git-hooks/README.md` for the design.
+Wire the pre-push staleness check into a repo. It **never blocks** — it compares the commits you are
+pushing against the committed graph and reports two things: new source files no node covers, and
+deleted files the graph still anchors on. See `git-hooks/README.md` for the design.
 
 ## Steps
 
-### 1. Config — none needed (it's in the committed KG header)
-The gate reads `root` from the KG's own header (`codebase`/`root`/`counterpart`, §3) and
-auto-discovers the KG at `knowledge/KNOWLEDGE_GRAPH.md`. So there is **no config file to write** —
-the shared, committed KG header is the config. (Only create a gitignored
-`.claude/codebase-kg.local.md` if a particular clone needs to override the header — see the
-template.) If the repo has no KG yet, run `/codebase-kg:build` first.
+### 1. Config — none needed (it's in the committed graph)
+The check reads `root` from the graph's own `meta` table and auto-discovers
+`knowledge/code_graph.db`. There is **no config file to write** — the shared, committed graph is the
+config. (Only create a gitignored `.claude/codebase-kg.local.md` if a particular clone needs to
+override it — see the template.) If the repo has no graph yet, run `/codebase-kg:build` first.
 
 ### 2. Detect the repo's hooks setup
 Run `git config core.hooksPath`:
+
 - **Set** (e.g. `.githooks`) → that's the hooks dir.
 - **Unset** → use `.githooks/` and run `git config core.hooksPath .githooks` (the shareable pattern;
-  `.git/hooks/` is not committed, so other clones wouldn't get the gate).
+  `.git/hooks/` is not committed, so other clones wouldn't get it).
 
 ### 3. Vendor the checker
-Copy `${CLAUDE_PLUGIN_ROOT}/git-hooks/kg_pre_push.py` into the hooks dir. It is **stdlib-only**, so
-it runs for every clone/CI with no plugin install.
+Copy `${CLAUDE_PLUGIN_ROOT}/git-hooks/kg_pre_push.py` into the hooks dir. It is **stdlib-only**
+(sqlite3 included), so it runs for every clone and CI with no plugin install.
 
 ### 4. Wire the `pre-push`
 - **No existing `pre-push`** → copy `${CLAUDE_PLUGIN_ROOT}/git-hooks/pre-push` into the hooks dir;
   `chmod +x` it.
-- **Existing `pre-push`** (e.g. a repo that already runs tests/lint on push) → **do not overwrite
-  it.** Add these two lines near the top (after `set -e` if present, and **before anything that
-  reads stdin** — git feeds the pushed refs on stdin and the checker consumes them), and if it
-  already has its own ad-hoc KG-freshness check, replace that block with this call:
+- **Existing `pre-push`** → **do not overwrite it.** Add these two lines near the top (**before
+  anything that reads stdin** — git feeds the pushed refs there and the checker consumes them). If
+  it already contains an older blocking KG-freshness check, replace that block with this call:
   ```sh
   if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
-  "$PY" "$(dirname "$0")/kg_pre_push.py" || exit 1
+  "$PY" "$(dirname "$0")/kg_pre_push.py" || true
   ```
+  The `|| true` matters: this check is advisory and must not fail a push even if it errors.
 
 ### 5. Verify + explain
 - Confirm the hook is executable and `core.hooksPath` resolves.
-- Tell the user the gate is **freshness-only** (deterministic): it ensures the KG ships with the
-  code. The semantic update is `/codebase-kg:refresh` (updates changed nodes + `updated` dates +
-  reconciles parity vs the peer KG); deeper drift is `/codebase-kg:validate`. Override: `--no-verify`.
+- Tell the user it is **advisory** and never blocks, so there is no `--no-verify` to remember. It
+  answers "does this push move the code away from the map?" The fix is `/codebase-kg:refresh`;
+  deeper drift is `/codebase-kg:validate`.
 
 ## Posture
 
-Non-destructive: never overwrite an existing hook — integrate a call into it. The gate blocks (the
-user chose enforcement) but always has the `--no-verify` escape hatch. Everything is committed in the
-repo (vendored checker + `.githooks/`), so all clones and CI get the same gate.
+Non-destructive: never overwrite an existing hook — integrate a call into it. Advisory, always
+exit 0 (this replaced an earlier blocking, date-based gate — see `docs/DESIGN.md`). Everything is
+committed in the repo (vendored checker + `.githooks/`), so all clones and CI behave the same.

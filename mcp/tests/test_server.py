@@ -1,86 +1,200 @@
+"""Server wiring: path resolution, caching, and the tool registration surface."""
+
 from __future__ import annotations
 
-import os
-import sys
+import shutil
 from pathlib import Path
+from typing import Iterator
 
 import pytest
 
-from codebase_kg import server
+from codebase_kg import migrate, server
+from codebase_kg.models import Meta, Node
+from codebase_kg.writer import build
+
+FIX = Path(__file__).resolve().parent / "fixtures"
 
 
 @pytest.fixture(autouse=True)
-def _clean_server_state(monkeypatch: pytest.MonkeyPatch):
-    """Neutralize CLI/env resolution and reset the module-level caches."""
-    monkeypatch.setattr(sys, "argv", ["codebase-kg"])
-    monkeypatch.delenv("CODEBASE_KG_PATH", raising=False)
-    server._graph = None
-    server._graph_sig = None
-    server._peer = None
-    server._peer_sig = None
+def reset_server_state() -> Iterator[None]:
+    """The server remembers a resolved path; each test starts from cold."""
     server._graph_path = None
     yield
-    server._graph = None
-    server._graph_sig = None
-    server._peer = None
-    server._peer_sig = None
     server._graph_path = None
 
 
-def _mini_kg(node_id: str) -> str:
-    return (
-        "# T — Knowledge Graph\n\n"
-        "```\ncodebase: t\nroot: src\nrefreshed: 2026-01-01\n```\n\n"
-        "## NODES\n\n### S\n\n"
-        f"| id | {node_id} |\n"
-        "| kind | Thing |\n"
-        "| summary | A thing. |\n"
-    )
+def _repo(tmp_path: Path) -> Path:
+    """A repo-shaped tree with a built graph at knowledge/code_graph.db."""
+    shutil.copytree(FIX / "android", tmp_path / "android")
+    knowledge = tmp_path / "knowledge"
+    knowledge.mkdir()
+    migrate.convert(tmp_path / "android" / "KNOWLEDGE_GRAPH.md", knowledge / "code_graph.db")
+    return tmp_path
 
 
-def test_missing_kg_raises_then_resolves_once_built(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Session starts with no KG: every call errors — but once /codebase-kg:build
-    # creates the file, the next call must pick it up (no server restart).
+# --- path resolution ---------------------------------------------------------
+def test_cli_arg_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _repo(tmp_path)
+    target = repo / "knowledge" / "code_graph.db"
+    monkeypatch.setattr("sys.argv", ["server", str(target)])
+    assert server._resolve_graph_path() == target.resolve()
+
+
+def test_env_var_used_when_no_cli_arg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _repo(tmp_path)
+    target = repo / "knowledge" / "code_graph.db"
+    monkeypatch.setattr("sys.argv", ["server"])
+    monkeypatch.setenv("CODEBASE_KG_PATH", str(target))
+    assert server._resolve_graph_path() == target.resolve()
+
+
+def test_walks_up_to_knowledge_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _repo(tmp_path)
+    deep = repo / "android" / "src" / "ui"
+    monkeypatch.setattr("sys.argv", ["server"])
+    monkeypatch.delenv("CODEBASE_KG_PATH", raising=False)
+    monkeypatch.chdir(deep)
+    assert server._resolve_graph_path() == (repo / "knowledge" / "code_graph.db").resolve()
+
+
+def test_no_repo_root_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A graph sitting loose at the repo root is deliberately not found.
+    build(tmp_path / "code_graph.db", Meta(codebase="x"), [Node(id="a", kind="K")])
+    monkeypatch.setattr("sys.argv", ["server"])
+    monkeypatch.delenv("CODEBASE_KG_PATH", raising=False)
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(FileNotFoundError):
-        server._get_graph()
-    kg = tmp_path / "knowledge" / "KNOWLEDGE_GRAPH.md"
-    kg.parent.mkdir()
-    kg.write_text(_mini_kg("a"), encoding="utf-8")
-    g = server._get_graph()
-    assert g.by_id("a") is not None
+    assert server._resolve_graph_path() is None
 
 
-def test_graph_reloads_when_file_changes(
+# --- .local.md override ------------------------------------------------------
+def _write_local(base: Path, body: str) -> None:
+    (base / ".claude").mkdir(parents=True, exist_ok=True)
+    (base / ".claude" / "codebase-kg.local.md").write_text(body, encoding="utf-8")
+
+
+def test_local_graph_path_override(tmp_path: Path) -> None:
+    build(tmp_path / "custom.db", Meta(codebase="x"), [Node(id="a", kind="K")])
+    _write_local(tmp_path, "---\ngraph_path: custom.db\n---\n")
+    assert server._local_graph_path(tmp_path) == tmp_path / "custom.db"
+
+
+def test_legacy_kg_path_key_still_honored(tmp_path: Path) -> None:
+    # Existing checkouts configured before the rename must keep working.
+    build(tmp_path / "custom.db", Meta(codebase="x"), [Node(id="a", kind="K")])
+    _write_local(tmp_path, "---\nkg_path: custom.db\n---\n")
+    assert server._local_graph_path(tmp_path) == tmp_path / "custom.db"
+
+
+def test_graph_path_wins_over_legacy_key(tmp_path: Path) -> None:
+    _write_local(tmp_path, "---\nkg_path: old.db\ngraph_path: new.db\n---\n")
+    assert server._local_graph_path(tmp_path) == tmp_path / "new.db"
+
+
+def test_local_placeholder_is_ignored(tmp_path: Path) -> None:
+    _write_local(tmp_path, "---\ngraph_path: <path to the db>\n---\n")
+    assert server._local_graph_path(tmp_path) is None
+
+
+def test_local_without_frontmatter_is_ignored(tmp_path: Path) -> None:
+    _write_local(tmp_path, "graph_path: custom.db\n")
+    assert server._local_graph_path(tmp_path) is None
+
+
+def test_local_comment_tail_is_stripped(tmp_path: Path) -> None:
+    _write_local(tmp_path, "---\ngraph_path: custom.db   # per-clone\n---\n")
+    assert server._local_graph_path(tmp_path) == tmp_path / "custom.db"
+
+
+# --- errors ------------------------------------------------------------------
+def test_missing_graph_error_points_at_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    kg = tmp_path / "knowledge" / "KNOWLEDGE_GRAPH.md"
-    kg.parent.mkdir()
-    kg.write_text(_mini_kg("a"), encoding="utf-8")
-    monkeypatch.setenv("CODEBASE_KG_PATH", str(kg))
-    assert set(server._get_graph().ids) == {"a"}
-    # An edit must invalidate the cache — kg_validate after an edit has to see
-    # the post-edit graph, not the startup snapshot.
-    kg.write_text(_mini_kg("bb"), encoding="utf-8")
-    os.utime(kg, (os.stat(kg).st_atime, os.stat(kg).st_mtime + 5))
-    assert set(server._get_graph().ids) == {"bb"}
-
-
-def test_resolve_honors_local_md_kg_path_override(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # SCHEMA.md §7: a per-clone .claude/codebase-kg.local.md kg_path override
-    # applies to the MCP server too, not only the hooks/pre-push gate.
-    kg = tmp_path / "docs" / "KG.md"
-    kg.parent.mkdir()
-    kg.write_text(_mini_kg("a"), encoding="utf-8")
-    dot = tmp_path / ".claude"
-    dot.mkdir()
-    (dot / "codebase-kg.local.md").write_text(
-        "---\nkg_path: docs/KG.md   # non-standard clone\n---\n", encoding="utf-8"
-    )
+    monkeypatch.setattr("sys.argv", ["server"])
+    monkeypatch.delenv("CODEBASE_KG_PATH", raising=False)
     monkeypatch.chdir(tmp_path)
-    assert server._resolve_graph_path() == kg.resolve()
-    assert server._get_graph().by_id("a") is not None
+    with pytest.raises(FileNotFoundError, match="/codebase-kg:build"):
+        server._graph_file()
+
+
+def test_unmigrated_repo_gets_migration_instructions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The three consumer repos will hit this exact path before they migrate;
+    # a bare "not found" would be a dead end.
+    knowledge = tmp_path / "knowledge"
+    knowledge.mkdir()
+    shutil.copy(FIX / "android" / "KNOWLEDGE_GRAPH.md", knowledge / "KNOWLEDGE_GRAPH.md")
+    monkeypatch.setattr("sys.argv", ["server"])
+    monkeypatch.delenv("CODEBASE_KG_PATH", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FileNotFoundError, match="codebase_kg.migrate"):
+        server._graph_file()
+
+
+# --- opening -----------------------------------------------------------------
+def test_a_rebuild_while_the_server_runs_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows refuses to replace a file that anyone holds open. Caching the
+    # connection across calls would therefore make /codebase-kg:refresh fail to
+    # write its own output whenever the MCP server was running.
+    repo = _repo(tmp_path)
+    db = repo / "knowledge" / "code_graph.db"
+    monkeypatch.setattr("sys.argv", ["server", str(db)])
+    with server._open_graph() as g:
+        assert g.counts()["nodes"] == 4
+    build(db, Meta(codebase="rebuilt", root="src"), [Node(id="only", kind="K")])
+    with server._open_graph() as g:
+        assert g.meta.codebase == "rebuilt"
+
+
+def test_every_call_sees_the_current_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path)
+    db = repo / "knowledge" / "code_graph.db"
+    monkeypatch.setattr("sys.argv", ["server", str(db)])
+    build(db, Meta(codebase="second", root="src"), [Node(id="only", kind="K")])
+    with server._open_graph() as g:
+        assert g.counts()["nodes"] == 1
+
+
+def test_peer_is_none_without_a_counterpart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "code_graph.db"
+    build(db, Meta(codebase="solo", root="src"), [Node(id="a", kind="K")])
+    monkeypatch.setattr("sys.argv", ["server", str(db)])
+    with server._open_graph() as g, server._open_peer(g) as peer:
+        assert peer is None
+
+
+def test_peer_resolves_relative_to_the_graph(
+    built_fixtures: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = built_fixtures / "android" / "code_graph.db"
+    monkeypatch.setattr("sys.argv", ["server", str(db)])
+    with server._open_graph() as g, server._open_peer(g) as peer:
+        assert peer is not None and peer.meta.codebase == "ios"
+
+
+def test_missing_peer_file_degrades_quietly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "code_graph.db"
+    build(db, Meta(codebase="x", root="src", counterpart="../gone/code_graph.db"),
+          [Node(id="a", kind="K")])
+    monkeypatch.setattr("sys.argv", ["server", str(db)])
+    with server._open_graph() as g, server._open_peer(g) as peer:
+        assert peer is None
+
+
+# --- tool surface ------------------------------------------------------------
+def test_all_eight_tools_are_registered() -> None:
+    import asyncio
+
+    names = {t.name for t in asyncio.run(server.mcp.list_tools())}
+    assert names == {
+        "kg_search", "kg_node", "kg_neighborhood", "kg_find_by_kind",
+        "kg_find_by_path", "kg_parity_gaps", "kg_stats", "kg_validate",
+    }

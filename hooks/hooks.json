@@ -1,5 +1,5 @@
 {
-  "description": "codebase-kg advisory hook: a PostToolUse nudge on Edit/Write/MultiEdit that reminds you to run /codebase-kg:refresh when source files under the repo's root change without the KNOWLEDGE_GRAPH.md being touched. Never blocks, never edits. Honors .claude/codebase-kg.local.md (post_edit_nudge, nudge_every, root, kg_path); no-ops when the repo has no KG.",
+  "description": "codebase-kg advisory hook: a PostToolUse nudge on Edit/Write/MultiEdit that reminds you to run /codebase-kg:refresh — immediately when you edit a source file no node in knowledge/code_graph.db anchors on, and periodically once enough mapped files have changed. Never blocks, never edits. Honors .claude/codebase-kg.local.md (post_edit_nudge, nudge_every, root, graph_path); no-ops when the repo has no graph.",
   "hooks": {
     "PostToolUse": [
       {

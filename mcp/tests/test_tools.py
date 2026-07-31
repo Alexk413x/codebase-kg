@@ -1,203 +1,258 @@
+"""The MCP tool surface: shapes, ranking, and the advisory drift report."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
 from codebase_kg import tools
-from codebase_kg.loader import parse_graph
-from codebase_kg.models import Graph
-
-FIX = Path(__file__).resolve().parent / "fixtures"
+from codebase_kg.store import CodeGraph
 
 
-def _ids(results: list[dict[str, object]]) -> set[str]:
-    return {str(r["id"]) for r in results}
+# --- kg_search ---------------------------------------------------------------
+def test_search_ranks_the_named_node_first(android_graph: CodeGraph) -> None:
+    r = tools.kg_search(android_graph, "feed ranker")
+    assert r["results"][0]["id"] == "feed_ranker"
 
 
-def test_search_finds_by_summary(android_graph: Graph) -> None:
-    out = tools.kg_search(android_graph, "rank feed")
-    assert out["count"] >= 1
-    assert "feed_ranker" in _ids(out["results"])  # type: ignore[arg-type]
+def test_search_matches_description_text(android_graph: CodeGraph) -> None:
+    r = tools.kg_search(android_graph, "swipe to delete")
+    assert [x["id"] for x in r["results"]] == ["bookmarks_screen"]
 
 
-def test_search_kind_filter(android_graph: Graph) -> None:
-    out = tools.kg_search(android_graph, "screen", kind="View")
-    assert "bookmarks_screen" in _ids(out["results"])  # type: ignore[arg-type]
-    assert "saved_article" not in _ids(out["results"])  # type: ignore[arg-type]
+def test_search_results_carry_anchors(android_graph: CodeGraph) -> None:
+    r = tools.kg_search(android_graph, "feed ranker")
+    assert r["results"][0]["anchors"] == ["domain/FeedRanker.kt#FeedRanker"]
 
 
-def test_node_full(android_graph: Graph) -> None:
-    out = tools.kg_node(android_graph, "feed_ranker")
-    assert out["found"] is True
-    assert out["parity"] == "divergent"
-    assert out["inbound_edges"] == []
+def test_search_kind_filter(android_graph: CodeGraph) -> None:
+    r = tools.kg_search(android_graph, "bookmark", kind="Composable")
+    assert {x["id"] for x in r["results"]} == {"bookmarks_screen"}
 
 
-def test_node_unknown_suggests(android_graph: Graph) -> None:
-    out = tools.kg_node(android_graph, "feed")
-    assert out["found"] is False
-    assert "feed_ranker" in out["did_you_mean"]  # type: ignore[operator]
-
-
-def test_neighborhood(android_graph: Graph) -> None:
-    out = tools.kg_neighborhood(android_graph, "saved_article", depth=1)
-    assert out["found"] is True
-    ids = {str(n["id"]) for n in out["neighbors"]}  # type: ignore[union-attr]
-    # inbound: bookmarks_screen, feed_ranker
-    assert {"bookmarks_screen", "feed_ranker"} <= ids
-
-
-def test_find_by_kind(android_graph: Graph) -> None:
-    out = tools.kg_find_by_kind(android_graph, "domain")
-    assert out["count"] == 1
-    assert out["nodes"][0]["id"] == "feed_ranker"  # type: ignore[index]
-
-
-def test_parity_gaps(android_graph: Graph) -> None:
-    out = tools.kg_parity_gaps(android_graph)
-    assert out["count"] == 2  # feed_ranker (divergent) + night_digest (android-only)
-    assert out["by_status"] == {"divergent": 1, "android-only": 1}
-
-
-def test_parity_gaps_status_filter(android_graph: Graph) -> None:
-    out = tools.kg_parity_gaps(android_graph, status="only")
-    assert _ids(out["gaps"]) == {"night_digest"}  # type: ignore[arg-type]
-    out2 = tools.kg_parity_gaps(android_graph, status="divergent")
-    assert _ids(out2["gaps"]) == {"feed_ranker"}  # type: ignore[arg-type]
-
-
-def test_stats(android_graph: Graph) -> None:
-    out = tools.kg_stats(android_graph)
-    assert out["nodes"] == 4
-    assert out["codebase"] == "android"
-    assert out["parity"] == {"matched": 1, "divergent": 1, "android-only": 1}
-
-
-def test_node_includes_updated(android_graph: Graph) -> None:
-    out = tools.kg_node(android_graph, "saved_article")
-    assert out["updated"] == "2026-06-08"
-
-
-def test_stats_updated_summary(android_graph: Graph) -> None:
-    u = tools.kg_stats(android_graph)["updated"]
-    assert u["oldest"] == "2026-06-01"  # type: ignore[index]
-    assert u["newest"] == "2026-06-08"  # type: ignore[index]
-    assert u["missing"] == 2  # bookmarks_screen + night_digest have no `updated`  # type: ignore[index]
-    assert u["stale_vs_refreshed"] == 1  # feed_ranker 2026-06-01 < refreshed 2026-06-08  # type: ignore[index]
-
-
-def test_validate_android_with_source_and_peer(
-    android_graph: Graph, ios_graph: Graph
+def test_search_kind_filter_excluding_everything_is_empty(
+    android_graph: CodeGraph,
 ) -> None:
-    out = tools.kg_validate(android_graph, peer=ios_graph)
-    # source resolved (fixtures/android/src exists)
-    assert out["source_checked"] is True
-    # one dangling edge: bookmarks_screen -> ghost_node
-    assert out["dangling_edges"] == [{"node": "bookmarks_screen", "edge": "ghost_node"}]
-    # one ungreppable anchor: night_digest theme symbol
-    issues = out["anchor_issues"]
-    assert any(i["node"] == "night_digest" for i in issues)  # type: ignore[union-attr]
-    # matched/divergent counterparts are reciprocal with the peer -> no counterpart issues
-    assert out["counterpart_issues"] == []
-    # field consistency clean (android-only has no counterpart, divergent has both)
-    assert out["field_issues"] == []
-    assert out["ok"] is False  # because of the dangling edge + anchor issue
+    assert tools.kg_search(android_graph, "bookmark", kind="nope")["results"] == []
 
 
-def test_validate_ios_flags_non_reciprocal(ios_graph: Graph, android_graph: Graph) -> None:
-    out = tools.kg_validate(ios_graph, peer=android_graph)
-    # bookmarks_view_model -> android#bookmarks_screen, which has no back-link
-    msgs = [i["node"] for i in out["counterpart_issues"]]  # type: ignore[union-attr]
-    assert "bookmarks_view_model" in msgs
-    # ios source root (App) doesn't exist in fixtures -> anchors unchecked
-    assert out["source_checked"] is False
+def test_search_miss_is_empty_not_an_error(android_graph: CodeGraph) -> None:
+    r = tools.kg_search(android_graph, "quantum tunnelling")
+    assert r["count"] == 0 and r["results"] == []
 
 
-NONRECIP_FIELD_KG = """# X — Knowledge Graph
-
-```
-codebase: x
-root: src
-refreshed: 2026-01-01
-```
-
-## NODES
-
-### N
-
-| id | a |
-| kind | Thing |
-| anchors | `a.py#A` |
-| summary | A. |
-| edges | |
-| parity | divergent |
-| counterpart | ../y/KNOWLEDGE_GRAPH.md#b |
-"""
+def test_search_respects_the_limit(android_graph: CodeGraph) -> None:
+    assert len(tools.kg_search(android_graph, "bookmark", limit=1)["results"]) <= 1
 
 
-def test_validate_field_issue_divergent_missing_divergence() -> None:
-    g = parse_graph(NONRECIP_FIELD_KG, path="")
-    out = tools.kg_validate(g)
-    issues = [i["issue"] for i in out["field_issues"]]  # type: ignore[union-attr]
-    assert any("divergence" in m for m in issues)
+def test_search_prefers_the_id_over_a_passing_mention(android_graph: CodeGraph) -> None:
+    # `saved_article` is named by other nodes' descriptions and edges; the node
+    # whose id *is* the query still has to win.
+    r = tools.kg_search(android_graph, "saved article")
+    assert r["results"][0]["id"] == "saved_article"
 
 
-DOTTED_ANCHOR_KG = """# A — Knowledge Graph
-
-```
-codebase: android
-root: src
-refreshed: 2026-01-01
-```
-
-## NODES
-
-### N
-
-| id | feed_ranker |
-| kind | Domain |
-| anchors | `domain/FeedRanker.kt#FeedRanker.rank`, `domain/FeedRanker.kt#FeedRanker.missingMethod` |
-| summary | Ranks. |
-| edges | |
-"""
+def test_search_exposes_description_not_summary(android_graph: CodeGraph) -> None:
+    top = tools.kg_search(android_graph, "feed ranker")["results"][0]
+    assert "description" in top and "summary" not in top
 
 
-def test_validate_dotted_type_method_anchor() -> None:
-    # SCHEMA.md §4.1 endorses `File.ext#Type.method` anchors — "FeedRanker.rank"
-    # never appears literally, but both segments do, so it must validate; a
-    # dotted anchor whose method is gone must still be flagged.
-    g = parse_graph(DOTTED_ANCHOR_KG, path=str(FIX / "android" / "KNOWLEDGE_GRAPH.md"))
-    out = tools.kg_validate(g)
-    assert out["source_checked"] is True
-    issues = out["anchor_issues"]
-    assert [i["anchor"] for i in issues] == [  # type: ignore[union-attr]
-        "domain/FeedRanker.kt#FeedRanker.missingMethod"
+# --- kg_node -----------------------------------------------------------------
+def test_node_returns_the_full_record(android_graph: CodeGraph) -> None:
+    n = tools.kg_node(android_graph, "feed_ranker")
+    assert n["found"] is True
+    assert n["kind"] == "Domain (pure)"
+    assert n["anchors"] == ["domain/FeedRanker.kt#FeedRanker"]
+    assert n["parity"] == "divergent"
+
+
+def test_node_reports_inbound_edges(android_graph: CodeGraph) -> None:
+    assert tools.kg_node(android_graph, "saved_article")["inbound_edges"] == [
+        "bookmarks_screen",
+        "feed_ranker",
     ]
 
 
-DUP_ID_KG = """# D — Knowledge Graph
-
-```
-codebase: d
-root: src
-refreshed: 2026-01-01
-```
-
-## NODES
-
-### N
-
-| id | article |
-| kind | Model |
-| summary | First. |
-
-| id | article |
-| kind | Enum |
-| summary | Second — same id. |
-"""
+def test_unknown_node_suggests_alternatives(android_graph: CodeGraph) -> None:
+    n = tools.kg_node(android_graph, "ranker")
+    assert n["found"] is False
+    assert "feed_ranker" in n["did_you_mean"]
 
 
-def test_validate_reports_duplicate_ids() -> None:
-    g = parse_graph(DUP_ID_KG, path="")
-    out = tools.kg_validate(g)
-    assert out["duplicate_ids"] == ["article"]
-    assert out["ok"] is False
+# --- kg_neighborhood ---------------------------------------------------------
+def test_neighborhood_includes_both_directions(android_graph: CodeGraph) -> None:
+    r = tools.kg_neighborhood(android_graph, "saved_article", depth=1)
+    assert {n["id"] for n in r["neighbors"]} == {"bookmarks_screen", "feed_ranker"}
+    assert all(n["hops"] == 1 for n in r["neighbors"])
+
+
+def test_neighborhood_depth_is_clamped(android_graph: CodeGraph) -> None:
+    assert tools.kg_neighborhood(android_graph, "saved_article", depth=99)["depth"] == 3
+    assert tools.kg_neighborhood(android_graph, "saved_article", depth=0)["depth"] == 1
+
+
+def test_neighborhood_of_an_unknown_node(android_graph: CodeGraph) -> None:
+    assert tools.kg_neighborhood(android_graph, "nope")["found"] is False
+
+
+def test_neighborhood_never_lists_a_dangling_target(android_graph: CodeGraph) -> None:
+    # `ghost_node` was in the markdown; the store makes it unwritable, so it
+    # can no longer show up as an unresolved neighbor the way it used to.
+    r = tools.kg_neighborhood(android_graph, "bookmarks_screen", depth=2)
+    assert "ghost_node" not in {n["id"] for n in r["neighbors"]}
+
+
+# --- kg_find_by_kind ---------------------------------------------------------
+def test_find_by_kind_substring(android_graph: CodeGraph) -> None:
+    r = tools.kg_find_by_kind(android_graph, "entity")
+    assert r["count"] == 1 and r["nodes"][0]["id"] == "saved_article"
+
+
+def test_find_by_kind_miss(android_graph: CodeGraph) -> None:
+    assert tools.kg_find_by_kind(android_graph, "actor")["count"] == 0
+
+
+# --- kg_find_by_path ---------------------------------------------------------
+def test_find_by_path_full_path(android_graph: CodeGraph) -> None:
+    r = tools.kg_find_by_path(android_graph, "domain/FeedRanker.kt")
+    assert [n["id"] for n in r["nodes"]] == ["feed_ranker"]
+
+
+def test_find_by_path_bare_filename(android_graph: CodeGraph) -> None:
+    r = tools.kg_find_by_path(android_graph, "BookmarksScreen.kt")
+    assert [n["id"] for n in r["nodes"]] == ["bookmarks_screen"]
+
+
+def test_find_by_path_reports_matching_anchors_and_edges(
+    android_graph: CodeGraph,
+) -> None:
+    node = tools.kg_find_by_path(android_graph, "SavedArticleEntity.kt")["nodes"][0]
+    assert node["matched_anchors"] == ["room/SavedArticleEntity.kt#SavedArticleEntity"]
+    assert node["inbound_edges"] == ["bookmarks_screen", "feed_ranker"]
+
+
+def test_find_by_path_miss(android_graph: CodeGraph) -> None:
+    assert tools.kg_find_by_path(android_graph, "Nothing.kt")["count"] == 0
+
+
+def test_find_by_path_tolerates_backslashes(android_graph: CodeGraph) -> None:
+    r = tools.kg_find_by_path(android_graph, "domain\\FeedRanker.kt")
+    assert [n["id"] for n in r["nodes"]] == ["feed_ranker"]
+
+
+# --- kg_parity_gaps ----------------------------------------------------------
+def test_parity_gaps_lists_divergent_and_only(android_graph: CodeGraph) -> None:
+    r = tools.kg_parity_gaps(android_graph)
+    assert {g["id"] for g in r["gaps"]} == {"feed_ranker", "night_digest"}
+    assert r["by_status"] == {"divergent": 1, "android-only": 1}
+
+
+def test_parity_gaps_excludes_matched(android_graph: CodeGraph) -> None:
+    ids = {g["id"] for g in tools.kg_parity_gaps(android_graph)["gaps"]}
+    assert "saved_article" not in ids
+
+
+def test_parity_gaps_status_filter(android_graph: CodeGraph) -> None:
+    only = lambda s: [g["id"] for g in tools.kg_parity_gaps(android_graph, s)["gaps"]]  # noqa: E731
+    assert only("divergent") == ["feed_ranker"]
+    assert only("only") == ["night_digest"]
+    assert only("android-only") == ["night_digest"]
+
+
+# --- kg_stats ----------------------------------------------------------------
+def test_stats_reports_totals_and_breakdowns(android_graph: CodeGraph) -> None:
+    s = tools.kg_stats(android_graph)
+    assert s["codebase"] == "android"
+    assert s["nodes"] == 4
+    assert s["anchors"] == 4
+    assert s["parity"] == {"matched": 1, "divergent": 1, "android-only": 1}
+    assert s["kinds"]["Room @Entity"] == 1
+
+
+def test_stats_flags_isolated_nodes(android_graph: CodeGraph) -> None:
+    # night_digest has no edge in either direction.
+    assert tools.kg_stats(android_graph)["isolated_nodes"]["ids"] == ["night_digest"]
+
+
+# --- kg_validate -------------------------------------------------------------
+def test_validate_resolves_the_source_base(android_graph: CodeGraph) -> None:
+    v = tools.kg_validate(android_graph)
+    assert v["source_checked"] is True
+    assert v["anchors_checked"] == 4
+
+
+def test_validate_flags_an_ungreppable_symbol(android_graph: CodeGraph) -> None:
+    issues = tools.kg_validate(android_graph)["anchor_issues"]
+    assert {
+        "node": "night_digest",
+        "anchor": "theme/Theme.kt#MissingSymbolXYZ",
+        "issue": "symbol not found in file",
+    } in issues
+
+
+def test_validate_is_always_advisory(android_graph: CodeGraph) -> None:
+    assert tools.kg_validate(android_graph)["advisory"] is True
+
+
+def test_validate_reports_structural_guarantees_instead_of_checking(
+    android_graph: CodeGraph,
+) -> None:
+    v = tools.kg_validate(android_graph)
+    assert any("dangling" in g for g in v["guaranteed_by_schema"])
+    assert "dangling_edges" not in v and "duplicate_ids" not in v
+
+
+def test_validate_flags_a_non_reciprocal_counterpart(
+    ios_graph: CodeGraph, built_fixtures: Path
+) -> None:
+    peer = CodeGraph(built_fixtures / "android" / "code_graph.db")
+    try:
+        issues = tools.kg_validate(ios_graph, peer)["counterpart_issues"]
+        # iOS `bookmarks_view_model` points at android `bookmarks_screen`,
+        # which points back at nothing — the link is one-directional.
+        assert any(
+            i["node"] == "bookmarks_view_model" and "back-link" in i["issue"]
+            for i in issues
+        )
+    finally:
+        peer.close()
+
+
+def test_validate_accepts_a_reciprocal_counterpart(
+    ios_graph: CodeGraph, built_fixtures: Path
+) -> None:
+    peer = CodeGraph(built_fixtures / "android" / "code_graph.db")
+    try:
+        issues = tools.kg_validate(ios_graph, peer)["counterpart_issues"]
+        assert not any(i["node"] == "saved_article" for i in issues)
+    finally:
+        peer.close()
+
+
+def test_validate_without_a_peer_skips_reciprocity(android_graph: CodeGraph) -> None:
+    v = tools.kg_validate(android_graph, None)
+    assert all("reciprocal" not in i["issue"] for i in v["counterpart_issues"])
+
+
+# --- uncovered_sources -------------------------------------------------------
+def test_uncovered_sources_uses_the_graphs_own_extensions(
+    android_graph: CodeGraph, built_fixtures: Path
+) -> None:
+    missing = tools.uncovered_sources(android_graph, built_fixtures / "android" / "src")
+    # Only .kt is considered, because that is what this graph anchors on —
+    # nothing about Kotlin is hardcoded anywhere.
+    assert all(m.endswith(".kt") for m in missing)
+
+
+def test_uncovered_sources_is_empty_without_anchors(
+    tmp_path: Path, sample_meta: object
+) -> None:
+    from codebase_kg.models import Meta, Node
+    from codebase_kg.writer import build
+
+    db = tmp_path / "g.db"
+    build(db, Meta(codebase="x", root="", generated="2026-07-30"), [Node(id="a", kind="K")])
+    g = CodeGraph(db)
+    try:
+        assert tools.uncovered_sources(g, tmp_path) == []
+    finally:
+        g.close()

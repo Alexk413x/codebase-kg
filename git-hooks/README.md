@@ -1,25 +1,37 @@
-# git-hooks/ — pre-push KG freshness gate
+# git-hooks/ — pre-push code-graph staleness check
 
-A **blocking, deterministic, vendorable** git pre-push hook: it rejects a push when tracked
-**source** files under the KG's `root` changed in the about-to-push commits but
-`KNOWLEDGE_GRAPH.md` wasn't updated to match (not in the changeset, or its header `refreshed:`
-isn't today). Override with `git push --no-verify`.
+An **advisory, vendorable** git pre-push hook. It compares the commits you are about to push against
+the committed `knowledge/code_graph.db` and reports two things:
 
-This is the **enforcement half**. The **semantic half** — actually updating the changed nodes,
-bumping their per-node `updated` dates, reconciling `parity`/`counterpart` against the peer KG, and
-running `kg_validate` — is the agent's job via `/codebase-kg:refresh`. The gate just guarantees you
-don't push code whose KG is out of sync; it points you at the refresh.
+- **new source files no node covers** — code nobody mapped;
+- **deleted source files the graph still anchors on** — pointers into code that is gone.
+
+It **never blocks**. Exit status is always 0, so there is no `--no-verify` to remember.
 
 | File | Role |
 |---|---|
-| `kg_pre_push.py` | The check — **stdlib only, no codebase-kg dependency**, so it vendors into any repo. Reads `root` from the **committed KG header** (auto-discovers the KG; an optional, gitignored `.claude/codebase-kg.local.md` may override). No committed config file required. |
+| `kg_pre_push.py` | The check — **stdlib only** (sqlite3 included), **no codebase-kg dependency**, so it vendors into any repo. Reads `root` from the committed graph's `meta` table (auto-discovers the graph; an optional, gitignored `.claude/codebase-kg.local.md` may override). No committed config file required. |
 | `pre-push` | Thin `sh` wrapper that runs `kg_pre_push.py` next to it. |
+
+## Why it doesn't block any more
+
+The previous version blocked a push when source changed and the graph's `refreshed:` header wasn't
+today's date. That was wrong twice over:
+
+1. It contradicted the plugin's own "advisory, never blocking" principle — and hard gates get worked
+   around, not obeyed.
+2. **A date cannot measure freshness.** It proves someone edited the file, not that the nodes match
+   the code. In practice a real graph sat at `refreshed: 2026-07-12` with three nodes stale from a
+   later commit — under a gate designed to prevent exactly that.
+
+The current check asks questions with real answers, scoped to the changeset you're pushing. It
+points at `/codebase-kg:refresh` and gets out of the way.
 
 ## Why vendored (copied into the repo) and not referenced from the plugin
 
 A git hook runs for **every clone** of the repo — other devs, CI — where the plugin isn't installed
-and `${CLAUDE_PLUGIN_ROOT}` isn't set. So the check is pure-stdlib and gets **copied into the
-repo's hooks dir**, with no path back to the plugin. It works anywhere Python 3 + git exist.
+and `${CLAUDE_PLUGIN_ROOT}` isn't set. So the check is pure-stdlib and gets **copied into the repo's
+hooks dir**, with no path back to the plugin. It works anywhere Python 3 + git exist.
 
 ## Install
 
@@ -28,46 +40,28 @@ Use `/codebase-kg:install-hooks` (agent-guided — handles the cases below), or 
 **Fresh repo (no existing hooks):**
 ```sh
 mkdir -p .githooks
-cp <plugin>/git-hooks/kg_pre_push.py .githooks/
-cp <plugin>/git-hooks/pre-push       .githooks/
+cp "$PLUGIN/git-hooks/kg_pre_push.py" .githooks/
+cp "$PLUGIN/git-hooks/pre-push" .githooks/
 chmod +x .githooks/pre-push
 git config core.hooksPath .githooks
 ```
 
-**Repo that already has a pre-push hook** (don't overwrite it): copy `kg_pre_push.py` into the
-hooks dir and add this near the top of the existing `pre-push` — **before anything that reads
-stdin**, because git feeds the pushed refs on stdin and the checker consumes them:
+**Repo that already has a `pre-push`:** don't overwrite it. Copy `kg_pre_push.py` in and add two
+lines near the top — **before anything that reads stdin**, since git feeds the pushed refs there and
+this check consumes them:
+
 ```sh
 if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
-"$PY" "$(dirname "$0")/kg_pre_push.py" || exit 1
+"$PY" "$(dirname "$0")/kg_pre_push.py" || true
 ```
 
-No config file is needed — the gate reads `root` from the committed KG header and auto-discovers the
-KG at `knowledge/KNOWLEDGE_GRAPH.md`. (A gitignored `.claude/codebase-kg.local.md` can override the
-header for one clone; see `templates/codebase-kg.local.md.example`.)
+The `|| true` matters: an advisory check must never fail a push, even if it errors.
 
-## What triggers a block
+## What counts as source
 
-- A tracked file under `root` changed in the push range **and** it's a real source file (not the KG,
-  not a doc/config like `.md`/`.json`/`.toml`, not in `build/`, `node_modules/`, `.git/`, …), **and**
-- `KNOWLEDGE_GRAPH.md` is **not** in the same push range, **or** its header `refreshed:` (or legacy
-  `last refreshed`) isn't today's date.
+Same rules as the in-session hook: files under the graph's `root`, excluding docs/config extensions
+(`.md`, `.json`, `.yaml`, …) and ignored directories (`.git`, `node_modules`, `build`, `Pods`,
+`DerivedData`, …). The graph file itself never triggers it.
 
-## How the push range is computed
-
-The checker reads git's pre-push **stdin** (one `<local_ref> <local_sha> <remote_ref> <remote_sha>`
-line per pushed ref), so it gates **exactly what is being pushed** — whichever branch, not the one
-checked out:
-
-- Existing remote ref → `remote_sha...local_sha` (three-dot: remote-side commits don't count).
-- New branch → diffed from the merge-base with the remote default branch (`origin/HEAD` /
-  `origin/main` / `origin/master`); if no remote base exists at all, every commit not on any
-  remote-tracking ref.
-- Ref deletions (all-zeros local sha) push no commits and are skipped.
-
-Run **manually** (no stdin), it falls back to `@{u}...HEAD`, else `origin/main|master...HEAD` — and
-if no such base exists it **fails loudly** (exit 1 with a message) rather than silently passing.
-
-No source change → never blocks. The freshness check is intentionally cheap and dependency-free;
-deeper structural drift (dangling edges, ungreppable anchors, parity reciprocity) is the agent's
-`/codebase-kg:validate` + `/codebase-kg:refresh`.
+A modification to an already-mapped file is deliberately *not* reported — that would fire on every
+push and mean nothing. Description drift is what `kg_validate` and `kg-audit` are for.

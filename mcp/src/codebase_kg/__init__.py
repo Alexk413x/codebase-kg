@@ -1,9 +1,19 @@
-"""codebase-kg — a local MCP server over a per-repo KNOWLEDGE_GRAPH.md.
+"""codebase-kg — a local MCP server over a per-repo committed `code_graph.db`.
 
-Markdown is the source of truth (see ../../SCHEMA.md). `loader` parses it into a
-`Graph` of `Node`s; `tools` runs read-only queries over that graph; `server`
-exposes those queries as FastMCP tools. `loader` and `tools` depend only on the
-standard library, so they are testable without FastMCP installed.
+A single SQLite file is the source of truth (see ../../SCHEMA.md):
+
+- `schema`   — the DDL, whose constraints make dangling edges, duplicate ids and
+               inconsistent parity *unwritable* rather than merely reportable
+- `models`   — `Node` / `Anchor` / `Meta`, the write shape
+- `clean`    — the `description` contract and its scrubber
+- `writer`   — transactional, deterministic build
+- `store`    — read-only query facade (`CodeGraph`)
+- `tools`    — the read-only queries the MCP tools wrap
+- `server`   — FastMCP entry point
+- `markdown` / `migrate` — one-time conversion from the pre-0.2 `KNOWLEDGE_GRAPH.md`
+
+Everything except `server` depends only on the standard library, so the graph
+logic is testable without FastMCP installed.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

@@ -2,6 +2,105 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.2.0] — 2026-07-30 — the graph is a committed database
+
+**Breaking.** The per-repo artifact changes from `knowledge/KNOWLEDGE_GRAPH.md` to a committed
+`knowledge/code_graph.db` (SQLite). Every repo migrates once —
+`python -m codebase_kg.migrate knowledge/KNOWLEDGE_GRAPH.md` — see [`docs/MIGRATION.md`](docs/MIGRATION.md).
+The MCP tool names (`kg_*`) and the plugin name (`codebase-kg`) are deliberately **unchanged**.
+
+### Fixed — a wide-table graph loaded as a single node
+
+The pre-0.2 loader only understood the vertical key/value node table. Real graphs also use a wide
+one-row-per-node form (`| id | kind | anchors | summary | edges | … |`), and against one of those the
+loader read every row as a node called `kind` — collapsing the whole graph to **one** unusable node,
+so every `kg_*` tool silently returned nothing for that repo. Measured against a real 93 KB graph:
+1 node before, **162** after. The migration parser handles both shapes.
+
+This was not a hypothetical: it had been shipping. The plugin's own fixtures were all vertical, so
+the test suite passed throughout.
+
+### Fixed — a rebuild while the MCP server ran could not write (Windows)
+
+The server cached an open handle on the graph. Windows refuses to replace a file anyone holds open,
+so `/codebase-kg:refresh` would fail to write its own output whenever the server was running. The
+graph is now opened per tool call and closed again — affordable because opening a store is
+constant-time, and it removes the cache-invalidation logic entirely. The writer additionally retries
+its atomic rename briefly, so an editor or file indexer holding the file is a non-event.
+
+### Changed — the store
+
+- **Committed SQLite** with a versioned schema, opened read-only. Cold open is ~1 ms at any graph
+  size, against a Markdown parse that was ~12 ms at 175 nodes and ~820 ms at 10,500 — a change of
+  scaling class, not a constant factor.
+- **Integrity is enforced at write time, not audited afterwards.** Foreign keys make a dangling edge
+  unwritable; the primary key makes a duplicate id unwritable; CHECK constraints encode the three
+  legal parity shapes and reject line-number anchors. `kg_validate` reports these as
+  `guaranteed_by_schema` instead of searching for them.
+- **Transactional and deterministic builds.** A build lands whole or not at all, and rebuilding an
+  unchanged graph is byte-identical, so a no-op refresh leaves the git diff empty.
+- **Persisted FTS5 index.** An in-memory index had been deferred because building it landed on the
+  load path; persisting it removes that objection — built once at write time, free on open. Ranked
+  search over 175 nodes runs in ~0.6 ms including hydration.
+- Anchors are normalized into their own indexed table, which is what makes the new reverse lookup a
+  lookup rather than a scan.
+- On-disk size is honestly larger: ~390 KB vs ~115 KB of Markdown for 175 nodes, the cost of
+  carrying an index. Git's packfile delta handles it.
+
+### Changed — `summary` → `description`
+
+One short line saying what a component is and does, capped at 240 chars. **Ticket ids, dates and
+change narrative are rejected** by the builder and by a CHECK constraint on length.
+
+In the real Android graph, summaries were 62% of the payload and carried 171 ticket refs plus
+sentences like "Live-verified: screen-off keeps state=PLAYING" — content that duplicates git and the
+tracker, goes stale immediately, and was the sole reason the format needed a maintenance ceremony at
+all. Migration scrubs it: 175 nodes, average description 321 → 177 chars, zero ticket refs left,
+zero nodes needing a manual rewrite.
+
+Per-node `updated` dates are gone for the same reason; the artifact carries one `generated` stamp.
+
+### Changed — the pre-push hook no longer blocks, and no longer looks at dates
+
+It used to reject a push when source changed and the graph's `refreshed:` header wasn't today. That
+contradicted the plugin's own "advisory, never blocking" principle, and a date cannot measure
+freshness anyway — it proves someone edited the file, not that the nodes match the code. A real
+graph sat at `refreshed: 2026-07-12` with three nodes stale from a later commit, under a gate
+designed to prevent exactly that.
+
+It now reports, and exits 0: new source files in the push that no node covers, and deleted files the
+graph still anchors on. Both are facts about the changeset. Still stdlib-only and vendorable.
+
+### Added
+
+- **`kg_find_by_path`** — reverse lookup: given a source file, which node(s) own it and what
+  connects to them. The inverse of every other tool; accepts a bare filename as a path suffix.
+- **`python -m codebase_kg.build`** and **`python -m codebase_kg.export`** — the JSON authoring path,
+  since an agent cannot write SQLite with an editor. Refresh is export → edit → build, and the round
+  trip is lossless.
+- **`python -m codebase_kg.migrate`** — the one-time conversion, with a report of everything it
+  changed.
+- `kg_validate` now reports **uncovered sources** — files under `root` no node anchors on. Derived
+  from the extensions the graph already uses, so it stays language-agnostic.
+- `kg_stats` reports **isolated nodes** (no edge in either direction), usually a missed relationship.
+- `kg_neighborhood` returns hop counts and reaches 3 hops (was 2).
+- Search splits CamelCase identifiers at index and query time, so "video playback" finds
+  `VideoPlaybackService`. Tokens under 3 characters match exactly rather than as prefixes — prefix
+  matching "to" hit "tonight", "token" and "tools".
+
+### Docs
+
+`SCHEMA.md` and `docs/DESIGN.md` rewritten; `docs/MIGRATION.md` added; all six commands, five skills,
+both reference docs, and the templates updated. `templates/KNOWLEDGE_GRAPH.template.md` →
+`templates/code_graph.template.json`; `docs/examples/EXAMPLE_KG.md` → `EXAMPLE_GRAPH.json`. Both
+build cleanly as-is.
+
+### Tests
+
+222 passing (was 36). New coverage for the schema constraints (proving each bad write actually
+fails), writer determinism and atomicity, the description contract, both markdown table shapes, the
+JSON round trip, and migration fidelity against the fixtures.
+
 ## [0.1.1] — 2026-07-29
 
 ### Fixed

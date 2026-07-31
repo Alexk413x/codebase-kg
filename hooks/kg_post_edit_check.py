@@ -1,12 +1,18 @@
-"""Advisory PostToolUse hook — nudge to refresh the KG after source edits.
+"""Advisory PostToolUse hook — nudge to refresh the code graph after source edits.
 
-Fires on Edit/Write/MultiEdit. When source files under the repo's `root` change
-without the `KNOWLEDGE_GRAPH.md` being touched, it surfaces a quiet reminder to
-run `/codebase-kg:refresh`. It is **advisory only**: it never blocks, never edits,
-and any error exits silently so an edit is never broken.
+Fires on Edit/Write/MultiEdit. Two signals, in order of strength:
 
-State (a per-project pending-edit counter) lives in the OS temp dir — nothing is
-written into the user's repo.
+1. **The edited file is not in the graph at all.** No node anchors on it, so the
+   map has a hole exactly where you are working. That is a fact, not a guess, so
+   it is worth saying the first time it happens.
+2. **Enough anchored files have changed since the graph was last touched.** A
+   weaker heuristic for the descriptions drifting, kept as the periodic nudge.
+
+It is **advisory only**: it never blocks, never edits, and any error exits
+silently so an edit is never broken.
+
+State (a per-project counter plus the set of files already reported) lives in the
+OS temp dir — nothing is written into the user's repo.
 """
 
 from __future__ import annotations
@@ -21,14 +27,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _config import (  # noqa: E402
-    find_kg,
+    find_graph,
+    graph_meta,
+    is_anchored,
     is_source_file,
-    kg_header_value,
     load_config,
     project_dir,
 )
 
 _EDIT_TOOLS = {"Edit", "Write", "MultiEdit"}
+GRAPH_FILENAME = "code_graph.db"
 
 
 def _norm(p: Path) -> str:
@@ -46,22 +54,37 @@ def _state_path(proj: Path) -> Path:
     return d / f"{h}.json"
 
 
-def _read_pending(proj: Path) -> int:
+def _read_state(proj: Path) -> dict[str, object]:
     try:
-        return int(json.loads(_state_path(proj).read_text(encoding="utf-8")).get("pending", 0))
+        data = json.loads(_state_path(proj).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
-        return 0
+        return {}
 
 
-def _write_pending(proj: Path, pending: int) -> None:
+def _write_state(proj: Path, state: dict[str, object]) -> None:
     try:
-        _state_path(proj).write_text(json.dumps({"pending": pending}), encoding="utf-8")
+        _state_path(proj).write_text(json.dumps(state), encoding="utf-8")
     except OSError:
         pass
 
 
 def _emit(message: str) -> None:
     print(json.dumps({"systemMessage": message, "suppressOutput": False}))
+
+
+def _rel_to_root(path: Path, proj: Path, root: str) -> str | None:
+    """The edited path as the graph would anchor it: relative to `root`."""
+    try:
+        rel = path.relative_to(proj).as_posix()
+    except ValueError:
+        return None
+    root = root.replace("\\", "/").strip("/")
+    if root:
+        if not rel.startswith(root + "/"):
+            return None
+        rel = rel[len(root) + 1 :]
+    return rel
 
 
 def _run(data: dict[str, object]) -> None:
@@ -79,33 +102,49 @@ def _run(data: dict[str, object]) -> None:
     if not cfg.get("post_edit_nudge", True):
         return
 
-    kg = find_kg(proj, cfg)
-    if kg is None:
-        return  # no KG in this repo → nothing to keep in sync
+    graph = find_graph(proj, cfg)
+    if graph is None:
+        return  # no graph in this repo → nothing to keep in sync
 
-    # `root` comes from the committed KG header (shared); .local.md may override.
+    # `root` comes from the committed graph meta; .local.md may override.
     if not cfg.get("root"):
-        cfg["root"] = kg_header_value(kg, "root")
+        cfg["root"] = graph_meta(graph, "root")
 
     edited = Path(fp).resolve()
+    state = _read_state(proj)
 
-    # Touching the KG (or a peer KG) clears the pending counter.
-    if _same(edited, kg) or edited.name == "KNOWLEDGE_GRAPH.md":
-        _write_pending(proj, 0)
+    # Touching the graph itself clears the pending counter.
+    if _same(edited, graph) or edited.name == GRAPH_FILENAME:
+        _write_state(proj, {"pending": 0, "reported": []})
         return
 
-    if not is_source_file(edited, proj, cfg, kg):
+    if not is_source_file(edited, proj, cfg):
         return
 
-    pending = _read_pending(proj) + 1
-    _write_pending(proj, pending)
+    rel = _rel_to_root(edited, proj, str(cfg.get("root") or ""))
+    reported = [str(r) for r in state.get("reported", []) if isinstance(r, str)]
+    pending = int(state.get("pending", 0) or 0) + 1
 
-    every = max(1, int(cfg.get("nudge_every", 5) or 5))
-    if pending >= every and pending % every == 0:
+    # Signal 1: this file is not in the map. Report once per file per session.
+    if rel is not None and rel not in reported and not is_anchored(graph, rel):
+        reported.append(rel)
+        _write_state(proj, {"pending": pending, "reported": reported[-50:]})
         _emit(
-            f"codebase-kg: {pending} source edit(s) since {kg.name} was last touched. "
-            f"At a stopping point, run /codebase-kg:refresh so the KG stays in sync — "
-            f"update the affected nodes, not just the header (advisory, never blocking)."
+            f"codebase-kg: no node in {graph.name} anchors on {rel}. "
+            f"Run /codebase-kg:refresh to add it, so the graph keeps answering "
+            f"'where does this live?' correctly (advisory, never blocking)."
+        )
+        return
+
+    _write_state(proj, {"pending": pending, "reported": reported})
+
+    # Signal 2: enough mapped files have changed that descriptions may have drifted.
+    every = max(1, int(cfg.get("nudge_every", 5) or 5))
+    if pending % every == 0:
+        _emit(
+            f"codebase-kg: {pending} source edit(s) since {graph.name} was last rebuilt. "
+            f"At a stopping point, run /codebase-kg:refresh so the graph stays in sync "
+            f"(advisory, never blocking)."
         )
 
 

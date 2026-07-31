@@ -1,47 +1,57 @@
 #!/usr/bin/env python3
-"""Pre-push KG freshness gate — vendored, stdlib-only, portable.
+"""Pre-push code-graph staleness check — vendored, stdlib-only, portable, advisory.
 
-Blocks a push when tracked **source** files under the configured `root` changed
-in the about-to-push commits but the repo's `KNOWLEDGE_GRAPH.md` was not updated
-to match — either it isn't in the changeset, or its header `refreshed:` date
-isn't today. Escape hatch: `git push --no-verify`.
+Reports when the commits you are about to push move the code away from what
+`knowledge/code_graph.db` says about it:
+
+  * a source file changed in this push that **no node anchors on** — new code
+    nobody mapped;
+  * a source file **deleted** in this push that the graph still anchors on — a
+    pointer into code that is gone.
+
+It **never blocks**. Exit status is always 0. That is a deliberate reversal: the
+old version of this hook blocked a push when the graph's `refreshed:` header was
+not today's date, which contradicted the plugin's own "advisory, never blocking"
+principle and — worse — measured the wrong thing. A date says somebody edited the
+file; it cannot say whether the *nodes* match the code. These checks compare the
+graph against the actual changeset, so they are facts rather than a proxy.
 
 The changeset comes from git's pre-push stdin (one `<local_ref> <local_sha>
-<remote_ref> <remote_sha>` line per pushed ref), so it gates exactly what is
+<remote_ref> <remote_sha>` line per pushed ref), so it reflects exactly what is
 being pushed — any branch, new branches (diffed from the merge-base with the
-remote default, or every not-yet-remote commit), skipping ref deletions. A
-manual run without stdin falls back to `@{u}...HEAD` / `origin/<default>...HEAD`
-and fails loudly when no such base exists.
+remote default, or every not-yet-remote commit), skipping ref deletions. A manual
+run without stdin falls back to `@{u}...HEAD` / `origin/<default>...HEAD`.
 
-This is the **deterministic** half of the gate only. The semantic work — actually
-updating the changed nodes, bumping their per-node `updated` dates, reconciling
-`parity`/`counterpart` against the peer KG, and running `kg_validate` — is the
-agent's job (`/codebase-kg:refresh`). On purpose, this script has **no dependency**
-on the codebase-kg MCP package, so it can be copied (vendored) straight into any
-repo's hooks and runs anywhere Python 3 + git exist.
+This script has **no dependency** on the codebase-kg MCP package (sqlite3 is
+stdlib), so it can be copied straight into any repo's hooks and runs anywhere
+Python 3 + git exist.
 
-Config (optional) is read from `.claude/codebase-kg.local.md` in the repo root:
-`root` (only source under here triggers), `kg_path` (default:
-`knowledge/KNOWLEDGE_GRAPH.md`; no repo-root fallback).
+Config (optional), from `.claude/codebase-kg.local.md` in the repo root:
+`root` (only source under here counts) and `graph_path` (default
+`knowledge/code_graph.db`; `kg_path` is still read for older checkouts).
 """
 
 from __future__ import annotations
 
-import datetime
 import re
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
-# Generic doc/config exclusions — changing these does not imply KG drift.
+DEFAULT_GRAPH = "knowledge/code_graph.db"
+
+# Generic doc/config exclusions — changing these does not imply graph drift.
 EXCLUDE_EXT = {
     ".md", ".markdown", ".txt", ".json", ".lock", ".yaml", ".yml", ".toml",
     ".cfg", ".ini", ".gitignore", ".gitattributes", ".pro",
 }
 IGNORE_DIRS = {
     ".git", ".github", ".githooks", ".claude", "node_modules", "build", "dist",
-    "out", ".venv", "venv", "__pycache__", ".gradle", ".idea", ".vscode", "target",
+    "out", ".venv", "venv", "__pycache__", ".gradle", ".idea", ".vscode",
+    "target", "Pods", "DerivedData", ".next", "vendor",
 }
+_IGNORE_LOWER = {d.lower() for d in IGNORE_DIRS}
 
 
 def _git(*args: str) -> str:
@@ -71,8 +81,7 @@ def parse_push_refs(stdin_text: str) -> list[tuple[str, str, str, str]]:
 
 def push_range() -> str | None:
     """Fallback for a manual run (no stdin): prefer the upstream tracking
-    branch, else origin's default branch. Three-dot so only our side counts.
-    Returns None when no base exists to diff against."""
+    branch, else origin's default branch. Three-dot so only our side counts."""
     if _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}").strip():
         return "@{u}...HEAD"
     for base in ("origin/main", "origin/master"):
@@ -81,14 +90,27 @@ def push_range() -> str | None:
     return None
 
 
-def changed_files(rng: str) -> list[str]:
-    out = _git("diff", "--name-only", rng)
-    return [f for f in out.splitlines() if f.strip()]
+def changed_files(rng: str) -> list[tuple[str, str]]:
+    """`(status, path)` pairs for a range. Status is git's letter: A/M/D/R…"""
+    out = _git("diff", "--name-status", rng)
+    pairs: list[tuple[str, str]] = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        status = parts[0][:1]
+        # A rename reports `R100\told\tnew` — the new path is what exists now,
+        # and the old one is a deletion the graph may still be pointing at.
+        if status == "R" and len(parts) >= 3:
+            pairs.append(("D", parts[1]))
+            pairs.append(("A", parts[2]))
+        else:
+            pairs.append((status, parts[-1]))
+    return pairs
 
 
 def _new_ref_range(local_sha: str) -> str | None:
-    """Diff base for a branch that doesn't exist on the remote yet: the
-    merge-base with the remote default branch, when one exists."""
+    """Diff base for a branch that doesn't exist on the remote yet."""
     for base in ("origin/HEAD", "origin/main", "origin/master"):
         mb = _git("merge-base", base, local_sha).strip()
         if mb:
@@ -96,7 +118,7 @@ def _new_ref_range(local_sha: str) -> str | None:
     return None
 
 
-def changed_files_for_ref(local_sha: str, remote_sha: str) -> list[str]:
+def changed_files_for_ref(local_sha: str, remote_sha: str) -> list[tuple[str, str]]:
     """Files changed in the commits this ref push would publish."""
     if not _is_zero(remote_sha):
         # Three-dot: diff from the merge-base, so remote-side commits (e.g. on
@@ -107,23 +129,25 @@ def changed_files_for_ref(local_sha: str, remote_sha: str) -> list[str]:
         return changed_files(rng)
     # No remote base at all (e.g. first push to an empty remote): every commit
     # not already on some remote-tracking ref is being published.
-    files: list[str] = []
+    pairs: list[tuple[str, str]] = []
     for c in _git("rev-list", local_sha, "--not", "--remotes").split():
-        out = _git("diff-tree", "--no-commit-id", "--name-only", "-r", "--root", c)
-        files += [f for f in out.splitlines() if f.strip()]
-    return files
+        out = _git("diff-tree", "--no-commit-id", "--name-status", "-r", "--root", c)
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                pairs.append((parts[0][:1], parts[-1]))
+    return pairs
 
 
-def changed_files_for_push(refs: list[tuple[str, str, str, str]]) -> list[str]:
+def changed_files_for_push(refs: list[tuple[str, str, str, str]]) -> list[tuple[str, str]]:
     """Union of changed files across every ref being pushed. Ref deletions
     (all-zeros local sha) publish no commits and are skipped."""
-    files: list[str] = []
+    pairs: list[tuple[str, str]] = []
     for _local_ref, local_sha, _remote_ref, remote_sha in refs:
         if _is_zero(local_sha):
             continue  # deleting a remote ref — nothing pushed
-        files += changed_files_for_ref(local_sha, remote_sha)
-    seen: set[str] = set()
-    return [f for f in files if not (f in seen or seen.add(f))]
+        pairs += changed_files_for_ref(local_sha, remote_sha)
+    return list(dict.fromkeys(pairs))
 
 
 def _parse_frontmatter(text: str) -> dict[str, str]:
@@ -152,24 +176,22 @@ def load_config(repo: Path) -> dict[str, str]:
     return {}
 
 
-def find_kg_rel(repo: Path, cfg: dict[str, str]) -> str | None:
-    """KG path relative to the repo root, as it appears in `git diff` output.
-    Default: knowledge/KNOWLEDGE_GRAPH.md; an explicit kg_path in .local.md
-    overrides it. No root fallback — a repo without that file has no KG and isn't
-    gated."""
-    kg_path = cfg.get("kg_path") or "knowledge/KNOWLEDGE_GRAPH.md"
-    rel = kg_path.replace("\\", "/").removeprefix("./")
+def find_graph_rel(repo: Path, cfg: dict[str, str]) -> str | None:
+    """Graph path relative to the repo root, as it appears in `git diff` output.
+    `kg_path` is honored so a checkout predating the rename keeps working."""
+    raw = cfg.get("graph_path") or cfg.get("kg_path") or DEFAULT_GRAPH
+    rel = raw.replace("\\", "/").removeprefix("./")
     return rel if (repo / rel).is_file() else None
 
 
-def is_source(rel: str, root: str, kg_rel: str | None) -> bool:
+def is_source(rel: str, root: str, graph_rel: str | None) -> bool:
     rel = rel.replace("\\", "/")
-    if kg_rel and rel == kg_rel:
+    if graph_rel and rel == graph_rel:
         return False
     if root and not (rel == root or rel.startswith(root.rstrip("/") + "/")):
         return False
     parts = rel.split("/")
-    if set(p.lower() for p in parts[:-1]) & {d.lower() for d in IGNORE_DIRS}:
+    if {p.lower() for p in parts[:-1]} & _IGNORE_LOWER:
         return False
     suffix = ("." + rel.rsplit(".", 1)[1].lower()) if "." in parts[-1] else ""
     if suffix in EXCLUDE_EXT:
@@ -177,75 +199,101 @@ def is_source(rel: str, root: str, kg_rel: str | None) -> bool:
     return True
 
 
-def kg_refreshed_today(kg_file: Path, today: str) -> bool:
-    """True if the KG header `refreshed:` (or legacy `last refreshed`) is today."""
+def read_graph(db: Path) -> tuple[str, set[str]] | None:
+    """`(root, anchored_paths)` from the store, or None if it can't be read.
+
+    Unreadable is not an error worth shouting about in a push hook — the check
+    simply doesn't run.
+    """
     try:
-        text = kg_file.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return False
-    head = "\n".join(text.splitlines()[:40])
-    return bool(
-        re.search(rf"(?mi)^\s*refreshed:\s*{re.escape(today)}\b", head)
-        or re.search(rf"(?i)last refreshed {re.escape(today)}\b", head)
-    )
-
-
-def kg_header_value(kg_file: Path, key: str) -> str:
-    """Read one `key:` from the KG header block — the committed, shared config."""
+        conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
     try:
-        text = kg_file.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return ""
-    head = "\n".join(text.splitlines()[:40])
-    m = re.search(rf"(?mi)^\s*{re.escape(key)}:\s*(.+?)\s*$", head)
-    return re.sub(r"\s+#.*$", "", m.group(1)).strip() if m else ""
+        root_row = conn.execute("SELECT value FROM meta WHERE key = 'root'").fetchone()
+        paths = {r[0].replace("\\", "/") for r in conn.execute("SELECT DISTINCT path FROM anchor")}
+    except sqlite3.DatabaseError:
+        return None
+    finally:
+        conn.close()
+    return ((root_row[0] if root_row else ""), paths)
 
 
-def gate_decision(
-    source_changed: bool, kg_in_changeset: bool, kg_fresh: bool
-) -> tuple[bool, str]:
-    """Pure decision. Returns (block, reason)."""
-    if not source_changed:
-        return (False, "no source changes — nothing to record")
-    if not kg_in_changeset:
-        return (True, "source changed but KNOWLEDGE_GRAPH.md was not updated")
-    if not kg_fresh:
-        return (True, "KNOWLEDGE_GRAPH.md header `refreshed:` is not today")
-    return (False, "KG updated alongside source")
+def _rel_to_root(rel: str, root: str) -> str:
+    """A repo-relative path, re-expressed relative to the graph's `root`.
+
+    Anchors are stored relative to `root` (SCHEMA.md §3) while git reports paths
+    relative to the repo, so one of the two has to be translated before they can
+    be compared.
+    """
+    rel = rel.replace("\\", "/")
+    root = root.replace("\\", "/").strip("/")
+    if root and rel.startswith(root + "/"):
+        return rel[len(root) + 1 :]
+    return rel
 
 
-def _emit_block(reason: str, kg_rel: str, today: str, triggers: list[str]) -> None:
+def analyze(
+    changed: list[tuple[str, str]], root: str, graph_rel: str | None, anchored: set[str]
+) -> tuple[list[str], list[str]]:
+    """Split the changeset into `(unmapped_new, anchored_but_deleted)`."""
+    unmapped: list[str] = []
+    deleted: list[str] = []
+    for status, rel in changed:
+        if not is_source(rel, root, graph_rel):
+            continue
+        key = _rel_to_root(rel, root)
+        if status == "D":
+            if key in anchored:
+                deleted.append(rel)
+        elif status == "A" and key not in anchored:
+            unmapped.append(rel)
+    return unmapped, deleted
+
+
+def _emit(unmapped: list[str], deleted: list[str], graph_rel: str) -> None:
     msg = [
-        "[codebase-kg] PUSH BLOCKED — " + reason + ".",
+        "[codebase-kg] Code-graph staleness check (advisory — your push is going through).",
         "[codebase-kg]",
-        f"[codebase-kg]   Source under the KG's root changed, but {kg_rel} is not in sync.",
-        "[codebase-kg]   Run  /codebase-kg:refresh  (updates the changed nodes + their",
-        f"[codebase-kg]   `updated` dates, reconciles parity vs the peer KG, sets refreshed: {today}),",
-        "[codebase-kg]   then commit the KG and push again.",
-        "[codebase-kg]",
-        "[codebase-kg]   Override (advisory):  git push --no-verify",
-        "[codebase-kg]",
-        "[codebase-kg]   Source files that triggered this:",
     ]
-    for t in triggers[:20]:
-        msg.append(f"[codebase-kg]     {t}")
+    if deleted:
+        msg.append(f"[codebase-kg]   {len(deleted)} deleted file(s) still anchored in {graph_rel}:")
+        for f in deleted[:15]:
+            msg.append(f"[codebase-kg]     - {f}")
+        if len(deleted) > 15:
+            msg.append(f"[codebase-kg]     … and {len(deleted) - 15} more")
+        msg.append("[codebase-kg]")
+    if unmapped:
+        msg.append(f"[codebase-kg]   {len(unmapped)} new source file(s) that no node covers:")
+        for f in unmapped[:15]:
+            msg.append(f"[codebase-kg]     + {f}")
+        if len(unmapped) > 15:
+            msg.append(f"[codebase-kg]     … and {len(unmapped) - 15} more")
+        msg.append("[codebase-kg]")
+    msg += [
+        "[codebase-kg]   Run  /codebase-kg:refresh  to bring the graph back in line.",
+        "[codebase-kg]   Nothing is blocked; this is a heads-up.",
+    ]
     sys.stderr.write("\n".join(msg) + "\n")
 
 
 def main() -> int:
     repo = Path(_git("rev-parse", "--show-toplevel").strip() or ".").resolve()
     cfg = load_config(repo)
-    kg_rel = find_kg_rel(repo, cfg)
-    if kg_rel is None:
-        return 0  # no KG in this repo → nothing to gate
-    # `root` is the committed, shared config in the KG header; an optional per-dev
-    # .claude/codebase-kg.local.md may override it. No committed config file needed.
-    root = (cfg.get("root") or kg_header_value(repo / kg_rel, "root")).replace("\\", "/").strip("/")
-    today = datetime.date.today().isoformat()
+    graph_rel = find_graph_rel(repo, cfg)
+    if graph_rel is None:
+        return 0  # no graph in this repo → nothing to check
+    loaded = read_graph(repo / graph_rel)
+    if loaded is None:
+        return 0  # unreadable store → stay silent rather than nag
+    graph_root, anchored = loaded
 
-    # git feeds the pushed refs on stdin (`<local_ref> <local_sha> <remote_ref>
-    # <remote_sha>` per ref) — that is the authoritative changeset. Only when
-    # stdin is empty (manual invocation) fall back to guessing a range.
+    # `root` is the committed, shared config in the graph itself; an optional
+    # per-dev .claude/codebase-kg.local.md may override it.
+    root = (cfg.get("root") or graph_root).replace("\\", "/").strip("/")
+
+    # git feeds the pushed refs on stdin — that is the authoritative changeset.
+    # Only when stdin is empty (manual invocation) fall back to guessing a range.
     stdin_text = "" if sys.stdin.isatty() else sys.stdin.read()
     refs = parse_push_refs(stdin_text)
     if refs:
@@ -253,24 +301,13 @@ def main() -> int:
     else:
         rng = push_range()
         if rng is None:
-            sys.stderr.write(
-                "[codebase-kg] pre-push gate: no push info on stdin and no upstream or\n"
-                "[codebase-kg] origin default branch to diff against — cannot determine\n"
-                "[codebase-kg] the push range. Run via `git push`, or set an upstream\n"
-                "[codebase-kg] (git branch --set-upstream-to=<remote>/<branch>).\n"
-            )
-            return 1
+            return 0  # nothing to compare against — advisory checks stay quiet
         changed = changed_files(rng)
-    triggers = [f for f in changed if is_source(f, root, kg_rel)]
-    source_changed = bool(triggers)
-    kg_in_changeset = kg_rel in [f.replace("\\", "/") for f in changed]
-    kg_fresh = kg_refreshed_today(repo / kg_rel, today)
 
-    block, reason = gate_decision(source_changed, kg_in_changeset, kg_fresh)
-    if block:
-        _emit_block(reason, kg_rel, today, triggers)
-        return 1
-    return 0
+    unmapped, deleted = analyze(changed, root, graph_rel, anchored)
+    if unmapped or deleted:
+        _emit(unmapped, deleted, graph_rel)
+    return 0  # advisory, always
 
 
 if __name__ == "__main__":

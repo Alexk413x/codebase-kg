@@ -5,13 +5,13 @@
     "email": "alexk413x@gmail.com"
   },
   "metadata": {
-    "description": "A per-repo knowledge-graph plugin for Claude Code. Source-derived code maps with cross-codebase parity linking. Advisory only."
+    "description": "A per-repo code-graph plugin for Claude Code. Committed SQLite code maps with full-text search and cross-codebase parity linking. Advisory only."
   },
   "plugins": [
     {
       "name": "codebase-kg",
       "source": ".",
-      "description": "Builds, maintains, and serves a per-repo knowledge graph — a structured, source-derived map of any codebase (nodes = components with symbol anchors, edges = relationships) so an agent can orient and find code without re-deriving the map every session. Language-agnostic: node `kind` is free-form, source reading is agent-driven, all per-repo specifics live in config. Cross-codebase parity: a node links directly to its counterpart in another repo's KG, carrying a parity status + one-line divergence, so 'find all feature gaps' is a query across both graphs. Ships a markdown KG schema, skills (build/refresh/audit/link/validate), an MCP query surface, and advisory post-edit freshness hooks. Advisory, never blocking — a code mirror, descriptive not prescriptive, source-derived not ticket-derived.",
+      "description": "Builds, maintains, and serves a per-repo code graph — a committed SQLite map of any codebase (nodes = components with symbol anchors, edges = relationships) so an agent can orient and find code without re-deriving the map every session. Opening the graph is constant-time at any size and search is a persisted FTS5 index, so it stays fast on a monorepo; dangling edges, duplicate ids and inconsistent data are impossible to write rather than merely reported afterwards. Language-agnostic: node `kind` is free-form, source reading is agent-driven, all per-repo specifics live in config. Cross-codebase parity: a node links directly to its counterpart in another repo's graph, carrying a parity status + one-line divergence, so 'find all feature gaps' is a query across both graphs. Ships the schema, skills (build/refresh/audit/link/validate), eight MCP query tools, and advisory post-edit drift hooks. Advisory, never blocking — a code mirror, descriptive not prescriptive, source-derived not ticket-derived.",
       "category": "development",
       "tags": [
         "knowledge-graph",

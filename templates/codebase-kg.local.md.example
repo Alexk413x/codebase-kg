@@ -2,35 +2,44 @@
 # OPTIONAL per-developer override for the codebase-kg plugin.
 #
 # You usually do NOT need this file. The project-level config (codebase / root / counterpart) lives
-# in the committed KG header — see SCHEMA.md §3/§7 — and the tools (MCP + pre-push gate) read it from
-# there. Create this file (as `.claude/codebase-kg.local.md`) ONLY to override the header for your
-# own clone. By the `.local` convention it is gitignored / not committed.
+# in the committed graph's `meta` table — see SCHEMA.md §3/§8 — and the tools (MCP server, hooks,
+# pre-push check) read it from there. Create this file (as `.claude/codebase-kg.local.md`) ONLY to
+# override that for your own clone. By the `.local` convention it is gitignored / not committed.
 #
-# Reasons to use it: a peer repo checked out at a non-standard relative path, or a custom kg_path.
+# Reasons to use it: a peer repo checked out at a non-standard relative path, or a custom
+# graph_path.
 
-# Short name for this codebase. Used in `<codebase>-only` parity flags. (Default: from KG header.)
+# Short name for this codebase. Used in `<codebase>-only` parity flags. (Default: from the graph.)
 codebase: android
 
-# The code root this KG describes (repo-relative — see SCHEMA.md §3).
-root: app/src/main/java/com/example/app/
+# The code root this graph describes (repo-relative — see SCHEMA.md §3).
+root: app/src/main/java/com/example/app
 
-# Where the KG file lives in this repo. Default (the convention): knowledge/KNOWLEDGE_GRAPH.md.
+# Where the graph lives in this repo. Default (the convention): knowledge/code_graph.db.
 # Set this ONLY to override that default for your clone — there is no repo-root fallback.
-kg_path: knowledge/KNOWLEDGE_GRAPH.md
+# (The older key `kg_path` is still read, so a pre-0.2 file keeps working.)
+graph_path: knowledge/code_graph.db
 
-# Optional — the paired repo's KG, for cross-codebase parity. Omit for a single-codebase repo.
-counterpart: ../app-ios/knowledge/KNOWLEDGE_GRAPH.md
+# Optional — the paired repo's graph, for cross-codebase parity. Omit for a single-codebase repo.
+counterpart: ../app-ios/knowledge/code_graph.db
 
 # Optional language hint for symbol tooling. Grep always works; this only enables
 # opportunistic ctags/LSP. Omit if unsure.
 language: kotlin
+
+# Advisory post-edit nudge. Set false to silence it entirely.
+post_edit_nudge: true
+
+# Nudge once per this many edits to already-mapped source files. (A file that no node covers is
+# reported the first time you touch it, regardless of this.)
+nudge_every: 5
 ---
 
 # codebase-kg — local config
 
-Free-form notes for this repo go here (below the frontmatter). For example: subsystems to skip
-when building the KG, naming conventions for node ids, or a pointer to the peer repo's checkout
-path so `kg-link` can read both sides.
+Free-form notes for this repo go here (below the frontmatter). For example: subsystems to skip when
+building the graph, naming conventions for node ids, or a pointer to the peer repo's checkout path
+so `kg-link` can read both sides.
 
-Nothing in this file is platform-specific *to the plugin* — the plugin stays generic; this file
-is where this repo's specifics live.
+Nothing in this file is platform-specific *to the plugin* — the plugin stays generic; this file is
+where this repo's specifics live.

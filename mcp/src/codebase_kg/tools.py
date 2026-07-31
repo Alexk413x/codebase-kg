@@ -1,131 +1,135 @@
-"""Read-only queries over a parsed `Graph`. Stdlib only.
+"""Read-only queries over a `CodeGraph`. Stdlib only.
 
-Each function takes a `Graph` (and sometimes an optional peer `Graph` for the
-cross-codebase parity checks) and returns a JSON-serializable dict. `server.py`
-wraps these as FastMCP tools.
+Each function takes a `CodeGraph` (and sometimes a peer graph for the
+cross-codebase parity checks) and returns a JSON-serializable dict.
+`server.py` wraps these as FastMCP tools.
+
+These are SQL queries, not scans. Search goes through the persisted FTS5 index,
+lookups go through the primary key, "who points at this?" goes through the
+`edge_dst` index, and "which node owns this file?" goes through `anchor_path` —
+so cost tracks the size of the answer rather than the size of the graph.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
+from typing import Any
 
-from .models import Graph, Node
+from . import clean
+from .models import Anchor, Node
+from .store import CodeGraph, tokenize
 
-_WORD = re.compile(r"[A-Za-z0-9_]+")
-
-
-def _tokens(text: str) -> list[str]:
-    return [t.lower() for t in _WORD.findall(text)]
+# Directories that are never source (mirrors the pre-push gate's list).
+IGNORE_DIRS = {
+    ".git", ".github", ".githooks", ".claude", "node_modules", "build", "dist",
+    "out", ".venv", "venv", "__pycache__", ".gradle", ".idea", ".vscode",
+    "target", "Pods", "DerivedData", ".next", "vendor",
+}
+# Precomputed once — this was being rebuilt for every file in the tree walk.
+_IGNORE_LOWER = {d.lower() for d in IGNORE_DIRS}
 
 
 # --------------------------------------------------------------------------- #
 # kg_search
 # --------------------------------------------------------------------------- #
 def kg_search(
-    graph: Graph, query: str, kind: str | None = None, limit: int = 10
-) -> dict[str, object]:
-    """Token search over id + kind + summary. Ranked, capped."""
-    q = _tokens(query)
-    results: list[dict[str, object]] = []
-    for n in graph.nodes:
+    graph: CodeGraph, query: str, kind: str | None = None, limit: int = 10
+) -> dict[str, Any]:
+    """Ranked full-text search over id, kind, description and anchors."""
+    # Over-fetch so a `kind` filter still has candidates left to rank.
+    hits = graph.search_ids(query, limit * 5 if kind else limit * 2)
+    if not hits:
+        return {"query": query, "count": 0, "results": []}
+    nodes = {n.id: n for n in graph.nodes([nid for nid, _ in hits], with_edges=False)}
+
+    q = query.lower().strip()
+    q_tokens = tokenize(query)
+    # (-score, id, payload) so the sort key stays typed instead of being dug
+    # back out of the JSON dict.
+    scored: list[tuple[float, str, dict[str, Any]]] = []
+    for node_id, score in hits:
+        n = nodes.get(node_id)
+        if n is None:
+            continue
         if kind is not None and kind.lower() not in n.kind.lower():
             continue
-        hay = " ".join([n.id, n.kind, n.summary, " ".join(n.anchors)]).lower()
-        score = sum(1 for t in set(q) if t in hay)
-        # exact id/substring boosts
-        if query.lower() in n.id.lower():
-            score += 3
-        if score <= 0:
-            continue
-        results.append(
-            {
-                "id": n.id,
-                "kind": n.kind,
-                "section": n.section,
-                "summary": _truncate(n.summary, 240),
-                "parity": n.parity,
-                "updated": n.updated,
-                "score": score,
-            }
+        # bm25 alone under-ranks the node whose *name* is the query, because on
+        # documents this short a term in the description scores about the same
+        # as a term in the id. Boost by how much of the query the id accounts
+        # for, so "quartz upload" puts `quartz_upload_worker` above a node that
+        # merely mentions quartz.
+        if q and q in n.id.lower():
+            score += 10.0
+        elif q_tokens:
+            id_tokens = set(tokenize(n.id))
+            overlap = sum(1 for t in q_tokens if t in id_tokens)
+            if overlap:
+                score += 6.0 * overlap / len(q_tokens)
+        scored.append(
+            (
+                -score,
+                n.id,
+                {
+                    "id": n.id,
+                    "kind": n.kind,
+                    "section": n.section,
+                    "description": n.description,
+                    "anchors": [str(a) for a in n.anchors],
+                    "parity": n.parity,
+                    "score": round(score, 4),
+                },
+            )
         )
-    results.sort(key=lambda r: (-int(r["score"]), str(r["id"])))
+    scored.sort(key=lambda s: (s[0], s[1]))
+    results = [payload for _, _, payload in scored]
     return {"query": query, "count": len(results), "results": results[:limit]}
-
-
-def _truncate(s: str, n: int) -> str:
-    return s if len(s) <= n else s[: n - 1].rstrip() + "…"
 
 
 # --------------------------------------------------------------------------- #
 # kg_node
 # --------------------------------------------------------------------------- #
-def kg_node(graph: Graph, id: str) -> dict[str, object]:
+def kg_node(graph: CodeGraph, id: str) -> dict[str, Any]:
     """Full node by id."""
-    n = graph.by_id(id)
+    n = graph.node(id)
     if n is None:
-        return {"found": False, "id": id, "did_you_mean": _suggest(graph, id)}
+        return {"found": False, "id": id, "did_you_mean": graph.similar_ids(id)}
     out = n.to_dict()
     out["found"] = True
     out["inbound_edges"] = graph.inbound(id)
     return out
 
 
-def _suggest(graph: Graph, id: str, limit: int = 5) -> list[str]:
-    q = id.lower()
-    scored = [(sum(t in nid.lower() for t in _tokens(q)) + (q in nid.lower()), nid) for nid in graph.ids]
-    scored = [s for s in scored if s[0] > 0]
-    scored.sort(key=lambda s: (-s[0], s[1]))  # best score first, id as tiebreak
-    return [nid for _, nid in scored[:limit]]
-
-
 # --------------------------------------------------------------------------- #
 # kg_neighborhood
 # --------------------------------------------------------------------------- #
-def kg_neighborhood(graph: Graph, id: str, depth: int = 1) -> dict[str, object]:
-    """A node plus its edges (out + in) and counterpart, expanded N hops (max 2)."""
-    if graph.by_id(id) is None:
-        return {"found": False, "id": id, "did_you_mean": _suggest(graph, id)}
-    depth = max(1, min(depth, 2))
-    seen: set[str] = {id}
-    frontier: set[str] = {id}
-    for _ in range(depth):
-        nxt: set[str] = set()
-        for nid in frontier:
-            node = graph.by_id(nid)
-            if node is None:
-                continue
-            for e in node.edges:
-                if e not in seen:
-                    nxt.add(e)
-            for inb in graph.inbound(nid):
-                if inb not in seen:
-                    nxt.add(inb)
-        seen |= nxt
-        frontier = nxt
-        if not frontier:
-            break
-
-    center = graph.by_id(id)
-    assert center is not None
-    neighbors: list[dict[str, object]] = []
-    for nid in sorted(seen - {id}):
-        n = graph.by_id(nid)
-        if n is None:
-            neighbors.append({"id": nid, "resolved": False})  # dangling edge target
-            continue
-        neighbors.append(
-            {
-                "id": n.id,
-                "kind": n.kind,
-                "summary": _truncate(n.summary, 160),
-                "resolved": True,
-            }
-        )
+def kg_neighborhood(graph: CodeGraph, id: str, depth: int = 1) -> dict[str, Any]:
+    """A node plus everything within `depth` hops, following edges either way."""
+    center = graph.node(id)
+    if center is None:
+        return {"found": False, "id": id, "did_you_mean": graph.similar_ids(id)}
+    depth = max(1, min(depth, 3))
+    hops = graph.neighborhood_ids(id, depth)
+    hops.pop(id, None)
+    nodes = {n.id: n for n in graph.nodes(list(hops), with_edges=False)}
+    neighbors = [
+        {
+            "id": n.id,
+            "kind": n.kind,
+            "description": n.description,
+            "anchors": [str(a) for a in n.anchors],
+            "hops": hops[n.id],
+        }
+        for n in (nodes[i] for i in hops if i in nodes)
+    ]
+    neighbors.sort(key=lambda r: (int(r["hops"]), str(r["id"])))
     return {
         "found": True,
         "center": center.to_dict(),
         "depth": depth,
+        "inbound_edges": graph.inbound(id),
+        "count": len(neighbors),
         "neighbors": neighbors,
         "counterpart": center.counterpart,
     }
@@ -134,37 +138,66 @@ def kg_neighborhood(graph: Graph, id: str, depth: int = 1) -> dict[str, object]:
 # --------------------------------------------------------------------------- #
 # kg_find_by_kind
 # --------------------------------------------------------------------------- #
-def kg_find_by_kind(graph: Graph, kind: str) -> dict[str, object]:
+def kg_find_by_kind(graph: CodeGraph, kind: str) -> dict[str, Any]:
     """All nodes whose free-text `kind` matches (case-insensitive substring)."""
-    k = kind.lower()
     matches = [
-        {"id": n.id, "kind": n.kind, "summary": _truncate(n.summary, 160)}
-        for n in graph.nodes
-        if k in n.kind.lower()
+        {
+            "id": n.id,
+            "kind": n.kind,
+            "description": n.description,
+            "anchors": [str(a) for a in n.anchors],
+        }
+        for n in graph.by_kind(kind)
     ]
     return {"kind": kind, "count": len(matches), "nodes": matches}
 
 
 # --------------------------------------------------------------------------- #
+# kg_find_by_path
+# --------------------------------------------------------------------------- #
+def kg_find_by_path(graph: CodeGraph, path: str) -> dict[str, Any]:
+    """Reverse lookup: which node(s) own a source file.
+
+    The inverse of every other tool here — you have a file open and want its
+    place in the map. An indexed lookup on `anchor.path`, so it stays cheap on
+    a large graph. Matches a bare filename as a path suffix.
+    """
+    found = graph.by_path(path)
+    # One query for every match's inbound edges, rather than one per match —
+    # a bare filename can legitimately hit many nodes.
+    inbound = graph.inbound_many([n.id for n, _ in found])
+    return {
+        "path": path,
+        "count": len(found),
+        "nodes": [
+            {
+                "id": n.id,
+                "kind": n.kind,
+                "description": n.description,
+                "matched_anchors": [str(a) for a in anchors],
+                "edges": n.edges,
+                "inbound_edges": inbound.get(n.id, []),
+            }
+            for n, anchors in found
+        ],
+    }
+
+
+# --------------------------------------------------------------------------- #
 # kg_parity_gaps
 # --------------------------------------------------------------------------- #
-def _is_gap(parity: str | None) -> bool:
-    return parity is not None and (parity == "divergent" or parity.endswith("-only"))
-
-
-def kg_parity_gaps(graph: Graph, status: str | None = None) -> dict[str, object]:
+def kg_parity_gaps(graph: CodeGraph, status: str | None = None) -> dict[str, Any]:
     """Nodes flagged `divergent` or `<codebase>-only` — the gap report as a query.
 
     `status` optionally filters: 'divergent', 'only' (any *-only), or an exact
     flag like 'android-only'.
     """
-    gaps: list[dict[str, object]] = []
-    for n in graph.nodes:
-        if not _is_gap(n.parity):
-            continue
-        if status is not None:
-            s = status.lower()
-            assert n.parity is not None
+    gaps: list[dict[str, Any]] = []
+    wanted = status.lower() if status is not None else None
+    for n in graph.parity_nodes():
+        assert n.parity is not None  # parity_nodes() only returns flagged nodes
+        if wanted is not None:
+            s = wanted
             if s == "only":
                 if not n.parity.endswith("-only"):
                     continue
@@ -177,7 +210,7 @@ def kg_parity_gaps(graph: Graph, status: str | None = None) -> dict[str, object]
                 "parity": n.parity,
                 "counterpart": n.counterpart,
                 "divergence": n.divergence,
-                "summary": _truncate(n.summary, 200),
+                "description": n.description,
             }
         )
     breakdown: dict[str, int] = {}
@@ -189,65 +222,47 @@ def kg_parity_gaps(graph: Graph, status: str | None = None) -> dict[str, object]
 # --------------------------------------------------------------------------- #
 # kg_stats
 # --------------------------------------------------------------------------- #
-def kg_stats(graph: Graph) -> dict[str, object]:
-    kinds: dict[str, int] = {}
-    parity: dict[str, int] = {}
-    sections: dict[str, int] = {}
-    edge_count = 0
-    dates: list[str] = []
-    missing_updated = 0
-    for n in graph.nodes:
-        kinds[n.kind or "(none)"] = kinds.get(n.kind or "(none)", 0) + 1
-        sections[n.section or "(none)"] = sections.get(n.section or "(none)", 0) + 1
-        edge_count += len(n.edges)
-        if n.parity:
-            parity[n.parity] = parity.get(n.parity, 0) + 1
-        if n.updated:
-            dates.append(n.updated)
-        else:
-            missing_updated += 1
-    refreshed = graph.header.refreshed
-    # YYYY-MM-DD sorts lexicographically == chronologically, so string compare is safe.
-    stale = sum(1 for d in dates if refreshed and d < refreshed)
+def kg_stats(graph: CodeGraph) -> dict[str, Any]:
+    meta = graph.meta
+    counts = graph.counts()
+    isolated = graph.isolated_ids(limit=20)
+    isolated_total = graph.isolated_count()
     return {
-        "codebase": graph.header.codebase,
-        "refreshed": graph.header.refreshed,
-        "counterpart": graph.header.counterpart,
-        "nodes": len(graph.nodes),
-        "edges": edge_count,
-        "kinds": dict(sorted(kinds.items(), key=lambda kv: -kv[1])),
-        "parity": parity,
-        "sections": sections,
-        "updated": {
-            "oldest": min(dates) if dates else None,
-            "newest": max(dates) if dates else None,
-            "missing": missing_updated,
-            # nodes last verified BEFORE the header refresh date — candidate stale nodes
-            "stale_vs_refreshed": stale,
-        },
+        "codebase": meta.codebase,
+        "root": meta.root,
+        "language": meta.language,
+        "counterpart": meta.counterpart,
+        "generated": meta.generated,
+        "nodes": counts["nodes"],
+        "edges": counts["edges"],
+        "anchors": counts["anchors"],
+        "files_anchored": counts["files"],
+        "kinds": graph.group_counts("kind"),
+        "sections": graph.group_counts("section"),
+        "parity": {k: v for k, v in graph.group_counts("parity").items() if k != "(none)"},
+        "isolated_nodes": {"count": isolated_total, "ids": isolated},
     }
 
 
 # --------------------------------------------------------------------------- #
 # kg_validate  (the advisory drift detector)
 # --------------------------------------------------------------------------- #
-def _resolve_source_base(graph: Graph, repo_root: str | None) -> Path | None:
-    """Find the directory that anchor paths are relative to. Tries the explicit
-    repo_root, then the header `root` joined onto a few candidate bases."""
-    rels = [a.split("#", 1)[0] for n in graph.nodes for a in n.anchors]
-    rels = [r for r in rels if r]
+def _resolve_source_base(graph: CodeGraph, repo_root: str | None) -> Path | None:
+    """Find the directory anchor paths are relative to.
+
+    Tries the explicit repo_root, then the meta `root` joined onto a few
+    candidate bases, and picks whichever resolves the most anchors.
+    """
+    rels = graph.anchor_paths()
     if not rels:
         return None
-    # `root` is expected to be repo-relative (SCHEMA.md §3). Strip only trailing
-    # slashes — a leading '/' would be part of an absolute path, not noise.
-    root = graph.header.root.strip().rstrip("/")
+    root = graph.meta.root.strip().rstrip("/")
     candidates: list[Path] = []
     if repo_root:
         rp = Path(repo_root)
         candidates += [rp / root, rp]
-    if graph.path:
-        kg_dir = Path(graph.path).parent
-        candidates += [kg_dir / root, kg_dir.parent / root, kg_dir, kg_dir.parent]
+    graph_dir = graph.path.parent
+    candidates += [graph_dir / root, graph_dir.parent / root, graph_dir, graph_dir.parent]
     best: tuple[int, Path] | None = None
     for base in candidates:
         hits = sum(1 for r in rels[:25] if (base / r).is_file())
@@ -256,129 +271,200 @@ def _resolve_source_base(graph: Graph, repo_root: str | None) -> Path | None:
     return best[1] if best else None
 
 
+def _word_pattern(segment: str, _cache: dict[str, re.Pattern[str]] = {}) -> re.Pattern[str]:
+    """A compiled `\\bsegment\\b` matcher, memoized.
+
+    `re`'s internal cache holds 512 patterns; a graph with more distinct symbols
+    than that recompiles on every anchor. An explicit memo keeps the hot loop of
+    `kg_validate` compiling each symbol once.
+    """
+    pattern = _cache.get(segment)
+    if pattern is None:
+        pattern = _cache[segment] = re.compile(r"\b" + re.escape(segment) + r"\b")
+    return pattern
+
+
 def _symbol_in_source(symbol: str, src: str) -> bool:
-    """True when the anchor's symbol appears in the source. A `Type.method`
-    anchor (SCHEMA.md §4.1) rarely appears literally — check each dotted
-    segment on its own word boundary instead."""
-    return all(
-        re.search(r"\b" + re.escape(seg) + r"\b", src)
-        for seg in symbol.split(".")
-        if seg
-    )
+    """True when the anchor's symbol appears in the source.
+
+    A `Type.method` anchor (SCHEMA.md §4.1) rarely appears literally — check
+    each dotted segment on its own word boundary instead.
+    """
+    for seg in symbol.split("."):
+        if not seg:
+            continue
+        # Plain substring first: it is far cheaper than a regex and rules out
+        # the common miss without touching the pattern cache at all.
+        if seg not in src or not _word_pattern(seg).search(src):
+            return False
+    return True
+
+
+def _check_anchors(graph: CodeGraph, base: Path) -> tuple[list[dict[str, str]], int]:
+    """Every anchor against real source. The strongest staleness signal there is.
+
+    `all_anchors()` yields in path order, so each file is stat-ed and read once
+    and only the current file's text is held — rather than caching the whole
+    source tree in memory to avoid re-reads.
+    """
+    issues: list[dict[str, str]] = []
+    checked = 0
+    current: str | None = None
+    src: str | None = None
+    exists = False
+    for node_id, anchor in graph.all_anchors():
+        checked += 1
+        if anchor.path != current:
+            current, src = anchor.path, None
+            fp = base / anchor.path
+            exists = fp.is_file()
+            if exists:
+                try:
+                    src = fp.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    src = None
+        if not exists:
+            issues.append({"node": node_id, "anchor": str(anchor), "issue": "file not found"})
+            continue
+        if anchor.symbol and src is not None and not _symbol_in_source(anchor.symbol, src):
+            issues.append(
+                {"node": node_id, "anchor": str(anchor), "issue": "symbol not found in file"}
+            )
+    return issues, checked
+
+
+def uncovered_sources(graph: CodeGraph, base: Path, limit: int = 50) -> list[str]:
+    """Source files under the root that no node anchors on.
+
+    Language-agnostic by construction: the "source extensions" for a repo are
+    whatever extensions the graph already anchors on. A repo of Kotlin nodes
+    looks for `.kt`; a TypeScript one looks for `.ts`. Nothing is hardcoded.
+    """
+    anchored = set(graph.anchor_paths())  # already posix-normalized by the store
+    exts = {Path(p).suffix.lower() for p in anchored if Path(p).suffix}
+    if not exts:
+        return []
+    missing: list[str] = []
+    # os.walk with in-place pruning, not rglob: rglob descends into
+    # node_modules/.git/build in full and only filters afterwards, so the
+    # ignored 99% of a real tree gets walked and sorted before being discarded.
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d.lower() not in _IGNORE_LOWER]
+        dirnames.sort()
+        rel_dir = Path(dirpath).relative_to(base).as_posix()
+        prefix = "" if rel_dir == "." else rel_dir + "/"
+        for name in sorted(filenames):
+            if Path(name).suffix.lower() not in exts:
+                continue
+            rel = prefix + name
+            if rel not in anchored:
+                missing.append(rel)
+                if len(missing) >= limit:
+                    return missing
+    return missing
 
 
 def kg_validate(
-    graph: Graph, peer: Graph | None = None, repo_root: str | None = None
-) -> dict[str, object]:
-    """Deterministic drift checks. Advisory — never blocks anything.
+    graph: CodeGraph, peer: CodeGraph | None = None, repo_root: str | None = None
+) -> dict[str, Any]:
+    """Advisory drift check against real source. Never blocks anything.
 
-    Reports: duplicate node ids, dangling edges, counterpart problems (missing
-    target / not reciprocal), parity/counterpart field inconsistencies, and
-    ungreppable anchors (symbol no longer in the source file).
+    Note what is *absent* from the report. Duplicate ids, dangling edges and
+    inconsistent parity triples were the bulk of the old check; they are now
+    impossible to write (schema.py), so they are reported as guarantees rather
+    than searched for. What remains is everything the file itself cannot know:
+    whether the anchors still point at real code, whether new source appeared
+    that nobody mapped, and whether the peer graph agrees.
     """
-    dangling_edges: list[dict[str, str]] = []
-    field_issues: list[dict[str, str]] = []
     counterpart_issues: list[dict[str, str]] = []
-    # SCHEMA.md §4: ids must be unique — the loader keeps the last node per id
-    # but records the collisions.
-    duplicate_ids: list[str] = list(getattr(graph, "duplicate_ids", []))
+    description_issues: list[dict[str, str]] = []
 
-    ids = graph.ids
-    for n in graph.nodes:
-        for e in n.edges:
-            if e not in ids:
-                dangling_edges.append({"node": n.id, "edge": e})
+    # `node_summaries` reads the three columns this loop touches; hydrating
+    # every node's anchors and edges to look at three strings is the bulk of
+    # what this check used to cost on a large graph.
+    resolved: dict[str, bool] = {}  # cp_path -> file exists (the peer repeats)
+    for node_id, description, counterpart in graph.node_summaries():
+        for issue in clean.problems(description):
+            description_issues.append({"node": node_id, "issue": issue})
+        if counterpart:
+            counterpart_issues += _check_counterpart(
+                graph, node_id, counterpart, peer, resolved
+            )
 
-        # parity/counterpart consistency (SCHEMA.md §8)
-        p = n.parity
-        if p == "divergent":
-            if not n.counterpart:
-                field_issues.append({"node": n.id, "issue": "parity=divergent but no counterpart"})
-            if not n.divergence:
-                field_issues.append({"node": n.id, "issue": "parity=divergent but no divergence line"})
-        elif p and p.endswith("-only"):
-            if n.counterpart:
-                field_issues.append({"node": n.id, "issue": f"parity={p} should not have a counterpart"})
-        elif p == "matched":
-            if not n.counterpart:
-                field_issues.append({"node": n.id, "issue": "parity=matched but no counterpart"})
-        if n.counterpart and not p:
-            field_issues.append({"node": n.id, "issue": "counterpart set but no parity flag"})
-
-        # counterpart resolution / reciprocity
-        if n.counterpart:
-            counterpart_issues += _check_counterpart(graph, n, peer)
-
-    # anchor symbol check (needs source)
-    anchor_issues: list[dict[str, str]] = []
-    checked = 0
     base = _resolve_source_base(graph, repo_root)
+    anchor_issues: list[dict[str, str]] = []
+    uncovered: list[str] = []
+    checked = 0
     if base is not None:
-        src_cache: dict[str, str | None] = {}  # many anchors share a file — read once
-        for n in graph.nodes:
-            for a in n.anchors:
-                rel, _, symbol = a.partition("#")
-                if not rel:
-                    continue
-                fp = base / rel
-                checked += 1
-                if not fp.is_file():
-                    anchor_issues.append({"node": n.id, "anchor": a, "issue": "file not found"})
-                    continue
-                if symbol:
-                    if rel not in src_cache:
-                        try:
-                            src_cache[rel] = fp.read_text(encoding="utf-8", errors="ignore")
-                        except OSError:
-                            src_cache[rel] = None
-                    src = src_cache[rel]
-                    if src is None:
-                        continue
-                    if not _symbol_in_source(symbol, src):
-                        anchor_issues.append(
-                            {"node": n.id, "anchor": a, "issue": "symbol not found in file"}
-                        )
+        anchor_issues, checked = _check_anchors(graph, base)
+        uncovered = uncovered_sources(graph, base)
 
-    ok = not (
-        duplicate_ids or dangling_edges or field_issues or counterpart_issues or anchor_issues
-    )
+    ok = not (counterpart_issues or description_issues or anchor_issues or uncovered)
     return {
         "ok": ok,
         "advisory": True,
         "source_checked": base is not None,
         "source_base": str(base) if base else None,
         "anchors_checked": checked,
-        "duplicate_ids": duplicate_ids,
-        "dangling_edges": dangling_edges,
-        "counterpart_issues": counterpart_issues,
-        "field_issues": field_issues,
         "anchor_issues": anchor_issues,
+        "uncovered_sources": {"count": len(uncovered), "files": uncovered},
+        "counterpart_issues": counterpart_issues,
+        "description_issues": description_issues,
+        "guaranteed_by_schema": [
+            "unique node ids (primary key)",
+            "no dangling edges (foreign key)",
+            "no orphan anchors (foreign key)",
+            "consistent parity/counterpart/divergence (check constraints)",
+            "description length + shape (check constraint + writer)",
+        ],
     }
 
 
-def _check_counterpart(graph: Graph, n: Node, peer: Graph | None) -> list[dict[str, str]]:
-    assert n.counterpart is not None
-    cp_path, _, cp_id = n.counterpart.partition("#")
+def _check_counterpart(
+    graph: CodeGraph,
+    node_id: str,
+    counterpart: str,
+    peer: CodeGraph | None,
+    resolved: dict[str, bool],
+) -> list[dict[str, str]]:
+    cp_path, _, cp_id = counterpart.partition("#")
     issues: list[dict[str, str]] = []
     if not cp_id:
-        issues.append({"node": n.id, "issue": "counterpart missing #node-id"})
+        return [{"node": node_id, "issue": "counterpart missing #node-id"}]
+    # Every node in a paired graph names the same peer file; resolving it is a
+    # syscall, so remember the answer rather than asking once per node.
+    exists = resolved.get(cp_path)
+    if exists is None:
+        exists = resolved[cp_path] = (graph.path.parent / cp_path).resolve().is_file()
+    if not exists:
+        return [{"node": node_id, "issue": f"counterpart file not found: {cp_path}"}]
+    if peer is None:
         return issues
-    # resolve the counterpart file relative to this KG's directory
-    if graph.path:
-        target = (Path(graph.path).parent / cp_path).resolve()
-        if not target.is_file():
-            issues.append({"node": n.id, "issue": f"counterpart file not found: {cp_path}"})
-            return issues
-    if peer is not None:
-        peer_node = peer.by_id(cp_id)
-        if peer_node is None:
-            issues.append({"node": n.id, "issue": f"counterpart id '{cp_id}' not in peer KG"})
-        elif peer_node.counterpart:
-            back_id = peer_node.counterpart.partition("#")[2]
-            if back_id != n.id:
-                issues.append(
-                    {"node": n.id, "issue": f"not reciprocal — peer '{cp_id}' links to '{back_id}'"}
-                )
-        else:
-            issues.append({"node": n.id, "issue": f"peer '{cp_id}' has no back-link (not reciprocal)"})
+    peer_node = peer.node(cp_id)
+    if peer_node is None:
+        issues.append({"node": node_id, "issue": f"counterpart id '{cp_id}' not in peer graph"})
+    elif not peer_node.counterpart:
+        issues.append(
+            {"node": node_id, "issue": f"peer '{cp_id}' has no back-link (not reciprocal)"}
+        )
+    else:
+        back_id = peer_node.counterpart.partition("#")[2]
+        if back_id != node_id:
+            issues.append(
+                {"node": node_id, "issue": f"not reciprocal — peer '{cp_id}' links to '{back_id}'"}
+            )
     return issues
+
+
+__all__ = [
+    "kg_search",
+    "kg_node",
+    "kg_neighborhood",
+    "kg_find_by_kind",
+    "kg_find_by_path",
+    "kg_parity_gaps",
+    "kg_stats",
+    "kg_validate",
+    "uncovered_sources",
+    "Anchor",
+]
