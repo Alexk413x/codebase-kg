@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from . import clean
-from .coverage import CoverageReport, classify, resolve_source_base
+from .coverage import CoverageReport, classify, declared_roots, resolve_source_base
 from .models import Anchor, Node
 from .store import CodeGraph, tokenize
 from .writer import file_sha
@@ -355,19 +356,30 @@ def _check_anchors(graph: CodeGraph, base: Path) -> AnchorCheck:
     return out
 
 
-def walk_sources(base: Path) -> list[str]:
+def walk_sources(base: Path, keep: Iterable[str] = ()) -> list[str]:
     """Every file under `base`, relative and posix-separated, ignored dirs pruned.
 
     os.walk with in-place pruning, not rglob: rglob descends into
     node_modules/.git/build in full and only filters afterwards, so the ignored
     99% of a real tree gets walked and sorted before being discarded.
+
+    `keep` are directories the graph's `covers` names outright (see
+    `coverage.declared_roots`); they survive the prune. Without that, a repo that
+    declares `.githooks/*` could never reach `covered` — the files were removed
+    from the walk before anything classified them, so they counted as neither
+    covered nor gap, and the declaration silently did nothing.
     """
+    keep_set = {k.strip("/").lower() for k in keep}
     out: list[str] = []
     for dirpath, dirnames, filenames in os.walk(base):
-        dirnames[:] = [d for d in dirnames if d.lower() not in _IGNORE_LOWER]
-        dirnames.sort()
         rel_dir = Path(dirpath).relative_to(base).as_posix()
         prefix = "" if rel_dir == "." else rel_dir + "/"
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if d.lower() not in _IGNORE_LOWER or (prefix + d).lower() in keep_set
+        ]
+        dirnames.sort()
         out += [prefix + name for name in sorted(filenames)]
     return out
 
@@ -382,7 +394,8 @@ def coverage_report(graph: CodeGraph, base: Path, limit: int = 50) -> CoverageRe
     """
     meta = graph.meta
     anchored = set(graph.anchor_paths())  # already posix-normalized by the store
-    return classify(walk_sources(base), anchored, meta.covers, meta.exempt, limit)
+    files = walk_sources(base, keep=declared_roots(meta.covers))
+    return classify(files, anchored, meta.covers, meta.exempt, limit)
 
 
 def kg_validate(

@@ -24,7 +24,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from . import writer
+from . import cli, writer
 from .coverage import COVERS_KEY, EXEMPT_KEY, parse_patterns, resolve_source_base
 from .models import Anchor, Meta, Node
 from .schema import SCHEMA_VERSION
@@ -106,6 +106,7 @@ def read_any_version(path: Path) -> tuple[int, Meta, list[Node], dict[str, str]]
 
 
 def main(argv: list[str] | None = None) -> int:
+    cli.use_utf8()
     ap = argparse.ArgumentParser(
         prog="python -m codebase_kg.upgrade",
         description=f"Upgrade a code_graph.db to schema v{SCHEMA_VERSION}.",

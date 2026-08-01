@@ -25,15 +25,43 @@ def test_non_database_file_is_a_store_error(tmp_path: Path) -> None:
         CodeGraph(junk)
 
 
-def test_wrong_schema_version_is_refused(sample_db: Path) -> None:
-    conn = sqlite3.connect(sample_db)
+def _set_schema_version(db: Path, version: str) -> None:
+    conn = sqlite3.connect(db)
     try:
-        conn.execute("UPDATE meta SET value = '99' WHERE key = 'schema_version'")
+        conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (version,))
         conn.commit()
     finally:
         conn.close()
+
+
+def test_wrong_schema_version_is_refused(sample_db: Path) -> None:
+    _set_schema_version(sample_db, "99")
     with pytest.raises(StoreError, match="schema v99"):
         CodeGraph(sample_db)
+
+
+def test_an_older_graph_is_told_to_upgrade(sample_db: Path) -> None:
+    """A graph behind the server can be upgraded in place, keeping every node."""
+    _set_schema_version(sample_db, "2")
+    with pytest.raises(StoreError) as exc:
+        CodeGraph(sample_db)
+    assert "codebase_kg.upgrade" in str(exc.value)
+
+
+def test_a_newer_graph_is_not_told_to_rebuild(sample_db: Path) -> None:
+    """The direction that used to give actively harmful advice.
+
+    A graph *ahead* of the server is not broken — the plugin is stale. Telling
+    the user to rebuild sent them to regenerate a good file with an old server,
+    which reproduces the mismatch and discards whatever the newer schema added.
+    """
+    _set_schema_version(sample_db, "99")
+    with pytest.raises(StoreError) as exc:
+        CodeGraph(sample_db)
+    message = str(exc.value)
+    assert "/codebase-kg:build" not in message
+    assert "Update the plugin" in message
+    assert "codebase_kg.upgrade" not in message  # nor the other direction's fix
 
 
 def test_store_is_read_only(sample_db: Path) -> None:

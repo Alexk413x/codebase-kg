@@ -261,11 +261,16 @@ def is_source(rel: str, root: str, graph_rel: str | None, covers=None, exempt=No
     if root and not (rel == root or rel.startswith(root.rstrip("/") + "/")):
         return False
     parts = rel.split("/")
-    if {p.lower() for p in parts[:-1]} & _IGNORE_LOWER:
-        return False
+    # The declaration is consulted *before* IGNORE_DIRS, not after. Those
+    # directory names are a guess at what is never source; `covers` is the
+    # repo's own statement of what is. A repo that declares `.githooks/*` was
+    # being told its files did not count, by a deny-list that outranked the
+    # declaration this function documents as winning outright.
     if covers is not None:
         key = _rel_to_root(rel, root)
         return matches_any(key, covers) and not matches_any(key, exempt)
+    if {p.lower() for p in parts[:-1]} & _IGNORE_LOWER:
+        return False
     suffix = ("." + rel.rsplit(".", 1)[1].lower()) if "." in parts[-1] else ""
     if suffix in EXCLUDE_EXT:
         return False

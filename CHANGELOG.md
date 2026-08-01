@@ -2,6 +2,60 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.2.2] — 2026-08-01 — the declaration outranks the guess
+
+Three defects found by using 0.2.1 on a real repo, all of the same shape: something the plugin
+*assumed* quietly overruling something the repo *said*.
+
+### Fixed — `covers` was outranked by a hardcoded directory deny-list
+
+0.2.1 moved coverage from inferred to declared, and then let `IGNORE_DIRS` — `.git`, `.github`,
+`.githooks`, `node_modules`, … — veto the declaration. A repo whose `covers` named `.githooks/*`,
+with nodes anchored on those files, got no coverage credit for them at all:
+
+- `tools.walk_sources` pruned the directory *before* `classify` ran, so those files were neither
+  `covered` nor `gap`. They were absent — the fifth, invisible bucket that `coverage.py` opens by
+  promising cannot exist. Measured on the reporting repo: `110 covered / 184 out-of-scope`, where
+  the declaration called for `112 / 182`.
+- `kg_pre_push.is_source` checked `IGNORE_DIRS` one line above a docstring stating that a `covers`
+  declaration "wins outright". It did not.
+
+Both now consult the declaration first. `coverage.declared_roots()` extracts the directories a
+pattern names literally, and the walk keeps those while still pruning everything else — so a repo
+that declares `.githooks/*` gets those files counted without dragging `node_modules` back into
+every walk. A pattern that opens with a wildcard (`**/*.py`) lifts no prune, by design.
+
+`hooks/_config.is_source_file` (the post-edit nudge) is **not** covers-aware and still decides by
+extension. It is a heuristic for when to suggest a refresh rather than a counted report, so the
+stakes are lower — but it remains the one surface with its own notion of "source file".
+
+### Fixed — `codebase-kg-export` crashed on any non-UTF-8 stdout
+
+Descriptions routinely contain `—`, `…` and `→`. On Windows a piped stdout defaults to the ANSI
+code page, which encodes none of them, so the exporter died with `UnicodeEncodeError` *after*
+doing all its work. Git's textconv driver pipes exactly that stdout, which made
+`/codebase-kg:setup-diff` fail on every repo with a committed graph — and the only workaround was
+prefixing `PYTHONIOENCODING=utf-8`, which git gives you nowhere to put.
+
+New `cli.py`: `use_utf8()` on every CLI entry point, and `write_out()` for the exporter, which
+writes UTF-8 bytes straight to `stdout.buffer` because for textconv the bytes *are* the product.
+`build.py` had the same latent crash on its `… and N more` line and is fixed with it.
+
+### Fixed — a schema mismatch gave the same advice in both directions
+
+"Rebuild it with /codebase-kg:build" was correct for a graph *behind* the server and actively
+harmful for one *ahead* of it — it sent you to regenerate a good file with a stale plugin, which
+reproduces the mismatch and discards whatever the newer schema recorded. Older graphs are now
+pointed at `python -m codebase_kg.upgrade`; newer ones at updating the plugin.
+
+### Also
+
+- `tools.IGNORE_DIRS` was a **third** copy of the list, guarded by nothing. `test_hook_parity.py`
+  compared the other two and was written precisely because they had drifted; it now covers all
+  three.
+- Version bumped so a reinstall is observable. `/plugin` reinstalling an identical version reports
+  success and changes nothing, which is indistinguishable from a fix that did not land.
+
 ## [0.2.1] — 2026-07-31 — coverage is declared, and drift is detectable
 
 **Schema v3.** Existing graphs upgrade in place with `python -m codebase_kg.upgrade` — every node,

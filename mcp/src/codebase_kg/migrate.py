@@ -24,7 +24,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import clean, markdown, writer
+from . import clean, cli, markdown, writer
 from .coverage import resolve_source_base
 from .models import Anchor, Meta, Node
 
@@ -234,6 +234,7 @@ def _render(report: MigrationReport) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    cli.use_utf8()
     ap = argparse.ArgumentParser(
         prog="python -m codebase_kg.migrate",
         description="Convert a KNOWLEDGE_GRAPH.md into a committed code_graph.db.",

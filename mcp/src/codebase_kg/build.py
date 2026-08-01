@@ -17,7 +17,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import codec, writer
+from . import cli, codec, writer
 from .coverage import resolve_source_base
 
 DEFAULT_OUT = Path("knowledge") / "code_graph.db"
@@ -54,6 +54,9 @@ def _render(report: writer.BuildReport, target: Path, base: Path | None) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # `_render` emits an em-dash and a `…`; a cp1252 console would kill the
+    # process after the graph was already written.
+    cli.use_utf8()
     ap = argparse.ArgumentParser(
         prog="python -m codebase_kg.build",
         description="Build a committed code_graph.db from an authored JSON graph.",

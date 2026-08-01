@@ -1,6 +1,6 @@
 [project]
 name = "codebase-kg"
-version = "0.2.1"
+version = "0.2.2"
 description = "Local stdio MCP server over a per-repo committed code_graph.db — a SQLite map of a codebase (nodes, symbol anchors, edges) exposed to agents as deterministic typed queries with full-text search."
 readme = "README.md"
 requires-python = ">=3.10"

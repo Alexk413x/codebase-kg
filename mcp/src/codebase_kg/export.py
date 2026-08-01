@@ -20,13 +20,14 @@ import json
 import sys
 from pathlib import Path
 
-from . import codec
+from . import cli, codec
 from .store import CodeGraph, StoreError
 
 DEFAULT_SOURCE = Path("knowledge") / "code_graph.db"
 
 
 def main(argv: list[str] | None = None) -> int:
+    cli.use_utf8()
     ap = argparse.ArgumentParser(
         prog="python -m codebase_kg.export",
         description="Export a code_graph.db to the JSON authoring format.",
@@ -64,7 +65,10 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.out).write_text(text + "\n", encoding="utf-8")
         print(f"[codebase-kg] wrote {args.out} ({len(doc['nodes'])} nodes)")
     else:
-        sys.stdout.write(text + "\n")
+        # Bytes, not console-encoded text: git's textconv driver reads this
+        # stdout directly, and a cp1252 console cannot encode the em-dashes and
+        # arrows that descriptions routinely contain.
+        cli.write_out(text + "\n")
     return 0
 
 

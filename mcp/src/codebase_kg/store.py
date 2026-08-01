@@ -72,9 +72,26 @@ class CodeGraph:
             ) from exc
         found = int(row["value"]) if row else 0
         if found != SCHEMA_VERSION:
+            # The two directions have opposite remedies, and saying "rebuild"
+            # for both sent anyone with a newer graph to regenerate a perfectly
+            # good file with an older server — which reproduces the mismatch,
+            # discards whatever the newer schema added, and looks like the graph
+            # is at fault. Which side is behind decides who moves.
+            if found < SCHEMA_VERSION:
+                fix = (
+                    f"Upgrade the graph in place, preserving every node and edge:\n"
+                    f"    python -m codebase_kg.upgrade \"{self.path}\""
+                )
+            else:
+                fix = (
+                    "This graph was written by a newer codebase-kg than the one "
+                    "serving it. Update the plugin (/plugin), then reload — do not "
+                    "rebuild, which would silently drop whatever the newer schema "
+                    "records."
+                )
             raise StoreError(
-                f"{self.path} is schema v{found}, this server speaks v{SCHEMA_VERSION}. "
-                "Rebuild it with /codebase-kg:build."
+                f"{self.path} is schema v{found}, this server speaks "
+                f"v{SCHEMA_VERSION}. {fix}"
             )
 
     def close(self) -> None:

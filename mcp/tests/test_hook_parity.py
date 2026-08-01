@@ -39,6 +39,20 @@ def test_ignore_dirs_are_identical() -> None:
     assert _config.IGNORE_DIRS == kg_pre_push.IGNORE_DIRS
 
 
+def test_ignore_dirs_match_the_package_copy_too() -> None:
+    """There are *three* copies, and only two were being compared.
+
+    `tools.py` carries its own `IGNORE_DIRS` for the coverage walk, with a
+    comment claiming it "mirrors the pre-push gate's list" — the same comment
+    that was the only thing holding the other two together, right up until they
+    drifted. The third copy was outside the net entirely.
+    """
+    from codebase_kg import tools
+
+    assert tools.IGNORE_DIRS == kg_pre_push.IGNORE_DIRS
+    assert tools._IGNORE_LOWER == {d.lower() for d in tools.IGNORE_DIRS}
+
+
 def test_excluded_extensions_are_identical() -> None:
     assert set(EXCLUDE_EXT) == kg_pre_push.EXCLUDE_EXT
 

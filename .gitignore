@@ -20,3 +20,8 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# coverage.py artifacts
+.coverage
+.coverage.*
+htmlcov/

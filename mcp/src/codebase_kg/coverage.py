@@ -97,6 +97,44 @@ def matches_any(path: str, compiled: re.Pattern[str] | None) -> bool:
     return compiled.match(path.replace("\\", "/")) is not None
 
 
+def declared_roots(patterns: list[str] | tuple[str, ...]) -> set[str]:
+    """The directories a `covers` pattern names literally, before its first glob.
+
+    A tree walk prunes conventionally-non-source directories (`.git`,
+    `node_modules`, `.github`, …) so a large repo stays a cheap walk. That
+    default must never be able to veto the graph's own declaration: a repo whose
+    `covers` says `.githooks/*` has stated those files are source, and pruning
+    the directory anyway drops them into a fifth bucket — walked past, never
+    classified, invisible. That is precisely the failure this module exists to
+    prevent, so the declaration wins and the prune yields.
+
+    Ancestors are included because a walk prunes top-down: reaching
+    `app/.generated/` means not pruning `app/` on the way.
+
+    A pattern that opens with a wildcard (`**/*.py`) declares no literal
+    directory and so lifts no prune — otherwise it would drag `.venv` and
+    `node_modules` back into every walk.
+    """
+    out: set[str] = set()
+    for raw in patterns:
+        pat = raw.strip().replace("\\", "/")
+        if not pat or pat.startswith("#"):
+            continue
+        segs = pat.rstrip("/").split("/")
+        if not pat.endswith("/"):
+            segs = segs[:-1]  # the last segment names a file, not a directory
+        cur: list[str] = []
+        for seg in segs:
+            if not seg or seg in {".", ".."} or _GLOB_CHARS.search(seg):
+                break
+            cur.append(seg)
+            out.add("/".join(cur))
+    return out
+
+
+_GLOB_CHARS = re.compile(r"[*?\[]")
+
+
 def parse_patterns(raw: str | None) -> list[str]:
     """A stored meta value back into a pattern list.
 
