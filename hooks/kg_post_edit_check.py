@@ -39,6 +39,21 @@ _EDIT_TOOLS = {"Edit", "Write", "MultiEdit"}
 GRAPH_FILENAME = "code_graph.db"
 
 
+def _as_int(value: object, default: int) -> int:
+    """A config or state value as an int, falling back rather than raising.
+
+    `nudge_every` is user-typed and `pending` comes off disk, so both reach
+    `int()` as arbitrary objects. A bare `int("evry")` raises, `main` swallows
+    it, and the hook goes silent for that repo forever with no error anywhere —
+    the same invisible-disable that the frontmatter comment-strip exists to
+    prevent. A typo should cost the setting, not the feature.
+    """
+    try:
+        return int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return default
+
+
 def _norm(p: Path) -> str:
     return os.path.normcase(str(p))
 
@@ -123,7 +138,7 @@ def _run(data: dict[str, object]) -> None:
 
     rel = _rel_to_root(edited, proj, str(cfg.get("root") or ""))
     reported = [str(r) for r in state.get("reported", []) if isinstance(r, str)]
-    pending = int(state.get("pending", 0) or 0) + 1
+    pending = _as_int(state.get("pending"), 0) + 1
 
     # Signal 1: this file is not in the map. Report once per file per session.
     if rel is not None and rel not in reported and not is_anchored(graph, rel):
@@ -139,7 +154,9 @@ def _run(data: dict[str, object]) -> None:
     _write_state(proj, {"pending": pending, "reported": reported})
 
     # Signal 2: enough mapped files have changed that descriptions may have drifted.
-    every = max(1, int(cfg.get("nudge_every", 5) or 5))
+    # `or 5` before the coercion, not after: a falsy `nudge_every` has always
+    # meant "unset", and this line is fixing a crash, not redefining the config.
+    every = max(1, _as_int(cfg.get("nudge_every") or 5, 5))
     if pending % every == 0:
         _emit(
             f"codebase-kg: {pending} source edit(s) since {graph.name} was last rebuilt. "

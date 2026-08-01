@@ -2,6 +2,59 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.2.3] — 2026-08-01 — the untested surfaces, tested
+
+Coverage across everything shipped: **89% → 92%**, 304 → 394 tests. The headline number moved a
+little; what moved a lot is where the coverage is.
+
+| | before | after |
+|---|---|---|
+| `hooks/kg_post_edit_check.py` | **0%** — never imported | 96% |
+| `hooks/_config.py` | 64% | 99% |
+| `codebase_kg/server.py` | 82% | 95% |
+
+The post-edit hook runs after every `Edit`/`Write`/`MultiEdit` in every repo that installs the
+plugin, and no test had ever imported it — `coverage.py` reported it as `never imported` while the
+package around it sat at 91%. The most-run code in the plugin was the least tested.
+
+### Fixed — one typo in `.local.md` silently disabled the hook forever
+
+Found by the new tests. `nudge_every` goes straight into `int()`, and `main` swallows every
+exception so an advisory hook can never break an edit. Together those meant `nudge_every: evry`
+raised, got swallowed, and the hook went permanently silent for that repo — no nudge, no error, no
+way to notice. That is the same invisible-disable the frontmatter comment-strip exists to prevent.
+
+`_as_int` now falls back instead of raising, for both the config value and the on-disk counter. A
+typo costs the setting, not the feature. Falsy still means "unset" — the fix is to the crash, not to
+the semantics.
+
+### `/codebase-kg:setup-diff`, tested through real git
+
+The exporter had unit tests and still shipped broken for the one use that matters, because nothing
+ran it the way git does: git spawns the textconv command itself, with no shell in between, and reads
+its stdout as bytes. `test_textconv.py` configures a genuine repo exactly as the command documents,
+then asserts on what `git diff`, `git show` and `git log -p` actually print — including under
+`PYTHONIOENCODING=cp1252`, which is the reported failure reproduced on any platform.
+
+Two things it pins that are easy to get wrong:
+
+- `git show <rev>:<path>` does **not** go through textconv — it is a blob dump. Asserting on it looks
+  like it works, because descriptions are UTF-8 text inside the SQLite file and a substring check
+  passes against the raw bytes while proving nothing.
+- Without the driver, git says `Binary files … differ`. That baseline is asserted too, so the
+  rendering tests cannot pass for the wrong reason.
+
+### Also
+
+- Every MCP tool is now invoked through `mcp.call_tool`, the surface an agent actually reaches.
+  `test_server.py` proved the eight tools were *registered* and `test_tools.py` proved the query
+  functions were correct; the two-line wrapper joining them was uncovered on all eight, and it is
+  the only place a swapped argument or a missing `_open_peer` could live.
+- `kg_search` returns `results` while `kg_find_by_kind` returns `nodes`. Pinned as a test rather
+  than fixed — renaming either changes what every already-built agent reads.
+- `hooks/_config.is_source_file` remains extension-based rather than `covers`-aware, now asserted
+  explicitly so it reads as a decision rather than drift.
+
 ## [0.2.2] — 2026-08-01 — the declaration outranks the guess
 
 Three defects found by using 0.2.1 on a real repo, all of the same shape: something the plugin
