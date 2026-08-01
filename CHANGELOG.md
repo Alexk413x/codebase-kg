@@ -15,8 +15,14 @@ with nodes anchored on those files, got no coverage credit for them at all:
 
 - `tools.walk_sources` pruned the directory *before* `classify` ran, so those files were neither
   `covered` nor `gap`. They were absent — the fifth, invisible bucket that `coverage.py` opens by
-  promising cannot exist. Measured on the reporting repo: `110 covered / 184 out-of-scope`, where
-  the declaration called for `112 / 182`.
+  promising cannot exist. Measured on the reporting repo: `110 covered`, rising to `112` once the
+  declaration was honoured.
+
+  `out_of_scope` does **not** move, and the expectation that it would (`184 → 182`) misread the
+  bug. `classify` computes it as `len(files) - len(in_scope)`; a pruned file is missing from both
+  terms, so it was never counted as out-of-scope in the first place. Honouring the declaration adds
+  it to `files` *and* to `in_scope`, leaving the difference unchanged. A drop there would have meant
+  something else moved — the correct signature of this fix is `covered` rising alone.
 - `kg_pre_push.is_source` checked `IGNORE_DIRS` one line above a docstring stating that a `covers`
   declaration "wins outright". It did not.
 

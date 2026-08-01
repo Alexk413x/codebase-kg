@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from codebase_kg.coverage import declared_roots
+from codebase_kg.coverage import classify, declared_roots
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.store import CodeGraph
 from codebase_kg.tools import coverage_report, walk_sources
@@ -131,6 +131,36 @@ def test_declared_and_anchored_files_count_as_covered(tmp_path: Path) -> None:
     assert report.covered == 3          # was 1: the two .githooks files vanished
     assert report.gaps == []
     assert report.out_of_scope == 0
+
+
+def test_declaring_an_ignored_dir_does_not_change_out_of_scope(tmp_path: Path) -> None:
+    """`covered` rises alone. That is the whole signature of the fix.
+
+    The expectation when this was reported was `110/184 → 112/182`, which
+    misreads the bug: `classify` computes `out_of_scope` as
+    `len(files) - len(in_scope)`, and a pruned file is missing from *both*
+    terms, so it never counted as out-of-scope to begin with. Honouring the
+    declaration adds it to `files` and to `in_scope` alike, leaving the
+    difference untouched. Pinned here because a future change that moves
+    `out_of_scope` when a declaration is added is a bug, not an improvement.
+    """
+    repo = tmp_path / "repo"
+    for rel in ("src/Main.kt", "README.md", ".githooks/pre-push"):
+        p = repo / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x", encoding="utf-8")
+
+    anchored = {"src/Main.kt", ".githooks/pre-push"}
+    covers = ["src/*.kt", ".githooks/*"]
+
+    # README.md is the only genuinely out-of-scope file, in both walks.
+    without = classify(walk_sources(repo), anchored, covers, [])
+    with_declared = classify(
+        walk_sources(repo, keep=declared_roots(covers)), anchored, covers, []
+    )
+
+    assert without.covered == 1 and with_declared.covered == 2
+    assert without.out_of_scope == with_declared.out_of_scope == 1
 
 
 def test_an_undeclared_ignored_dir_stays_out_of_scope(tmp_path: Path) -> None:
