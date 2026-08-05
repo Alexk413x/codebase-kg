@@ -47,8 +47,8 @@ A build fails rather than storing a half-filled parity triple, so get these righ
 
 ## Workflow
 
-Edit each side through its JSON (`python -m codebase_kg.export -o graph.json`, edit, then
-`python -m codebase_kg.build graph.json -o knowledge/code_graph.db`). Both sides change, so expect
+Edit each side through its JSON (`python -m codebase_kg.export -o .kg-export.json`, edit, then
+`python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db`). Both sides change, so expect
 two export/build cycles.
 
 ### 1. Pair the config

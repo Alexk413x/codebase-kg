@@ -36,7 +36,7 @@ The artifact is SQLite, so it is not written with an editor. You author a **JSON
 it to the builder:
 
 ```sh
-python -m codebase_kg.build graph.json -o knowledge/code_graph.db
+python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
 ```
 
 The builder validates before writing anything. If a node breaks a rule it names that node and writes

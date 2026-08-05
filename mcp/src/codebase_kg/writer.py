@@ -49,7 +49,13 @@ class BuildError(ValueError):
     """The input cannot produce a valid graph. Nothing was written."""
 
 
-def _fts_text(node: Node) -> str:
+def fts_text(node: Node) -> str:
+    """The search payload for one node.
+
+    Public because `edits.py` rewrites a single FTS row on an upsert. If the two
+    sides ever computed this differently, editing a node would silently change
+    what finds it — and the next full rebuild would silently change it back.
+    """
     parts: list[str] = []
     parts += split_identifier(node.id)
     parts += split_identifier(node.kind)
@@ -227,7 +233,7 @@ def _write(
     )
     conn.executemany(
         "INSERT INTO node_fts (node_id, text) VALUES (?, ?)",
-        [(n.id, _fts_text(n)) for n in nodes],
+        [(n.id, fts_text(n)) for n in nodes],
     )
 
     report.nodes = len(nodes)
@@ -293,7 +299,7 @@ def build(
             conn.execute("VACUUM")
         finally:
             conn.close()
-        _replace(tmp, target)
+        replace_file(tmp, target)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
@@ -301,13 +307,16 @@ def build(
     return report
 
 
-def _replace(tmp: Path, target: Path) -> None:
+def replace_file(tmp: Path, target: Path) -> None:
     """`os.replace` with a short retry.
 
     On Windows a rename over an open file fails outright. The MCP server avoids
     holding the graph open for exactly this reason, but an editor, a file
     indexer or a second session can still have it momentarily; a brief retry
     turns that transient into a non-event instead of a failed rebuild.
+
+    Shared with `edits.py`: a targeted write lands the same way a build does,
+    so there is one answer to "how does a new graph replace the committed one".
     """
     last: OSError | None = None
     for attempt in range(5):

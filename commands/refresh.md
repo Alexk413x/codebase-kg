@@ -15,10 +15,16 @@ Bring the code graph back in sync with the code.
 The loop is export → edit → build:
 
 ```sh
-python -m codebase_kg.export -o graph.json
-#   … edit graph.json …
-python -m codebase_kg.build graph.json -o knowledge/code_graph.db
+python -m codebase_kg.export -o .kg-export.json    # scratch, gitignored
+#   ... edit .kg-export.json ...
+python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
+rm .kg-export.json                                  # it is a snapshot, not a source
 ```
+
+Delete it when you are done. A leftover export is a stale snapshot of the graph that still
+parses, so a later `build` against it silently rebuilds from whenever it was written — a graph
+that looks freshly built and is not. The dot-prefixed name keeps it out of casual `ls` and most
+default ignore habits; add `.kg-export.json` to the repo's `.gitignore` as well.
 
 Building an unedited export is byte-identical, so anything that appears in the git diff is a change
 you actually made. The builder validates first and writes nothing if a node breaks a rule.

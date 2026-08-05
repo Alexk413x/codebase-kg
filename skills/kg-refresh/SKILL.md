@@ -29,9 +29,9 @@ Update `knowledge/code_graph.db` so it mirrors the code as it is **now**. Every 
 The artifact is SQLite, so it is edited through its JSON form:
 
 ```sh
-python -m codebase_kg.export -o graph.json          # current graph, as JSON
-#   … edit graph.json …
-python -m codebase_kg.build graph.json -o knowledge/code_graph.db
+python -m codebase_kg.export -o .kg-export.json          # current graph, as JSON
+#   … edit .kg-export.json …
+python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
 ```
 
 Two properties make this safe:
@@ -41,7 +41,7 @@ Two properties make this safe:
 - **Validated.** The builder refuses a document that breaks a rule, names the node, and writes
   nothing. A dangling edge or a description carrying a ticket ref cannot land.
 
-Delete `graph.json` when you are done — it is a working file, not an artifact.
+Delete `.kg-export.json` when you are done — it is a working file, not an artifact.
 
 ## Workflow
 

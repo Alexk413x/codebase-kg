@@ -8,7 +8,7 @@ from typing import Iterator
 
 import pytest
 
-from codebase_kg import migrate, server
+from codebase_kg import migrate, server, tools
 from codebase_kg.models import Meta, Node
 from codebase_kg.writer import build
 
@@ -165,7 +165,7 @@ def test_peer_is_none_without_a_counterpart(
     db = tmp_path / "code_graph.db"
     build(db, Meta(codebase="solo", root="src"), [Node(id="a", kind="K")])
     monkeypatch.setattr("sys.argv", ["server", str(db)])
-    with server._open_graph() as g, server._open_peer(g) as peer:
+    with server._open_graph() as g, tools.open_peer(g) as peer:
         assert peer is None
 
 
@@ -174,7 +174,7 @@ def test_peer_resolves_relative_to_the_graph(
 ) -> None:
     db = built_fixtures / "android" / "code_graph.db"
     monkeypatch.setattr("sys.argv", ["server", str(db)])
-    with server._open_graph() as g, server._open_peer(g) as peer:
+    with server._open_graph() as g, tools.open_peer(g) as peer:
         assert peer is not None and peer.meta.codebase == "ios"
 
 
@@ -185,7 +185,7 @@ def test_missing_peer_file_degrades_quietly(
     build(db, Meta(codebase="x", root="src", counterpart="../gone/code_graph.db"),
           [Node(id="a", kind="K")])
     monkeypatch.setattr("sys.argv", ["server", str(db)])
-    with server._open_graph() as g, server._open_peer(g) as peer:
+    with server._open_graph() as g, tools.open_peer(g) as peer:
         assert peer is None
 
 
@@ -198,4 +198,5 @@ def test_every_tool_is_registered_and_no_others() -> None:
         "kg_search", "kg_node", "kg_neighborhood", "kg_find_by_kind",
         "kg_find_by_path", "kg_find_by_link", "kg_parity_gaps", "kg_stats",
         "kg_validate",
+        "kg_upsert_node", "kg_delete_node", "kg_add_link", "kg_remove_link",
     }

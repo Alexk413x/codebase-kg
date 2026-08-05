@@ -1,14 +1,14 @@
 """Every MCP tool, invoked through the registered surface an agent actually hits.
 
-`test_server.py` proves the eight tools are *registered* and that path
-resolution works; `test_tools.py` proves the query functions beneath them are
+`test_server.py` proves the tools are *registered* and that path resolution
+works; `test_tools.py` and `test_edits.py` prove the functions beneath them are
 correct. Neither called a tool, so the layer joining them — the `@mcp.tool()`
 wrapper that opens the graph, delegates, and closes it — was uncovered on every
-one of the eight.
+one of them.
 
 That layer is two lines per tool and looks too small to break, which is exactly
 the argument that kept it untested. It is also the only place a wrong argument
-order or a missing `_open_peer` would live, and a mistake there is invisible to
+order or a missing peer graph would live, and a mistake there is invisible to
 both neighbouring test files.
 
 Calls go through `mcp.call_tool` rather than the module-level names, so the
@@ -171,3 +171,55 @@ def test_every_tool_reports_a_missing_graph_actionably(
         with pytest.raises(Exception) as exc:
             asyncio.run(server.mcp.call_tool(name, kwargs))
         assert "/codebase-kg:build" in str(exc.value), name
+
+    # The write tools answer instead of raising -- a refusal is data there, so
+    # `written: false` can be trusted to mean "the file is untouched".
+    for name, kwargs in [
+        ("kg_upsert_node", {"nodes": [{"id": "x", "kind": "K"}]}),
+        ("kg_delete_node", {"ids": ["x"]}),
+        ("kg_add_link", {"node_id": "x", "target": "p.db#y"}),
+        ("kg_remove_link", {"node_id": "x", "target": "p.db#y"}),
+    ]:
+        out = call(name, **kwargs)
+        assert out["ok"] is False and out["written"] is False, name
+        assert "/codebase-kg:build" in out["error"], name
+
+
+# --- the write tools through the same surface --------------------------------
+def test_kg_upsert_node_reports_what_it_changed(served: Path) -> None:
+    node_id = _any_node_id(served)
+    before = call("kg_node", id=node_id)["section"]
+    out = call("kg_upsert_node", nodes=[{"id": node_id, "section": "REVISED"}])
+    assert out["ok"] and out["written"] is True
+    change = next(c for c in out["changes"] if c["table"] == "node")
+    assert change["fields"] == [{"field": "section", "before": before, "after": "REVISED"}]
+    assert call("kg_node", id=node_id)["section"] == "REVISED"
+
+
+def test_a_refused_write_comes_back_as_data_not_an_exception(served: Path) -> None:
+    """A rejection is the tool working, so it must be something an agent can read."""
+    node_id = _any_node_id(served)
+    out = call("kg_upsert_node", nodes=[{"id": node_id, "description": "Fixes ACME-431."}])
+    assert out["ok"] is False and out["written"] is False
+    assert "ticket refs" in out["error"]
+
+
+def test_kg_delete_node_previews_through_the_tool_surface(served: Path) -> None:
+    node_id = _any_node_id(served)
+    out = call("kg_delete_node", ids=[node_id])
+    assert out["ok"] and out["written"] is False and out["dry_run"] is True
+    assert node_id in out["would_delete"]["nodes"]
+    assert call("kg_node", id=node_id)["found"] is True
+
+
+def test_kg_add_link_then_remove_link_round_trips(served: Path) -> None:
+    node_id = _any_node_id(served)
+    added = call(
+        "kg_add_link", node_id=node_id, target="cartographer_graph.db#home", kind="presented-by"
+    )
+    assert added["written"] is True
+    assert call("kg_find_by_link", target="cartographer_graph.db#home")["count"] == 1
+    assert call("kg_remove_link", node_id=node_id, target="cartographer_graph.db#home")[
+        "written"
+    ] is True
+    assert call("kg_node", id=node_id).get("external_links", []) == []

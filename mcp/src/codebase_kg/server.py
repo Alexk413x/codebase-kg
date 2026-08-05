@@ -1,9 +1,16 @@
 """FastMCP server entry point for codebase-kg.
 
-Nine read-only tools over one repo's `knowledge/code_graph.db`. The graph opens
-on each tool call, so tools always see current data — including a graph created
-after the server started. The peer graph named in `meta.counterpart` is opened
-the same way for the cross-codebase parity checks.
+Thirteen tools over one repo's `knowledge/code_graph.db` — nine queries and four
+targeted writes. The graph opens on each tool call, so tools always see current
+data — including a graph created after the server started. The peer graph named
+in `meta.counterpart` is opened the same way for the cross-codebase parity
+checks.
+
+The write tools are for **targeted** changes: one node's description, an anchor
+that moved, a cross-graph link. Bulk work — a parity sweep, a restructuring,
+anything where reviewing the diff before applying it is the point — still goes
+through `export → edit the JSON → build`. Each tool's description says which it
+is, because picking the wrong one is the way this surface gets misused.
 
 Path resolution order: CLI arg → $CODEBASE_KG_PATH → walk up from CWD honoring
 an optional `graph_path` in `.claude/codebase-kg.local.md`, else
@@ -30,6 +37,7 @@ from typing import Any, Iterator
 
 from fastmcp import FastMCP
 
+from . import edits as _edits
 from . import tools as _tools
 from .store import CodeGraph, StoreError
 
@@ -141,26 +149,17 @@ def _open_graph() -> Iterator[CodeGraph]:
         g.close()
 
 
-@contextmanager
-def _open_peer(g: CodeGraph) -> Iterator[CodeGraph | None]:
-    """Open the counterpart graph named in `meta`, if there is a usable one.
+def _write(fn: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Run one write tool, turning a refusal into an answer rather than a crash.
 
-    A peer that is absent or unreadable yields None: the parity checks then
-    report only what the local half can prove, rather than failing the call.
+    A rejected edit is a normal outcome — it is the tool working — so it comes
+    back as data an agent can act on. `written: false` is the load-bearing field:
+    it is how the caller knows the committed artifact is byte-identical to before.
     """
-    cp = g.meta.counterpart
-    if not cp:
-        yield None
-        return
     try:
-        peer = CodeGraph((g.path.parent / cp).resolve())
-    except StoreError:
-        yield None
-        return
-    try:
-        yield peer
-    finally:
-        peer.close()
+        return fn(_graph_file(), *args, **kwargs)
+    except (_edits.EditError, StoreError, FileNotFoundError) as exc:
+        return {"ok": False, "written": False, "error": str(exc)}
 
 
 @mcp.tool()
@@ -253,8 +252,72 @@ def kg_validate() -> dict[str, Any]:
     node covers, and counterpart problems vs the peer graph. Structural
     integrity — unique ids, no dangling edges, consistent parity — is guaranteed
     by the store and reported rather than checked."""
-    with _open_graph() as g, _open_peer(g) as peer:
+    with _open_graph() as g, _tools.open_peer(g) as peer:
         return _tools.kg_validate(g, peer)
+
+
+@mcp.tool()
+def kg_upsert_node(nodes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Create or update node(s) in place — the targeted alternative to
+    export/edit/build. Use for a handful of nodes: a wrong description, an anchor
+    that moved, a missing edge. For bulk work (a parity sweep, a restructuring,
+    anything you want to review as a diff first) still use
+    `python -m codebase_kg.export` → edit the JSON → `python -m codebase_kg.build`.
+
+    Each item needs an `id`; a node that does not exist yet also needs a `kind`.
+    **Only the keys you supply change** — omit a field and it keeps its value,
+    pass `null` to clear `parity`/`counterpart`/`divergence`. `anchors`, `edges`
+    and `external_links` replace the whole list when present, so read the node
+    first if you mean to append.
+
+    - `anchors`: `["path/to/File.kt#Symbol", ...]` — symbols, never line numbers.
+    - `edges`: outbound node ids. Both endpoints must exist after this call.
+    - `external_links`: `[{"target": "cartographer_graph.db#screen", "kind": "presented-by"}]`.
+
+    Atomic: if any node in the batch is rejected, nothing is written and the file
+    is byte-identical. Returns every row and field it changed, before and after.
+    """
+    return _write(_edits.upsert_node, nodes)
+
+
+@mcp.tool()
+def kg_delete_node(ids: list[str], dry_run: bool = True, cascade_inbound: bool = False) -> dict[str, Any]:
+    """Delete node(s). **Previews by default** — call with `dry_run=false` to apply.
+
+    A node does not leave alone: its anchors, its outbound edges and its external
+    links cascade away with it. Edges pointing *at* it do not — `ON DELETE
+    RESTRICT` blocks the delete instead, so a relationship is never dropped by
+    accident. Pass `cascade_inbound=true` to remove those edges as part of the
+    same atomic call, having seen them in the dry run.
+
+    The preview lists exactly what would go. Nothing is written unless
+    `dry_run=false`, and even then the delete is rejected whole if it would break
+    the graph."""
+    return _write(_edits.delete_node, ids, dry_run=dry_run, cascade_inbound=cascade_inbound)
+
+
+@mcp.tool()
+def kg_add_link(node_id: str, target: str, kind: str = "") -> dict[str, Any]:
+    """Point a code node at a node in another committed graph in this repo —
+    typically a screen in `cartographer_graph.db`. The inverse of `kg_find_by_link`.
+
+    - `target`: `<db-file>#<node-id>`, relative to `knowledge/` and never absolute
+      (an absolute path breaks on the next clone). See cartographer's
+      docs/GRAPH-LINKS.md.
+    - `kind`: what the link means from this side — `implements`, `presented-by`,
+      `tests`, `documents`. Empty means unspecified, which is honest for a link
+      nobody has characterised.
+
+    Refused if the peer graph is present and does not contain that node, so a
+    typo'd target cannot be committed."""
+    return _write(_edits.add_link, node_id, target, kind)
+
+
+@mcp.tool()
+def kg_remove_link(node_id: str, target: str) -> dict[str, Any]:
+    """Remove one cross-graph link from a node. The node, its anchors and its
+    edges are untouched — this drops the pointer only."""
+    return _write(_edits.remove_link, node_id, target)
 
 
 def main() -> None:

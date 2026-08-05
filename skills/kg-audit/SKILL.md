@@ -38,7 +38,7 @@ perfectly but whose description describes the wrong thing.
 
 ## Getting the nodes
 
-Use `python -m codebase_kg.export -o graph.json` for the whole graph as JSON, or `kg_find_by_kind` /
+Use `python -m codebase_kg.export -o .kg-export.json` for the whole graph as JSON, or `kg_find_by_kind` /
 `kg_node` to pull the slice under audit. Export is usually right here — the audit reads every node
 anyway, and the JSON is easy to partition across sub-agents.
 

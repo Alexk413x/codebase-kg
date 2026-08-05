@@ -10,7 +10,7 @@ so no agent holds more than ~25 nodes.
 
 ## Partition
 
-- Export the graph (`python -m codebase_kg.export -o graph.json`) and group by `section`, so each
+- Export the graph (`python -m codebase_kg.export -o .kg-export.json`) and group by `section`, so each
   group is one coherent subsystem cluster (e.g. {entry, navigation}, {domain, view-models},
   {views, theme}, {services, data, DI}).
 - Balance node counts across groups.

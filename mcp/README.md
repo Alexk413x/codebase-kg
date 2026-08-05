@@ -27,8 +27,8 @@ The server is read-only. Writing goes through three small commands:
 
 ```sh
 python -m codebase_kg.migrate knowledge/KNOWLEDGE_GRAPH.md   # one-time: markdown → db
-python -m codebase_kg.export -o graph.json                   # db → JSON
-python -m codebase_kg.build graph.json -o knowledge/code_graph.db
+python -m codebase_kg.export -o .kg-export.json                   # db → JSON
+python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
 ```
 
 `export` → `build` with no edits is byte-identical, so a no-op refresh leaves the git diff empty.

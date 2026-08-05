@@ -66,7 +66,7 @@ mechanical step rather than a judgement call about binary content.
 
 ### Why not commit the JSON instead?
 
-It was considered and rejected. Committing `graph.json` and generating the `.db`
+It was considered and rejected. Committing `.kg-export.json` and generating the `.db`
 via a `post-merge`/`post-checkout` hook gives real three-way merges — but hooks
 do not run in CI, do not run for anyone who skips `/codebase-kg:install-hooks`,
 and do not run on a plain `git archive` export. The MCP server needs the `.db`

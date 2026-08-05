@@ -18,8 +18,8 @@ All five lean on the MCP query surface (`mcp__codebase-kg__*`) and the schema (`
 The artifact is SQLite, so no skill edits it with `Write`/`Edit`. The write path is always:
 
 ```sh
-python -m codebase_kg.export -o graph.json      # read  (kg-refresh, kg-link, kg-audit)
-python -m codebase_kg.build graph.json -o knowledge/code_graph.db
+python -m codebase_kg.export -o .kg-export.json      # read  (kg-refresh, kg-link, kg-audit)
+python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
 ```
 
 The builder validates first and writes nothing if a node breaks a rule, so a skill cannot ship a

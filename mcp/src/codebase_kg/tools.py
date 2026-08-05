@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ from . import clean
 from .coverage import CoverageReport, classify, declared_roots, resolve_source_base
 from .links import Resolution, resolve
 from .models import Anchor, Node
-from .store import CodeGraph, tokenize
+from .store import CodeGraph, StoreError, tokenize
 from .writer import file_sha
 
 # Directories that are never source (mirrors the pre-push gate's list).
@@ -34,6 +35,33 @@ IGNORE_DIRS = {
 }
 # Precomputed once — this was being rebuilt for every file in the tree walk.
 _IGNORE_LOWER = {d.lower() for d in IGNORE_DIRS}
+
+
+@contextmanager
+def open_peer(graph: CodeGraph) -> Iterator[CodeGraph | None]:
+    """Open the counterpart graph named in `meta`, if there is a usable one.
+
+    A peer that is absent or unreadable yields None: the parity checks then
+    report only what the local half can prove, rather than failing the call.
+
+    Lives here rather than in `server.py` because `edits.py` needs the same peer
+    the validation tool would have used — a write judged against a validation
+    run that skipped the peer would accept a counterpart the peer never
+    reciprocates.
+    """
+    cp = graph.meta.counterpart
+    if not cp:
+        yield None
+        return
+    try:
+        peer = CodeGraph((graph.path.parent / cp).resolve())
+    except StoreError:
+        yield None
+        return
+    try:
+        yield peer
+    finally:
+        peer.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -594,6 +622,7 @@ def _check_counterpart(
 
 
 __all__ = [
+    "open_peer",
     "kg_search",
     "kg_node",
     "kg_neighborhood",

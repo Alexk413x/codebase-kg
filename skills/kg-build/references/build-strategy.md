@@ -65,6 +65,6 @@ Run buckets concurrently (one message, multiple `Task` calls). Collect the retur
 
 ## After assembly
 
-Build with `python -m codebase_kg.build graph.json -o knowledge/code_graph.db`. The builder is the
+Build with `python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db`. The builder is the
 first gate: it names any node that breaks a rule and writes nothing. Then `kg_validate` — ungreppable
 anchors mean a symbol was guessed, so re-grep and fix. Then `kg_stats` for the summary.

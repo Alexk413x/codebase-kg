@@ -49,9 +49,9 @@ previous Markdown format needed constant tending. The builder rejects all three.
 The artifact is a database, so it is authored through JSON and built:
 
 ```sh
-python -m codebase_kg.export -o graph.json      # existing graph → JSON
+python -m codebase_kg.export -o .kg-export.json      # existing graph → JSON
 #   … edit …
-python -m codebase_kg.build graph.json -o knowledge/code_graph.db
+python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
 ```
 
 The round trip is lossless — building an unedited export is byte-identical — so anything in the git
