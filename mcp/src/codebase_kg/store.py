@@ -16,7 +16,9 @@ import sqlite3
 import threading
 from pathlib import Path
 
+from . import links
 from .coverage import COVERS_KEY, EXEMPT_KEY, parse_patterns
+from .links import ExternalLink
 from .models import Anchor, Meta, Node
 from .schema import READ_PRAGMAS, SCHEMA_VERSION, split_identifier
 
@@ -60,6 +62,12 @@ class CodeGraph:
         for pragma in READ_PRAGMAS:
             self._conn.execute(pragma)
         self._check_schema()
+        # Probed once, not per query. `external_link` was added without a schema
+        # bump precisely so a graph written before it existed still opens, which
+        # means every read of it has to be conditional -- and asking sqlite_master
+        # once per node would put a table lookup in the hot path of every
+        # hydration.
+        self._has_links = links.has_link_table(self._conn)
 
     # ---------------------------------------------------------------- lifecycle
     def _check_schema(self) -> None:
@@ -166,6 +174,27 @@ class CodeGraph:
         for a in anchor_rows:
             anchors[a["node_id"]].append(Anchor(path=a["path"], symbol=a["symbol"]))
 
+        # One query for the whole batch, like anchors and edges -- a caller must
+        # never pay per-node round trips just because a few nodes link out.
+        outbound: dict[str, list[ExternalLink]] = {i: [] for i in ids}
+        if self._has_links:
+            link_rows = (
+                self._q(
+                    f"SELECT node_id, target, kind FROM {links.TABLE}"
+                    " ORDER BY node_id, target, kind"
+                ).fetchall()
+                if whole_graph
+                else self._in_chunks(
+                    f"SELECT node_id, target, kind FROM {links.TABLE}"
+                    " WHERE node_id IN ({marks}) ORDER BY node_id, target, kind",
+                    ids,
+                )
+            )
+            for r in link_rows:
+                outbound[r["node_id"]].append(
+                    ExternalLink(target=r["target"], kind=r["kind"])
+                )
+
         edges: dict[str, list[str]] = {i: [] for i in ids}
         if with_edges:
             edge_rows = (
@@ -189,6 +218,7 @@ class CodeGraph:
                 parity=r["parity"],
                 counterpart=r["counterpart"],
                 divergence=r["divergence"],
+                links=outbound[r["id"]],
             )
             for r in rows
         ]
@@ -324,6 +354,34 @@ class CodeGraph:
             return []
         nodes = {n.id: n for n in self.nodes(list(matched))}
         return [(nodes[i], matched[i]) for i in sorted(matched) if i in nodes]
+
+    # ---------------------------------------------------- cross-graph links
+    def external_links(self) -> list[tuple[str, ExternalLink]]:
+        """`(node_id, link)` for the whole graph — for export and validation.
+
+        Empty for a graph written before `external_link` existed, which reads as
+        "no cross-graph links" rather than as an error. That is what makes the
+        table additive: adoption never invalidates a committed artifact.
+        """
+        if not self._has_links:
+            return []
+        with self._lock:
+            return links.all_links(self._conn)
+
+    def nodes_linking_to(self, target: str, *, kind: str | None = None) -> list[str]:
+        """Which nodes here point at that node over there? — the reverse lookup.
+
+        Served by `external_link_target`. This is what makes a one-sided link
+        answer both questions: "which screen does this code present?" is a row,
+        and "which code presents this screen?" is this query.
+
+        Accepts a full `<db-file>#<node-id>` or a bare peer node id, since the
+        peer's own tools hand back the latter.
+        """
+        if not self._has_links:
+            return []
+        with self._lock:
+            return links.nodes_linking_to(self._conn, target, kind=kind)
 
     def parity_nodes(self) -> list[Node]:
         rows = self._q(

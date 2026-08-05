@@ -85,6 +85,29 @@
       "anchors": ["theme/Theme.kt#NightDigest"],
       "edges": [],
       "parity": "android-only"
+    },
+    {
+      "_comment": [
+        "A link into a DIFFERENT KIND of graph in this repo's knowledge/ — a screen",
+        "graph, a docs graph. NOT `counterpart`, which is parity between two CODEBASES",
+        "and is CHECK-constrained to a valid parity triple: a screen node has no parity",
+        "status, so `counterpart` physically cannot hold this.",
+        "`target` is <db-file>#<node-id>, relative to knowledge/ and NEVER absolute —",
+        "an absolute path is a fact about one machine and breaks on the next clone.",
+        "`kind` says what the link means from this side; empty means unspecified.",
+        "A target whose peer graph is not in this repo is a warning, not an error:",
+        "each graph must be fully usable alone. A target whose peer EXISTS but lacks",
+        "the node is an error. See SCHEMA.md §12, and cartographer's docs/GRAPH-LINKS.md."
+      ],
+      "id": "feed_screen",
+      "kind": "Composable",
+      "description": "The main feed screen; renders ranked articles and hosts the bookmark action.",
+      "section": "UI",
+      "anchors": ["ui/FeedScreen.kt#FeedScreen"],
+      "edges": ["feed_ranker"],
+      "external_links": [
+        {"target": "cartographer_graph.db#feed-main", "kind": "presented-by"}
+      ]
     }
   ]
 }

@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .links import ExternalLink, LinkError, dedupe
 from .models import Anchor, Meta, Node
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -139,7 +140,28 @@ def _node_from_dict(raw: Any, index: int) -> Node:
         parity=_opt_str(raw, "parity", where),
         counterpart=_opt_str(raw, "counterpart", where),
         divergence=_opt_str(raw, "divergence", where),
+        links=_links(raw, where),
     )
+
+
+def _links(raw: dict[str, Any], where: str) -> list[ExternalLink]:
+    """`external_links`, accepting either `"db#id"` or `{"target", "kind"}`.
+
+    A bare string is what a hand-authored document reaches for and it means
+    kind-unspecified, which is exactly what a link written without a kind is.
+    `dedupe` runs here rather than at insert time so a conflict is named against
+    the node the author can find, instead of arriving as an IntegrityError that
+    identifies neither kind.
+    """
+    value = raw.get("external_links") or []
+    if isinstance(value, (str, dict)):
+        value = [value]
+    if not isinstance(value, list):
+        raise DecodeError(f"{where}: `external_links` must be a list")
+    try:
+        return dedupe(ExternalLink.parse(item) for item in value)
+    except LinkError as exc:
+        raise DecodeError(f"{where}: {exc}") from exc
 
 
 def _str_list(raw: dict[str, Any], key: str, where: str) -> list[str]:

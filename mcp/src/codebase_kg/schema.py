@@ -21,7 +21,16 @@ from __future__ import annotations
 
 import re
 
+from .links import EXTERNAL_LINK_DDL
+
 # Bumped whenever the DDL below changes in a way a reader must know about.
+#
+# `external_link` did NOT bump it, and that is the point of being additive: a v3
+# graph simply has no such table, the reader probes rather than assumes, and an
+# older server reading a newer graph ignores the links — which degrades to "no
+# cross-graph links", the same state as a graph that has none. Bumping would
+# have made every existing committed graph refuse to open in exchange for
+# nothing.
 SCHEMA_VERSION = 3
 
 # 'CKG1' as a big-endian int32, stamped into the SQLite header so `file(1)` and
@@ -162,6 +171,22 @@ CREATE TABLE edge (
 ) WITHOUT ROWID;
 
 CREATE INDEX edge_dst ON edge(dst);
+
+-- Pointers OUT of this graph, into another committed graph in the same
+-- `knowledge/` directory — a screen graph, a docs graph, whatever comes next.
+-- One portable table, identical here and in cartographer, specified in that
+-- repo's `docs/GRAPH-LINKS.md` and **copied rather than imported** (links.py
+-- says why a shared package would be the wrong trade).
+--
+-- Additive, and deliberately NOT a change to `counterpart`. That column is
+-- CHECK-constrained to a valid parity triple between two *codebases*, and those
+-- CHECKs are the reason a half-filled triple is a failed write rather than a
+-- validation finding. A link to a screen node has no parity status — "matched"
+-- between a Composable and a screen is not a claim anyone can evaluate — and
+-- relaxing the constraint so a second, unrelated use case fits would trade a
+-- guarantee for a convenience. So this sits beside it. `counterpart` is also
+-- one column, and a node routinely links out to several places.
+{EXTERNAL_LINK_DDL}
 
 -- Full-text search, persisted in the file. This is the reason the index is
 -- affordable now: it is built once at write time and costs nothing on open,

@@ -21,6 +21,7 @@ from typing import Any
 
 from . import clean
 from .coverage import CoverageReport, classify, declared_roots, resolve_source_base
+from .links import Resolution, resolve
 from .models import Anchor, Node
 from .store import CodeGraph, tokenize
 from .writer import file_sha
@@ -184,6 +185,41 @@ def kg_find_by_path(graph: CodeGraph, path: str) -> dict[str, Any]:
             }
             for n, anchors in found
         ],
+    }
+
+
+# --------------------------------------------------------------------------- #
+# kg_find_by_link
+# --------------------------------------------------------------------------- #
+def kg_find_by_link(graph: CodeGraph, target: str) -> dict[str, Any]:
+    """Reverse lookup across graphs: which code nodes point at a node elsewhere.
+
+    The mirror of `kg_find_by_path`, one graph further out. A screen id gives
+    you the code that presents it, without opening the screen graph — which
+    matters because each plugin has to work with the other absent.
+
+    An indexed lookup on `external_link.target`. Accepts a full
+    `<db-file>#<node-id>` or a bare peer node id, since the peer's own tools
+    hand back the latter.
+    """
+    ids = graph.nodes_linking_to(target)
+    nodes = {n.id: n for n in graph.nodes(ids, with_edges=False)}
+    return {
+        "target": target,
+        "count": len(ids),
+        "nodes": [
+            {
+                "id": n.id,
+                "kind": n.kind,
+                "description": n.description,
+                "anchors": [str(a) for a in n.anchors],
+                "external_links": [link.as_dict() for link in n.links],
+            }
+            for n in (nodes[i] for i in ids if i in nodes)
+        ],
+        # An empty result is a real answer, not a failure: nothing in this
+        # codebase claims a relationship to that node.
+        "note": "" if ids else "no node in this graph links to that target",
     }
 
 
@@ -425,6 +461,8 @@ def kg_validate(
                 graph, node_id, counterpart, peer, resolved
             )
 
+    external_link_issues = _check_external_links(graph)
+
     base = _resolve_source_base(graph, repo_root)
     checks = AnchorCheck()
     cov = CoverageReport()
@@ -436,10 +474,17 @@ def kg_validate(
     # look", not "something is broken". Folding it in would make `ok` false for
     # every graph the moment anyone edits a covered file, which is the failure
     # mode the old date-based freshness gate had.
-    ok = not (counterpart_issues or description_issues or checks.issues or cov.gaps)
+    # Only the *provably broken* external links count against `ok`. An absent
+    # peer graph does not: cartographer is an optional install, and failing here
+    # would make it mandatory by the back door (GRAPH-LINKS.md §4).
+    broken_links = [i for i in external_link_issues if i["severity"] == "error"]
+    ok = not (
+        counterpart_issues or description_issues or checks.issues or cov.gaps or broken_links
+    )
     return {
         "ok": ok,
         "advisory": True,
+        "external_link_issues": external_link_issues,
         "source_checked": base is not None,
         "source_base": str(base) if base else None,
         "anchors_checked": checks.checked,
@@ -460,6 +505,56 @@ def kg_validate(
             "description length + shape (check constraint + writer)",
         ],
     }
+
+
+#: What each unresolved outcome means, and how hard it counts. The two soft
+#: outcomes are soft for the same reason -- we could not check -- and grading
+#: them as errors would make an optional peer plugin mandatory.
+_LINK_SEVERITY: dict[Resolution, tuple[str, str]] = {
+    Resolution.MALFORMED: (
+        "error",
+        "not '<db-file>#<node-id>', so nothing can follow it",
+    ),
+    Resolution.DANGLING: (
+        "error",
+        "names a node the peer graph does not contain",
+    ),
+    Resolution.PEER_ABSENT: (
+        "warning",
+        "peer graph not in this repo — supported, the link is simply unverifiable here",
+    ),
+    Resolution.PEER_UNREADABLE: (
+        "warning",
+        "peer file is not a graph we can read — unknown, not broken",
+    ),
+}
+
+
+def _check_external_links(graph: CodeGraph) -> list[dict[str, str]]:
+    """Follow every cross-graph link and report what did not resolve.
+
+    Resolved against the directory the graph sits in, because that is what a
+    target is relative to (GRAPH-LINKS.md §2). Unlike `counterpart`, these are
+    *not* required to be reciprocal: "this code presents that screen" is not a
+    symmetric claim and has no obligation to be mirrored, whereas parity between
+    two codebases is and does.
+    """
+    issues: list[dict[str, str]] = []
+    knowledge_dir = graph.path.parent
+    for node_id, link in graph.external_links():
+        outcome = resolve(knowledge_dir, link.target)
+        if outcome is Resolution.OK:
+            continue
+        severity, why = _LINK_SEVERITY[outcome]
+        issues.append(
+            {
+                "node": node_id,
+                "target": link.target,
+                "severity": severity,
+                "issue": why,
+            }
+        )
+    return issues
 
 
 def _check_counterpart(
@@ -504,6 +599,7 @@ __all__ = [
     "kg_neighborhood",
     "kg_find_by_kind",
     "kg_find_by_path",
+    "kg_find_by_link",
     "kg_parity_gaps",
     "kg_stats",
     "kg_validate",

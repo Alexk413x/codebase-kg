@@ -1,6 +1,6 @@
 """FastMCP server entry point for codebase-kg.
 
-Eight read-only tools over one repo's `knowledge/code_graph.db`. The graph opens
+Nine read-only tools over one repo's `knowledge/code_graph.db`. The graph opens
 on each tool call, so tools always see current data — including a graph created
 after the server started. The peer graph named in `meta.counterpart` is opened
 the same way for the cross-codebase parity checks.
@@ -211,6 +211,18 @@ def kg_find_by_path(path: str) -> dict[str, Any]:
     Accepts a repo-relative path or a bare filename (matched as a suffix)."""
     with _open_graph() as g:
         return _tools.kg_find_by_path(g, path)
+
+
+@mcp.tool()
+def kg_find_by_link(target: str) -> dict[str, Any]:
+    """Reverse lookup across graphs: which code node(s) link to a node in another
+    committed graph in this repo — typically a screen in `cartographer_graph.db`.
+
+    Use when you have a screen and want the code behind it. Accepts a full
+    `<db-file>#<node-id>` target or a bare peer node id. See cartographer's
+    docs/GRAPH-LINKS.md for the convention."""
+    with _open_graph() as g:
+        return _tools.kg_find_by_link(g, target)
 
 
 @mcp.tool()

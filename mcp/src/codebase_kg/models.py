@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .links import ExternalLink
+
 
 @dataclass(frozen=True)
 class Anchor:
@@ -68,6 +70,11 @@ class Node:
     parity: str | None = None  # matched | divergent | <codebase>-only
     counterpart: str | None = None  # "<peer-graph-path>#<node-id>"
     divergence: str | None = None  # one line; only when parity == divergent
+    # Pointers into a *different kind* of graph — a screen graph, a docs graph.
+    # Distinct from `counterpart`, which is parity between two codebases and
+    # cannot express this without giving up the invariant it enforces. See
+    # cartographer's docs/GRAPH-LINKS.md; the mechanism is shared by copy.
+    links: list[ExternalLink] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
@@ -84,6 +91,11 @@ class Node:
             d["counterpart"] = self.counterpart
         if self.divergence is not None:
             d["divergence"] = self.divergence
+        # Omitted when empty, like the parity fields: almost no node has one,
+        # and an `"external_links": []` on every node in a large graph is pure
+        # noise in a document a human reviews as a diff.
+        if self.links:
+            d["external_links"] = [link.as_dict() for link in self.links]
         return d
 
 

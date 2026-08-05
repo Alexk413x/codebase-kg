@@ -291,6 +291,12 @@ The three shapes — and these are the *only* three the store will accept:
 Every one of those rules is a CHECK constraint. A half-filled parity triple is not a validation
 finding; it is a failed write.
 
+`counterpart` is **only** for parity between two codebases. To link a node into a graph of a
+*different kind* — a screen graph, a docs graph — use `external_link` (§12). Those CHECKs are exactly
+why there are two mechanisms: a link to a screen node has no parity status, "matched" between a
+Composable and a screen is not a claim anyone can evaluate, and relaxing the constraints so a second
+use case fits would trade this guarantee for a convenience.
+
 ## 10. Genericity rules (do not violate)
 
 - **No language hardcoding** in the schema, skills, or MCP. `kind` is free text; source reading is
@@ -313,3 +319,42 @@ The markdown file is left untouched; delete it once you are satisfied.
 
 Per-node `updated` dates and the header's accumulated refresh log do not carry over. They were the
 duplicated-from-git content this rewrite exists to remove.
+
+## 12. `external_link` — pointers into another graph
+
+A project can hold several committed graphs in one `knowledge/` directory: this code graph, a
+cartographer screen graph, and whatever comes next. `external_link` is how a node here points at a
+node there.
+
+**The specification is not in this file.** It is
+`docs/GRAPH-LINKS.md` in
+the **cartographer** repo — the DDL verbatim, the URI convention, the resolution rules, worked
+examples in both directions, and how a new graph adopts it. It is duplicated here in summary only,
+and if the two disagree, that document wins.
+
+In brief:
+
+- One table, `external_link(node_id, target, kind)`, plus an index on `target`.
+- `target` is `<db-file>#<node-id>`, where `<db-file>` is relative to `knowledge/` and **never
+  absolute** — an absolute path breaks on the next clone.
+- `kind` says what the link means from this side: `implements`, `tests`, `presented-by`, … Free text,
+  and empty means unspecified.
+- A link whose peer database is **absent** is a warning: each graph must be fully usable alone, and
+  cartographer is an optional install. A link whose peer exists but whose node id is **missing** is
+  an error — `kg_validate` reports it under `external_link_issues` and fails.
+- Unlike `counterpart` (§9), links are **not** required to be reciprocal. "This code presents that
+  screen" is not a symmetric claim; parity between two codebases is.
+
+**Copied, not imported.** `mcp/src/codebase_kg/links.py` is a byte-identical copy of the same file in
+cartographer. That is deliberate and measured — see §7 of the spec before trying to DRY it. The two
+stores share five function names out of twenty-eight and twenty-nine, three of which are `__init__`,
+`_hydrate` and `meta`; a shared library would extract that one file and buy a third repository both
+plugins must version against, plus a release cycle for every one-line fix.
+
+**Additive, and no schema bump.** A v3 graph written before this table existed simply has no
+`external_link`, and the reader probes rather than assumes. An older server reading a newer graph
+ignores the links, which is the same state as a graph that has none. Nothing breaks in either
+direction, which is why adopting it did not invalidate a single committed artifact.
+
+Tools: `kg_node` returns `external_links`; `kg_find_by_link(target)` is the reverse lookup;
+`kg_validate` reports what did not resolve.

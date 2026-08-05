@@ -24,8 +24,9 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from . import cli, writer
+from . import cli, links, writer
 from .coverage import COVERS_KEY, EXEMPT_KEY, parse_patterns, resolve_source_base
+from .links import ExternalLink
 from .models import Anchor, Meta, Node
 from .schema import SCHEMA_VERSION
 
@@ -71,6 +72,14 @@ def read_any_version(path: Path) -> tuple[int, Meta, list[Node], dict[str, str]]
         for r in conn.execute("SELECT src, dst FROM edge ORDER BY src, dst"):
             edges.setdefault(r["src"], []).append(r["dst"])
 
+        # Probed like `source` above: a graph written before `external_link`
+        # existed has no such table, and an upgrade that dropped these rows
+        # would silently sever every cross-graph link in the file.
+        outbound: dict[str, list[ExternalLink]] = {}
+        if links.TABLE in tables:
+            for node_id, link in links.all_links(conn):
+                outbound.setdefault(node_id, []).append(link)
+
         nodes = [
             Node(
                 id=r["id"],
@@ -82,6 +91,7 @@ def read_any_version(path: Path) -> tuple[int, Meta, list[Node], dict[str, str]]
                 parity=r["parity"],
                 counterpart=r["counterpart"],
                 divergence=r["divergence"],
+                links=outbound.get(r["id"], []),
             )
             for r in conn.execute("SELECT * FROM node ORDER BY id")
         ]

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 
+from .links import LinkError, dedupe, split_target
 from .schema import MAX_DESCRIPTION
 
 # A tracker id: ACME-431, PROJ-1, ABC-1234. Two-plus uppercase alnum, a dash, digits.
@@ -123,6 +124,25 @@ def node_problems(node: object) -> list[str]:
             issues.append(
                 f"anchor '{anchor}' looks like a line number — SCHEMA.md §4.1 requires a symbol"
             )
+
+    node_links = list(getattr(node, "links", []))
+    for link in node_links:
+        # The table's CHECK catches a target with no `#`, but SQLite cannot also
+        # express "and something follows it" — so `code_graph.db#` is writable
+        # and would resolve to a lookup for the empty id, a link that can never
+        # match and never says why. Caught here, against the node.
+        try:
+            split_target(link.target)
+        except LinkError as exc:
+            issues.append(str(exc))
+    try:
+        # `(node_id, target)` is the primary key, so one target cannot carry two
+        # kinds. Asked here so the answer arrives as a BuildError naming the
+        # node, rather than as a LinkError raised from inside the insert loop
+        # after validation had already reported the input clean.
+        dedupe(node_links)
+    except LinkError as exc:
+        issues.append(str(exc))
 
     issues += parity_problems(
         getattr(node, "parity", None),

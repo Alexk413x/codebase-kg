@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Literal
 
-from . import clean
+from . import clean, links
 from .coverage import COVERS_KEY, EXEMPT_KEY, format_patterns
 from .models import Meta, Node
 from .schema import APPLICATION_ID, DDL, PAGE_SIZE, SCHEMA_VERSION, split_identifier
@@ -215,6 +215,15 @@ def _write(
     conn.executemany(
         "INSERT INTO edge (src, dst) VALUES (?, ?)",
         [(n.id, dst) for n in nodes for dst in n.edges],
+    )
+    # Sorted like everything else here, so an unchanged rebuild is byte-identical.
+    conn.executemany(
+        f"INSERT INTO {links.TABLE} (node_id, target, kind) VALUES (?, ?, ?)",
+        [
+            (n.id, link.target, link.kind)
+            for n in nodes
+            for link in links.dedupe(n.links)
+        ],
     )
     conn.executemany(
         "INSERT INTO node_fts (node_id, text) VALUES (?, ?)",
