@@ -32,16 +32,23 @@ structure; rebuilding throws it away.
 
 ## How the graph is written
 
-The artifact is SQLite, so it is not written with an editor. You author a **JSON document** and hand
-it to the builder:
+A bootstrap is bulk work by definition — every node at once — so this skill always uses the build
+path. The artifact is SQLite, so it is not written with an editor. You author a **JSON document**
+and hand it to the builder:
 
 ```sh
 python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
+rm .kg-export.json
 ```
 
 The builder validates before writing anything. If a node breaks a rule it names that node and writes
 nothing — fix that node and run again. Delete the JSON when you are done; `code_graph.db` is the
 committed artifact.
+
+The MCP write tools (`kg_upsert_node` and friends) are for **targeted** corrections to a graph that
+already exists — one description, one link. Do not build a graph a node at a time with them: a
+bootstrap authored that way runs the whole-graph validator once per node and produces no reviewable
+diff of the result.
 
 ```json
 {

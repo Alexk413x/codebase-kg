@@ -2,6 +2,46 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [Unreleased]
+
+### Added — write tools, so a one-field fix is not a whole rebuild
+
+Four MCP tools: `kg_upsert_node`, `kg_delete_node`, `kg_add_link`, `kg_remove_link`. Nine read-only
+tools became thirteen.
+
+An agent cannot edit SQLite, so every change went through `export → edit the JSON → build`. That
+round trip is genuinely good for bulk work and absurd overhead for "change one node's description" —
+and it left a scratch JSON in the repo root that somebody had to remember to delete. The absence of
+write tools was the gap; the scratch file was a workaround for it.
+
+**The round trip stays.** It is still the path for a parity sweep, a restructuring, or anything where
+reading the diff before applying it is the point. Every tool description says which is which, and the
+eleven docs describing the loop now say so too.
+
+Three properties, all in the new `edits.py`:
+
+- **Atomic.** The mutation runs against a private copy of the file inside one transaction, and the
+  copy replaces the original only at the end — the same mechanism `writer.build` already used. A
+  CHECK violated by the third of five nodes leaves the committed graph byte-identical: not rolled
+  back, *never opened for writing*. It also keeps `CodeGraph` strictly read-only, so a bug in an
+  edit still cannot mutate the artifact.
+- **Validated, not merely constrained.** The CHECKs reject a malformed row; they cannot see that a
+  delete stranded the counterpart the peer graph links back to. `kg_validate` — the same function
+  the tool calls — runs against the copy, and the write is refused if it introduced a finding the
+  graph did not already have. The test is *no new findings*, never *clean*: a real graph carries
+  findings, and demanding zero would lock the tools out of the graphs that most need editing.
+- **Reported.** Every call returns the rows it touched, field by field, before and after. That is
+  the diff review the export path gave for free, and a tool that mutated silently would remove it.
+
+A delete says what it takes before it takes it. `dry_run` defaults to true and lists the anchors,
+outbound edges and external links that cascade, plus the inbound edges that `ON DELETE RESTRICT`
+blocks it on — those need an explicit `cascade_inbound`.
+
+`writer._fts_text` and `writer._replace` became public (`fts_text`, `replace_file`) so the edit path
+and the build path cannot drift on how a node is indexed or how a new file lands. `server._open_peer`
+moved to `tools.open_peer`, because a write judged by a validation run that skipped the peer would
+accept the one thing that check exists to catch.
+
 ## [0.2.3] — 2026-08-01 — the untested surfaces, tested
 
 Coverage across everything shipped: **89% → 92%**, 304 → 394 tests. The headline number moved a

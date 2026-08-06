@@ -253,6 +253,38 @@ The rule for an update is unchanged and still matters: **update all affected nod
 new files/features, edit nodes whose code changed, remove nodes for deleted code. What is gone is
 the ceremony around proving you did.
 
+### 7.1 Two ways to write, chosen by size
+
+An agent cannot edit SQLite, so for a long time every change went through
+`export → edit the JSON → build`. That is still exactly right for **bulk** work — a parity sweep, a
+restructuring, a whole refresh's change set — where reviewing the diff before applying it is the
+point, and where a rebuild's byte-identical no-op proves the diff is real.
+
+It was never right for "fix one description". For that there are four **write tools**:
+
+| tool | does |
+|---|---|
+| `kg_upsert_node(nodes)` | creates or updates node(s); only the keys supplied change |
+| `kg_delete_node(ids, dry_run, cascade_inbound)` | previews the cascade, then deletes |
+| `kg_add_link` / `kg_remove_link` | one `external_link` row (§12) |
+
+They weaken nothing in this document:
+
+- **Atomic.** The mutation runs against a private copy of the file inside one transaction, and the
+  copy replaces the original only at the end. A rejected edit leaves the committed graph
+  byte-identical — not rolled back, *never opened for writing*.
+- **Validated, not merely constrained.** `kg_validate` runs against the copy, and the write is
+  refused if it introduced a finding the graph did not already have. The test is *no new findings*,
+  never *clean* — a graph mid-refactor carries findings, and demanding zero would lock the tools out
+  of the graphs that most need editing.
+- **Reported.** Every call returns the rows and fields it changed, before and after — the review the
+  JSON diff gave for free.
+
+A delete says what it takes **before** it takes it. `anchor`, `edge.src` and `external_link` are
+`ON DELETE CASCADE` because those rows are parts of the node; `edge.dst` is `ON DELETE RESTRICT`
+because something else points at it (§6.2), so the delete is *blocked* rather than quietly removing
+the relationship. `dry_run` defaults to true and lists both.
+
 ## 8. Per-repo config
 
 Everything repo-specific is **config, not code** — and the project-level config is the committed

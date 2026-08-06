@@ -12,7 +12,14 @@ Bring the code graph back in sync with the code.
    files to their nodes with `kg_find_by_path`.
 2. **Invoke the `kg-refresh` skill** and follow its workflow.
 
-The loop is export → edit → build:
+**One or two nodes?** Use the write tools — `kg_upsert_node`, `kg_delete_node`, `kg_add_link`,
+`kg_remove_link`. Each call is atomic, validates the whole graph before it lands, and reports every
+field it changed, so the review the JSON diff gave you arrives in the tool's answer and there is no
+scratch file to remember to delete.
+
+**A whole change set?** That is what the round trip is for — a refresh usually touches several nodes
+at once, and reading the JSON diff before building it is the point. The loop is export → edit →
+build:
 
 ```sh
 python -m codebase_kg.export -o .kg-export.json    # scratch, gitignored

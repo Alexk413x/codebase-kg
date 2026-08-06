@@ -94,6 +94,24 @@ Expect to see, in review:
   diff shows nothing else.
 - `generated` — always changes on a real refresh
 
+### A diff from a write tool
+
+`kg_upsert_node` and friends edit the graph in place instead of rebuilding it,
+so the diff differs in two ways worth knowing before you read one.
+
+- **`generated` does not move.** A targeted edit is not a build, and stamping a
+  new date on one would claim the whole graph was re-derived. Provenance stays
+  attached to the last actual build (`SCHEMA.md` §7 — nothing gates on the date).
+- **The diff is smaller than a rebuild's.** Only the pages holding the changed
+  rows move, which is exactly the property that keeps committed history small.
+  A rebuild after a VACUUM rewrites the file; an edit does not.
+
+Neither weakens review, because the tool reports every field it changed, before
+and after, in its own answer — and it refuses the write outright if `kg_validate`
+finds something the graph did not already have. A rejected call leaves the
+committed file byte-identical, so there is no half-applied state to spot in a
+diff.
+
 ## File size
 
 Every refresh re-commits the whole file; SQLite does not delta-compress well.

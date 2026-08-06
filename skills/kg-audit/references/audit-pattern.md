@@ -14,6 +14,8 @@ so no agent holds more than ~25 nodes.
   group is one coherent subsystem cluster (e.g. {entry, navigation}, {domain, view-models},
   {views, theme}, {services, data, DI}).
 - Balance node counts across groups.
+- `rm .kg-export.json` when the sweep finishes. It is read-only input here — an audit never builds
+  it back, and a stale copy left behind is a graph snapshot that still parses.
 
 ## Sub-agent contract (one per group, read-only)
 

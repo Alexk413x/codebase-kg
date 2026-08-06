@@ -1,14 +1,15 @@
 # codebase-kg MCP server
 
 A local **stdio** MCP server over one repo's committed `knowledge/code_graph.db` (see
-[`../SCHEMA.md`](../SCHEMA.md)), exposing **eight read-only, typed queries** — so an agent answers
-"where does X live / what depends on it / what diverges from the peer" in one tool call instead of
-re-grepping every session.
+[`../SCHEMA.md`](../SCHEMA.md)), exposing **nine typed queries and four targeted writes** — so an
+agent answers "where does X live / what depends on it / what diverges from the peer" in one tool
+call instead of re-grepping every session, and fixes one wrong description without regenerating the
+whole artifact.
 
 Mirrors the author's `a11y-kg` server (FastMCP, `uvx`-run). Everything except `server` is **stdlib
 only** — the whole graph layer is testable without FastMCP installed.
 
-## Tools
+## Queries
 
 | Tool | Returns |
 |---|---|
@@ -19,16 +20,42 @@ only** — the whole graph layer is testable without FastMCP installed.
 | `kg_find_by_kind(kind)` | All nodes whose free-text `kind` matches (substring). |
 | `kg_parity_gaps(status?)` | Nodes flagged `divergent` / `<codebase>-only` — the gap report as a query. |
 | `kg_stats()` | Counts by kind / section / parity, edge and anchor totals, isolated nodes, `generated` date. |
+| `kg_find_by_link(target)` | **Reverse lookup across graphs**: which code node(s) point at a node in another committed graph in this repo. |
 | `kg_validate()` | Advisory drift check against real source: ungreppable anchors, uncovered source files, counterpart problems. Never blocks. |
+
+## Writes
+
+For **targeted** changes — a handful of nodes, a link. Bulk work stays on the round trip below, and
+each tool's description says so, because picking the wrong one is how this surface gets misused.
+
+| Tool | Does |
+|---|---|
+| `kg_upsert_node(nodes)` | Creates or updates node(s). Only the keys supplied change; `null` clears a parity field; `anchors` / `edges` / `external_links` replace the whole list. |
+| `kg_delete_node(ids, dry_run=True, cascade_inbound=False)` | Previews what cascades (anchors, outbound edges, external links) and what blocks (inbound edges, `ON DELETE RESTRICT`), then deletes. |
+| `kg_add_link(node_id, target, kind='')` | Points a node at `<db-file>#<node-id>` in another committed graph. Refused if the peer graph is present and lacks that node. |
+| `kg_remove_link(node_id, target)` | Drops one such pointer; the node is untouched. |
+
+Three properties, all in `edits.py`:
+
+- **Atomic.** The mutation runs against a private copy of the file inside one transaction, and the
+  copy replaces the original only at the very end. A rejected edit leaves the committed graph
+  byte-identical — not rolled back, never opened for writing.
+- **Validated, not merely constrained.** `kg_validate` — the same function the tool calls — runs
+  against the copy, and the write is refused if it introduced a finding the graph did not already
+  have. The test is *no new findings*, never *clean*: a real graph carries findings, and demanding
+  zero would lock the tools out of the graphs that need editing.
+- **Reported.** Every call returns the rows it touched, field by field, before and after. That is
+  the diff review the export path gave for free.
 
 ## CLIs
 
-The server is read-only. Writing goes through three small commands:
+Whole-graph writes — migration, and the bulk round trip:
 
 ```sh
 python -m codebase_kg.migrate knowledge/KNOWLEDGE_GRAPH.md   # one-time: markdown → db
 python -m codebase_kg.export -o .kg-export.json                   # db → JSON
 python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
+rm .kg-export.json                                                # a snapshot, not a source
 ```
 
 `export` → `build` with no edits is byte-identical, so a no-op refresh leaves the git diff empty.
@@ -64,6 +91,7 @@ server was running.
 | `writer.py` | Transactional, deterministic build. Validates first; writes to a temp file and renames. |
 | `store.py` | `CodeGraph` — read-only query facade over one connection. |
 | `tools.py` | The read-only queries the MCP tools wrap. |
+| `edits.py` | Targeted writes: copy, mutate in one transaction, validate, swap in — or discard, leaving the committed file byte-identical. |
 | `codec.py` | The JSON interchange shape shared by `build` and `export`. |
 | `markdown.py` | The pre-0.2 markdown parser. **Migration only** — nothing on the query path imports it. |
 

@@ -46,12 +46,20 @@ previous Markdown format needed constant tending. The builder rejects all three.
 
 ### Authoring
 
-The artifact is a database, so it is authored through JSON and built:
+Two ways in, and the size of the change picks between them.
+
+**Targeted edits — the write tools.** One node's description, an anchor that moved, a link into
+another graph. Each call is atomic, is validated against the whole graph before it lands, and
+reports every field it changed, before and after.
+
+**Bulk work — the round trip.** A parity sweep, a restructuring, anything where reading the diff
+before applying it is the point. The artifact is a database, so it is authored through JSON:
 
 ```sh
 python -m codebase_kg.export -o .kg-export.json      # existing graph → JSON
 #   … edit …
 python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
+rm .kg-export.json                                   # a snapshot, not a source
 ```
 
 The round trip is lossless — building an unedited export is byte-identical — so anything in the git
@@ -62,18 +70,30 @@ rule, names it and writes nothing.
 
 ## The tools
 
-Eight read-only MCP tools over the graph:
+Thirteen MCP tools over the graph — nine queries and four targeted writes.
 
-| tool | answers |
+| query | answers |
 |---|---|
 | `kg_search` | "where is bookmark persistence?" — ranked FTS5 search over ids, kinds, descriptions and anchors |
 | `kg_node` | the full record for one id, plus who points at it |
 | `kg_find_by_path` | "I have this file open — what is it, and what connects to it?" |
 | `kg_neighborhood` | everything within N hops, following edges either way |
 | `kg_find_by_kind` | every `ViewModel` / `Service` / `@Entity` |
+| `kg_find_by_link` | which code node(s) point at a node in another committed graph |
 | `kg_parity_gaps` | the cross-codebase gap report, as a query |
 | `kg_stats` | cold-start orientation: counts, kinds, sections, isolated nodes |
 | `kg_validate` | advisory drift check against real source: anchors that no longer resolve, declared coverage gaps, and files edited since the graph was built |
+
+| write | does |
+|---|---|
+| `kg_upsert_node(nodes)` | creates or updates node(s); only the fields you supply change |
+| `kg_delete_node(ids, dry_run=true, cascade_inbound=false)` | previews the blast radius, then deletes |
+| `kg_add_link(node_id, target, kind)` | points a node at a node in another committed graph |
+| `kg_remove_link(node_id, target)` | drops one such pointer |
+
+A write runs against a private copy of the file, inside one transaction, and the copy replaces the
+original only after `kg_validate` confirms it introduced no new finding. So a rejected edit leaves
+the committed graph **byte-identical** — not rolled back, never opened for writing.
 
 ## Migrating from `KNOWLEDGE_GRAPH.md`
 

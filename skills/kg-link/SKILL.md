@@ -13,6 +13,9 @@ allowed-tools:
   - Bash(git ls-files:*)
   - Bash(python -m codebase_kg.export:*)
   - Bash(python -m codebase_kg.build:*)
+  - mcp__codebase-kg__kg_upsert_node
+  - mcp__codebase-kg__kg_add_link
+  - mcp__codebase-kg__kg_remove_link
   - Write
   - Edit
 ---
@@ -47,9 +50,23 @@ A build fails rather than storing a half-filled parity triple, so get these righ
 
 ## Workflow
 
-Edit each side through its JSON (`python -m codebase_kg.export -o .kg-export.json`, edit, then
-`python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db`). Both sides change, so expect
-two export/build cycles.
+A parity sweep is **bulk** work — it touches most of both graphs at once and the reviewable diff is
+the deliverable — so edit each side through its JSON:
+
+```sh
+python -m codebase_kg.export -o .kg-export.json
+#   … set parity / counterpart / divergence …
+python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
+rm .kg-export.json
+```
+
+Both sides change, so expect two export/build cycles.
+
+Use `kg_upsert_node` only for **touching up a few nodes afterwards** — one pair that turned out to
+be divergent, one flag that was wrong. It writes the same three fields (`parity`, `counterpart`,
+`divergence`), atomically, and `null` clears one. It re-validates the graph before landing, which
+means it will refuse a link the peer graph does not reciprocate — the check that makes parity worth
+having, arriving before the write rather than in the next `kg_validate` run.
 
 ### 1. Pair the config
 Confirm each graph's `meta.counterpart` points at the other's `code_graph.db` (reciprocal). If

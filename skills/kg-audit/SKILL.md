@@ -40,7 +40,12 @@ perfectly but whose description describes the wrong thing.
 
 Use `python -m codebase_kg.export -o .kg-export.json` for the whole graph as JSON, or `kg_find_by_kind` /
 `kg_node` to pull the slice under audit. Export is usually right here — the audit reads every node
-anyway, and the JSON is easy to partition across sub-agents.
+anyway, and the JSON is easy to partition across sub-agents. Delete the export when the sweep is
+done; it is a snapshot, and building it later would revert whatever `kg-refresh` did in the meantime.
+
+The export is **read-only input to this skill**. An audit reports; it never writes, so it uses
+neither the round trip's build step nor the MCP write tools. Findings go to `kg-refresh`, which
+picks the write path that fits the size of the fix.
 
 ## Workflow
 

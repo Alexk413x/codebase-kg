@@ -15,16 +15,28 @@ All five lean on the MCP query surface (`mcp__codebase-kg__*`) and the schema (`
 
 ## Writing the graph
 
-The artifact is SQLite, so no skill edits it with `Write`/`Edit`. The write path is always:
+The artifact is SQLite, so no skill edits it with `Write`/`Edit`. There are two write paths, and the
+size of the change picks between them.
+
+**Targeted — the MCP write tools.** `kg_upsert_node`, `kg_delete_node`, `kg_add_link`,
+`kg_remove_link`. Reach for these when a skill is fixing a handful of nodes: one description, an
+anchor that moved, a link into another graph. Each call is atomic, runs `kg_validate` against the
+result before it lands, and reports every field it changed.
+
+**Bulk — the round trip.** Reach for this when the change is wholesale: a parity sweep, a
+restructuring, a whole refresh's worth of nodes, or anything where reading the JSON diff before
+building it is the point.
 
 ```sh
 python -m codebase_kg.export -o .kg-export.json      # read  (kg-refresh, kg-link, kg-audit)
 python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
+rm .kg-export.json                                   # a snapshot, not a source
 ```
 
-The builder validates first and writes nothing if a node breaks a rule, so a skill cannot ship a
-graph with a dangling edge or a description carrying a ticket ref. The round trip is lossless, which
-means an unchanged refresh produces an empty git diff.
+Both paths validate first and write nothing if a node breaks a rule, so a skill cannot ship a graph
+with a dangling edge or a description carrying a ticket ref. The round trip is lossless, which means
+an unchanged refresh produces an empty git diff; a rejected write tool call leaves the committed
+file byte-identical.
 
 ## Division of labor
 

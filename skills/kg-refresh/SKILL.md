@@ -7,6 +7,10 @@ allowed-tools:
   - mcp__codebase-kg__kg_search
   - mcp__codebase-kg__kg_node
   - mcp__codebase-kg__kg_find_by_path
+  - mcp__codebase-kg__kg_upsert_node
+  - mcp__codebase-kg__kg_delete_node
+  - mcp__codebase-kg__kg_add_link
+  - mcp__codebase-kg__kg_remove_link
   - Read
   - Grep
   - Glob
@@ -24,9 +28,33 @@ allowed-tools:
 Update `knowledge/code_graph.db` so it mirrors the code as it is **now**. Every refresh updates
 *all* affected **nodes** — add new, edit changed, remove deleted — plus edges.
 
-## The loop: export → edit → build
+## Two ways to write, and how to choose
 
-The artifact is SQLite, so it is edited through its JSON form:
+Scope the change set (step 1) before picking one.
+
+### One or two nodes → the write tools
+
+`kg_upsert_node` for a description, an anchor list or an edge list; `kg_delete_node` for code that
+is gone; `kg_add_link` / `kg_remove_link` for a pointer into another graph.
+
+```
+kg_upsert_node(nodes=[{"id": "feed_ranker",
+                       "description": "Ranks the feed by freshness and per-source weight.",
+                       "anchors": ["domain/FeedRanker.kt#FeedRanker"]}])
+kg_delete_node(ids=["legacy_sync_worker"])                    # previews what cascades
+kg_delete_node(ids=["legacy_sync_worker"], dry_run=False)
+```
+
+Only the keys you supply change, so omitting `edges` keeps them. `anchors`, `edges` and
+`external_links` **replace** the whole list when present — read the node first if you mean to
+append. Each call is atomic, runs `kg_validate` against the result and refuses anything that
+introduces a new finding, and hands back every field it changed. A rejected call leaves the
+committed file byte-identical, and there is no scratch file to clean up.
+
+### A whole change set → export → edit → build
+
+The usual case for a refresh: several nodes move together, and reading the JSON diff before it lands
+is the point.
 
 ```sh
 python -m codebase_kg.export -o .kg-export.json          # current graph, as JSON
@@ -42,6 +70,9 @@ Two properties make this safe:
   nothing. A dangling edge or a description carrying a ticket ref cannot land.
 
 Delete `.kg-export.json` when you are done — it is a working file, not an artifact.
+
+**Do not interleave the two in one refresh.** An export is a snapshot; building one taken before a
+write-tool call silently reverts that call, and the result looks like a clean rebuild.
 
 ## Workflow
 
