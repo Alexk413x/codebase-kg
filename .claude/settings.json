@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "c=$(jq -r '.tool_input.command // \"\"'); if printf '%s' \"$c\" | grep -Eqi '(^|[;(&]|[|][[:space:]])[[:space:]]*((sudo[[:space:]]+)?(python[0-9.]*[[:space:]]+-m[[:space:]]+)?(uvx?[[:space:]]+)?twine[[:space:]]+[^;&|]*upload|(uv|poetry|flit|hatch|pdm|rye)[[:space:]]+publish)'; then printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"BLOCKED: PyPI publish. This software is proprietary (All Rights Reserved) and must not be uploaded to a public package index. PyPI Terms of Use grant the PSF and every PyPI user an irrevocable, worldwide, royalty-free licence to reproduce, distribute and publish uploaded content, so the grant cannot be withdrawn by deleting the release. Use a private index (Artifact Registry, CodeArtifact, Cloudsmith, devpi) instead.\"}}'; fi",
+            "timeout": 10,
+            "statusMessage": "Checking for PyPI publish"
+          }
+        ]
+      }
+    ]
+  }
+}
