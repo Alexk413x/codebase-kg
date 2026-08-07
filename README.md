@@ -169,4 +169,5 @@ MCP query server, generalized past accessibility to *any* codebase.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+Proprietary. All rights reserved — see [`LICENSE`](LICENSE) and [`EULA.md`](EULA.md).
+No license to use is granted without a written agreement.

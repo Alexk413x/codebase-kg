@@ -5,7 +5,7 @@ description = "Local stdio MCP server over a per-repo committed code_graph.db â€
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Alexk413x", email = "alexk413x@gmail.com" }]
-license = { text = "MIT" }
+license = { text = "LicenseRef-Proprietary" }
 dependencies = [
     "fastmcp>=3.3,<4",
 ]
