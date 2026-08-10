@@ -33,6 +33,12 @@ from .links import EXTERNAL_LINK_DDL
 # nothing.
 SCHEMA_VERSION = 3
 
+# The table a peer graph must query to check that one of our ids exists. Written
+# into `meta` under `links.NODE_TABLE_KEY` because a peer holds no copy of this
+# schema: before it was declared, every graph guessed `node`, which is right here
+# and wrong in cartographer (`screen`) and android-driver (`action`).
+NODE_TABLE = "node"
+
 # 'CKG1' as a big-endian int32, stamped into the SQLite header so `file(1)` and
 # our own tooling can identify the artifact without opening it.
 APPLICATION_ID = 0x434B4731

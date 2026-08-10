@@ -1,9 +1,10 @@
 """Cross-graph links -- one table and a handful of functions, copied not imported.
 
-**This file is a copy.** Byte-identical text lives in `codebase-kg`, and any
-future graph adopts the mechanism the same way: copy this module, splice
-`EXTERNAL_LINK_DDL` into that graph's DDL, done. The specification is
-`docs/GRAPH-LINKS.md` in this repo.
+**This file is a copy.** The same text lives in `cartographer` and in
+`android-driver`, and any future graph adopts the mechanism the same way: copy
+this module, splice `EXTERNAL_LINK_DDL` into that graph's DDL with the foreign
+key pointed at that graph's own entity table, done. The specification is
+`docs/GRAPH-LINKS.md` in the cartographer repo.
 
 Copied rather than packaged, and this paragraph exists so the decision is not
 quietly reversed by someone tidying up. It was measured before it was made: the
@@ -44,6 +45,17 @@ characterised.
   dangling pointer, and it fails silently at exactly the moment it is needed:
   when something is already broken and someone is following the link to find out
   why.
+
+The peer's entity table is **looked up, not assumed**. This module used to end
+`resolve` with `SELECT 1 FROM node WHERE id = ?`, which is this graph's table
+name and nobody else's. Measured 2026-08-10 against real artifacts: v3
+`cartographer_graph.db` has no `node` table -- its entity is `screen` -- and
+`driver_graph.db` calls its entity `action`, so following a link into either
+raised, was caught, and reported `PEER_UNREADABLE`. Four of six resolutions
+across the three graphs were wrong, and every one of them failed *soft*: a
+genuinely dangling link out of this graph into one of those could never be an
+error, only a permanent shrug. `meta.node_table` names the entity, with a probe
+for the artifacts committed before that key existed.
 """
 
 from __future__ import annotations
@@ -66,6 +78,16 @@ LINKS_SPEC_VERSION = 1
 KNOWLEDGE_DIR = "knowledge"
 
 SEPARATOR = "#"
+
+#: The `meta` key naming a graph's own entity table, so a peer can resolve into
+#: it without knowing what it is. Written by every graph that carries this module.
+NODE_TABLE_KEY = "node_table"
+
+#: Entity tables of the graphs that predate `NODE_TABLE_KEY`, tried in order when
+#: a peer does not declare one. Dropping this list would make every artifact
+#: committed before today unresolvable, and a committed artifact that stops
+#: opening is the failure this whole design is arranged to avoid.
+_LEGACY_NODE_TABLES = ("node", "screen", "action")
 
 # The index is not optional, and it is the reason this is a table rather than a
 # column. The reverse question -- a file changed, which screens does that
@@ -324,6 +346,30 @@ class Resolution(str, Enum):
         return self in (Resolution.MALFORMED, Resolution.DANGLING)
 
 
+def peer_node_table(con: sqlite3.Connection) -> str | None:
+    """Name the entity table of an already-open peer graph, or None.
+
+    Reads `meta.node_table` first, because a graph naming its own entity is the
+    only answer that stays correct when a fourth graph arrives. The fallback
+    probe exists for the artifacts committed before this key did.
+    """
+    try:
+        row = con.execute(
+            "SELECT value FROM meta WHERE key = ?", (NODE_TABLE_KEY,)
+        ).fetchone()
+    except sqlite3.Error:
+        row = None
+    if row and row[0]:
+        return str(row[0])
+    for name in _LEGACY_NODE_TABLES:
+        probe = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+        ).fetchone()
+        if probe is not None:
+            return name
+    return None
+
+
 def resolve(knowledge_dir: str | Path, target: str) -> Resolution:
     """Follow a link into its peer graph and report what was found there.
 
@@ -343,7 +389,13 @@ def resolve(knowledge_dir: str | Path, target: str) -> Resolution:
     except sqlite3.Error:
         return Resolution.PEER_UNREADABLE
     try:
-        row = con.execute("SELECT 1 FROM node WHERE id = ?", (node_id,)).fetchone()
+        table = peer_node_table(con)
+        if table is None:
+            return Resolution.PEER_UNREADABLE
+        row = con.execute(
+            f"SELECT 1 FROM {table} WHERE id = ?",  # noqa: S608 - name from the peer's own schema
+            (node_id,),
+        ).fetchone()
     except sqlite3.Error:
         # A file we cannot read as a graph is unknown, not broken. Calling it a
         # dangling link would send someone hunting a bug that is not there.

@@ -28,7 +28,9 @@ from typing import Iterable, Literal
 from . import clean, links
 from .coverage import COVERS_KEY, EXEMPT_KEY, format_patterns
 from .models import Meta, Node
-from .schema import APPLICATION_ID, DDL, PAGE_SIZE, SCHEMA_VERSION, split_identifier
+from .schema import (
+    APPLICATION_ID, DDL, NODE_TABLE, PAGE_SIZE, SCHEMA_VERSION, split_identifier,
+)
 
 DanglingPolicy = Literal["error", "drop"]
 
@@ -194,6 +196,10 @@ def _write(
     if meta.exempt:
         rows_meta[EXEMPT_KEY] = format_patterns(meta.exempt)
     rows_meta.update(meta.extra)
+    # After `extra`, so it wins: this is a fact about the schema just written,
+    # and a value carried in from an older graph would name the wrong table to
+    # every peer that resolves a link into this file.
+    rows_meta[links.NODE_TABLE_KEY] = NODE_TABLE
     conn.executemany(
         "INSERT INTO meta (key, value) VALUES (?, ?)",
         sorted((k, v) for k, v in rows_meta.items() if v),

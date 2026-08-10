@@ -100,7 +100,7 @@ def read_any_version(path: Path) -> tuple[int, Meta, list[Node], dict[str, str]]
 
     known = {
         "schema_version", "codebase", "root", "counterpart", "language",
-        "generated", COVERS_KEY, EXEMPT_KEY,
+        "generated", COVERS_KEY, EXEMPT_KEY, links.NODE_TABLE_KEY,
     }
     meta = Meta(
         codebase=rows.get("codebase", ""),

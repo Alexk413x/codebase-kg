@@ -42,19 +42,37 @@ CREATE INDEX external_link_target ON external_link(target);
 """
 
 
-def _screen_graph(path: Path, node_ids: list[str]) -> Path:
+def _screen_graph(
+    path: Path, node_ids: list[str], *, table: str = "screen", declare: bool = True
+) -> Path:
     """A stand-in for cartographer's committed cartographer_graph.db.
 
-    The convention requires only a `node` table with a TEXT id — that is the
-    whole contract a peer graph has to satisfy to be linkable.
+    The entity table is `screen`, not `node`. This fixture used to build `node`
+    — the one table cartographer v3 does not have — which is precisely why
+    `resolve` could hardcode that name and every test here still pass, while a
+    real link into a real screen graph came back `peer-unreadable`.
+
+    The contract is an entity table with a TEXT `id`, named in `meta.node_table`.
+    `table`/`declare` vary it so the probe path (artifacts written before that key
+    existed) stays covered too.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
-    con.execute("CREATE TABLE node (id TEXT PRIMARY KEY)")
-    con.executemany("INSERT INTO node VALUES (?)", [(i,) for i in node_ids])
+    con.execute(f"CREATE TABLE {table} (id TEXT PRIMARY KEY)")
+    con.executemany(f"INSERT INTO {table} VALUES (?)", [(i,) for i in node_ids])
+    if declare:
+        con.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        con.execute("INSERT INTO meta VALUES (?, ?)", (links.NODE_TABLE_KEY, table))
     con.commit()
     con.close()
     return path
+
+
+#: What the three real graphs call their entity, and whether the artifact
+#: declares it. `screen` and `action` undeclared are the shapes committed before
+#: `meta.node_table` existed; they must keep resolving or every link into an
+#: already-committed artifact breaks.
+PEER_SHAPES = [("node", False), ("screen", False), ("screen", True), ("action", True)]
 
 
 # --- the copies must not drift ------------------------------------------------
@@ -170,8 +188,15 @@ def test_the_writer_names_the_node_when_one_target_carries_two_kinds(tmp_path: P
 
 
 # --- resolution grading -------------------------------------------------------
-def test_a_present_peer_holding_the_node_resolves(tmp_path: Path) -> None:
-    _screen_graph(tmp_path / "cartographer_graph.db", ["rpn-main"])
+@pytest.mark.parametrize("table, declare", PEER_SHAPES)
+def test_a_present_peer_holding_the_node_resolves(
+    tmp_path: Path, table: str, declare: bool
+) -> None:
+    """Whatever the peer calls its entity. `resolve` used to ask every graph for
+    `node`, which is this graph's name and nobody else's."""
+    _screen_graph(
+        tmp_path / "cartographer_graph.db", ["rpn-main"], table=table, declare=declare
+    )
     assert links.resolve(tmp_path, "cartographer_graph.db#rpn-main") is Resolution.OK
 
 
@@ -180,16 +205,64 @@ def test_an_absent_peer_is_a_warning_because_cartographer_is_optional(tmp_path: 
     assert outcome is Resolution.PEER_ABSENT and not outcome.is_error
 
 
-def test_a_present_peer_missing_the_node_is_an_error(tmp_path: Path) -> None:
-    _screen_graph(tmp_path / "cartographer_graph.db", ["rpn-main"])
+@pytest.mark.parametrize("table, declare", PEER_SHAPES)
+def test_a_present_peer_missing_the_node_is_an_error(
+    tmp_path: Path, table: str, declare: bool
+) -> None:
+    """The half that actually cost something: a peer whose entity table we could
+    not name graded every broken pointer into it as a warning."""
+    _screen_graph(
+        tmp_path / "cartographer_graph.db", ["rpn-main"], table=table, declare=declare
+    )
     outcome = links.resolve(tmp_path, "cartographer_graph.db#typo")
     assert outcome is Resolution.DANGLING and outcome.is_error
+
+
+def test_a_declared_node_table_beats_the_probe(tmp_path: Path) -> None:
+    """A graph carrying both a legacy-named table and a declaration is read the
+    way it declares itself -- otherwise the probe order, not the graph, decides
+    which of its tables is the entity."""
+    path = _screen_graph(tmp_path / "cartographer_graph.db", ["real"])
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE node (id TEXT PRIMARY KEY)")
+    con.execute("INSERT INTO node VALUES ('decoy')")
+    con.commit()
+    con.close()
+    assert links.resolve(tmp_path, "cartographer_graph.db#real") is Resolution.OK
+    assert links.resolve(tmp_path, "cartographer_graph.db#decoy") is Resolution.DANGLING
 
 
 def test_a_file_that_is_not_a_graph_is_unknown_not_broken(tmp_path: Path) -> None:
     (tmp_path / "cartographer_graph.db").write_bytes(b"not a database")
     outcome = links.resolve(tmp_path, "cartographer_graph.db#x")
     assert outcome is Resolution.PEER_UNREADABLE and not outcome.is_error
+
+
+def test_a_database_with_no_entity_table_is_unknown_not_broken(tmp_path: Path) -> None:
+    """Openable, but nothing in it answers "is this id yours?"."""
+    con = sqlite3.connect(tmp_path / "cartographer_graph.db")
+    con.execute("CREATE TABLE unrelated (x TEXT)")
+    con.commit()
+    con.close()
+    outcome = links.resolve(tmp_path, "cartographer_graph.db#x")
+    assert outcome is Resolution.PEER_UNREADABLE and not outcome.is_error
+
+
+def test_this_graph_names_its_own_entity_table_so_a_peer_can_resolve_into_it(
+    tmp_path: Path,
+) -> None:
+    """The inbound half: cartographer follows a link into `code_graph.db` and
+    must get ok-or-dangling. Run against a real built graph, because a fixture
+    that asserts its own shape is what hid the outbound bug."""
+    db = _linked_graph(tmp_path)
+    con = sqlite3.connect(db)
+    assert links.peer_node_table(con) == "node"
+    assert con.execute(
+        "SELECT value FROM meta WHERE key = ?", (links.NODE_TABLE_KEY,)
+    ).fetchone() == ("node",), "declared, not merely probeable"
+    con.close()
+    assert links.resolve(db.parent, "code_graph.db#rpn_screen") is Resolution.OK
+    assert links.resolve(db.parent, "code_graph.db#gone").is_error
 
 
 # --- round trip and both directions -------------------------------------------

@@ -116,7 +116,7 @@ class CodeGraph:
         rows = {r["key"]: r["value"] for r in self._q("SELECT key, value FROM meta")}
         known = {
             "schema_version", "codebase", "root", "counterpart", "language",
-            "generated", COVERS_KEY, EXEMPT_KEY,
+            "generated", COVERS_KEY, EXEMPT_KEY, links.NODE_TABLE_KEY,
         }
         return Meta(
             codebase=rows.get("codebase", ""),
