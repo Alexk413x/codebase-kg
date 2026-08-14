@@ -88,13 +88,25 @@ def _emit(message: str) -> None:
     print(json.dumps({"systemMessage": message, "suppressOutput": False}))
 
 
+def norm_root(root: str) -> str:
+    """`root` as a comparable prefix: posix separators, no slashes, `.` folded to ``.
+
+    `.` and `` both mean the whole repo, but a literal `.` is truthy while being
+    a prefix of no repo-relative path -- so every `startswith` against it fails
+    and the graph matches nothing. It hides because the package JOINS paths
+    (`repo / "."` is `repo`) while this file COMPARES them.
+    """
+    out = str(root).strip().replace("\\", "/").strip("/")
+    return "" if out == "." else out
+
+
 def _rel_to_root(path: Path, proj: Path, root: str) -> str | None:
     """The edited path as the graph would anchor it: relative to `root`."""
     try:
         rel = path.relative_to(proj).as_posix()
     except ValueError:
         return None
-    root = root.replace("\\", "/").strip("/")
+    root = norm_root(root)
     if root:
         if not rel.startswith(root + "/"):
             return None

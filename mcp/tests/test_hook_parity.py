@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "git-hooks"))
 sys.path.insert(0, str(ROOT / "hooks"))
 
 import _config  # noqa: E402
+import kg_post_edit_check  # noqa: E402
 import kg_pre_push  # noqa: E402
 
 # DEFAULTS is dict[str, object]; the extension list is the one entry
@@ -213,3 +214,54 @@ def test_both_agree_a_non_source_file_does_not(tmp_path: Path, rel: str) -> None
     cfg: dict[str, object] = {"root": "app/src/main", "exclude_ext": list(EXCLUDE_EXT)}
     assert _config.is_source_file(tmp_path / rel, tmp_path, cfg) is False
     assert kg_pre_push.is_source(rel, "app/src/main", None) is False
+
+
+# --- `root: "."` -------------------------------------------------------------
+# A graph authored with `.` rather than `` disabled BOTH hooks in a real repo,
+# and neither reported anything: `.` is truthy, so the guards ran, and it
+# prefixes no repo-relative path, so every file was discarded. `kg_validate`
+# still called that graph healthy, because the package joins paths where these
+# two compare them.
+@pytest.mark.parametrize("raw", [".", "./", "/./", "  .  "])
+def test_both_hooks_fold_a_dot_root_to_empty(raw: str) -> None:
+    assert kg_pre_push.norm_root(raw) == ""
+    assert kg_post_edit_check.norm_root(raw) == ""
+
+
+@pytest.mark.parametrize("raw", ["app/src/main", "app/src/main/", "\\app\\src\\main"])
+def test_both_hooks_normalize_a_real_root_the_same_way(raw: str) -> None:
+    assert kg_pre_push.norm_root(raw) == "app/src/main"
+    assert kg_post_edit_check.norm_root(raw) == "app/src/main"
+
+
+def test_norm_root_has_not_drifted_between_the_copies() -> None:
+    import inspect
+
+    assert _body(inspect.getsource(kg_pre_push.norm_root)) == _body(
+        inspect.getsource(kg_post_edit_check.norm_root)
+    )
+
+
+@pytest.mark.parametrize("root", ["", "."])
+def test_a_dot_root_classifies_source_exactly_like_an_empty_one(
+    tmp_path: Path, root: str
+) -> None:
+    rel = "app/Foo.kt"
+    cfg: dict[str, object] = {"root": root, "exclude_ext": list(EXCLUDE_EXT)}
+    assert _config.is_source_file(tmp_path / rel, tmp_path, cfg) is True
+    assert kg_pre_push.is_source(rel, kg_pre_push.norm_root(root), None) is True
+    assert kg_pre_push._rel_to_root(rel, root) == rel
+
+
+def test_a_dot_root_still_anchors_the_edited_file(tmp_path: Path) -> None:
+    """The signal that went missing: an unanchored file must still be reportable."""
+    edited = tmp_path / "app" / "Foo.kt"
+    assert kg_post_edit_check._rel_to_root(edited, tmp_path, ".") == "app/Foo.kt"
+
+
+def test_the_meta_model_refuses_to_carry_a_dot_root() -> None:
+    """Normalized on construction, so no newly built graph can reintroduce it."""
+    from codebase_kg.models import Meta
+
+    assert Meta(codebase="x", root=".").root == ""
+    assert Meta(codebase="x", root="app/src").root == "app/src"

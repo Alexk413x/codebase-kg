@@ -42,6 +42,23 @@ and the build path cannot drift on how a node is indexed or how a new file lands
 moved to `tools.open_peer`, because a write judged by a validation run that skipped the peer would
 accept the one thing that check exists to catch.
 
+### Fixed — `root: "."` silenced both hooks while the graph validated clean
+
+A graph whose `meta.root` was `.` rather than the empty string disabled the post-edit nudge and the
+pre-push staleness check completely. Both guard on `rel == root or rel.startswith(root + "/")`, and
+`.` is truthy while being a prefix of no repo-relative path — so every file was discarded before any
+check ran. Installed, executable, correctly wired, and mute.
+
+It hid because the two surfaces treat `root` differently. The package **joins** it (`repo / "."` is
+`repo`), so `kg_validate`, `kg_stats` and coverage all reported the graph healthy; the hooks
+**compare** it as a string prefix, where the same value matches nothing. A real repo ran this way
+with 198 anchored files and no hook output at all.
+
+`Meta.__post_init__` now folds `.` to `""` on construction, so no newly built graph can carry it, and
+a rebuild repairs an existing one. Both vendored copies gained an identical `norm_root()` for the
+graphs already committed, with parity tests asserting the two do not drift — the same guarantee
+`IGNORE_DIRS` has.
+
 ## [0.2.3] — 2026-08-01 — the untested surfaces, tested
 
 Coverage across everything shipped: **89% → 92%**, 304 → 394 tests. The headline number moved a
