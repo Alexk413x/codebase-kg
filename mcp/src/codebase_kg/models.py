@@ -121,6 +121,15 @@ class Meta:
     exempt: list[str] = field(default_factory=list)
     extra: dict[str, str] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # `.` and `` both mean the whole repo and must reach the readers as the
+        # same value. A literal `.` is truthy but prefixes no repo-relative path,
+        # so every `rel.startswith(root + "/")` fails and the graph matches
+        # nothing. It hid because the MCP tools JOIN (`repo / "."` is `repo`)
+        # while the hooks COMPARE: a real graph validated clean with both of its
+        # hooks mute. Normalized here so no graph can be built carrying it.
+        self.root = "" if self.root.strip() == "." else self.root
+
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
             "codebase": self.codebase,

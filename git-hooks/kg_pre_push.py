@@ -307,6 +307,18 @@ def read_graph(db: Path) -> tuple[str, set[str], list[str], list[str]] | None:
     )
 
 
+def norm_root(root: str) -> str:
+    """`root` as a comparable prefix: posix separators, no slashes, `.` folded to ``.
+
+    `.` and `` both mean the whole repo, but a literal `.` is truthy while being
+    a prefix of no repo-relative path -- so every `startswith` against it fails
+    and the graph matches nothing. It hides because the package JOINS paths
+    (`repo / "."` is `repo`) while this file COMPARES them.
+    """
+    out = str(root).strip().replace("\\", "/").strip("/")
+    return "" if out == "." else out
+
+
 def _rel_to_root(rel: str, root: str) -> str:
     """A repo-relative path, re-expressed relative to the graph's `root`.
 
@@ -315,7 +327,7 @@ def _rel_to_root(rel: str, root: str) -> str:
     be compared.
     """
     rel = rel.replace("\\", "/")
-    root = root.replace("\\", "/").strip("/")
+    root = norm_root(root)
     if root and rel.startswith(root + "/"):
         return rel[len(root) + 1 :]
     return rel
@@ -385,7 +397,7 @@ def main() -> int:
 
     # `root` is the committed, shared config in the graph itself; an optional
     # per-dev .claude/codebase-kg.local.md may override it.
-    root = (cfg.get("root") or graph_root).replace("\\", "/").strip("/")
+    root = norm_root(cfg.get("root") or graph_root)
 
     # git feeds the pushed refs on stdin — that is the authoritative changeset.
     # Only when stdin is empty (manual invocation) fall back to guessing a range.

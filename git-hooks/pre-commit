@@ -1,0 +1,16 @@
+#!/bin/sh
+# codebase-kg staleness check over the staged change set.
+#
+# ADVISORY: it reports and never blocks, matching the pre-push hook beside it.
+# A gate that stops a commit gets bypassed with --no-verify and then ignored.
+#
+# It does NOT run /codebase-kg:refresh. That is a model workflow -- it maps
+# changed files to nodes and decides what to add, edit or remove -- and a shell
+# hook cannot make those calls. This says the graph needs attention; a person
+# or an agent still does the refreshing.
+#
+# Skip: SKIP_KG=1 git commit ...     (or --no-verify to skip every hook)
+[ -n "$SKIP_KG" ] && exit 0
+DIR=$(dirname "$0")
+if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
+"$PY" "$DIR/kg_pre_commit.py" || true
