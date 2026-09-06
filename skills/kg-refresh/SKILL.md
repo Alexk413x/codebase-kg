@@ -110,9 +110,29 @@ Determine what changed since the graph was last built:
   anchors on (`-`), and mapped files whose contents no longer match the digest recorded at build time
   (`~` — the anchor still resolves, the description may not; `SCHEMA.md` §6.3). Each list caps at 15
   entries, so re-derive with `git diff` only when one says "and N more".
-- Otherwise: `git diff --name-only <since>...HEAD`, where `<since>` is a commit near the graph's
-  `generated` date (`kg_stats` reports it), or `git log --since=<generated>`. If unsure, scope to the
-  user's named feature.
+- Otherwise, **diff from the commit that last touched the graph itself**. That commit is the
+  watermark: everything after it is, by definition, code the graph has not seen.
+
+  ```sh
+  SINCE=$(git log -1 --format=%H -- knowledge/code_graph.db)
+  git diff --name-only "$SINCE"...HEAD
+  ```
+
+  Use this rather than the `generated` date. A date needs a "commit near it" — a judgement call at
+  the one point in the workflow where the scope has to be exact — and `SCHEMA.md` §7 is explicit that
+  the date is provenance, never a freshness claim: it can be bumped without a node changing, and a
+  refresh scoped from a bumped date silently covers nothing. The graph's own commit cannot be wrong
+  about when the graph last moved.
+
+  Three cases the one-liner does not cover, each with an honest answer rather than a guess:
+
+  | Situation | Scope |
+  |---|---|
+  | `$SINCE` is empty — the graph is new or uncommitted | The whole repo. There is no watermark yet, and that is `/codebase-kg:build`'s job, not a diff. |
+  | `$SINCE` is not an ancestor of `HEAD` (rebased, or a branch) | `git merge-base $SINCE HEAD`, so the range is what this branch added rather than what it diverged around. |
+  | The working tree is dirty | Add `git status --porcelain` — uncommitted work is exactly what the graph has not seen, and it is what the pre-commit hook will name next. |
+
+  If unsure, or when the user named a feature, scope to that instead and say so.
 - Map changed files → owning nodes with **`kg_find_by_path`** (that is what it is for), falling back
   to `kg_search` for concepts.
 
