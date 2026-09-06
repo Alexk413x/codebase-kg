@@ -274,6 +274,51 @@ def test_a_post_pass_never_lowers_the_credit_already_held(
         assert run(monkeypatch, capsys, repo, "Grep", {"pattern": pattern}) is None
 
 
+def test_asking_again_tops_the_credit_back_up(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The whole recovery path: run out, query again, carry on. Nothing about
+    exhausting credit is terminal — it is a prompt to go back to the graph."""
+    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search",
+         {"results": [{"anchors": ["a.py#A"]}]})          # 1 + 3 = 4
+    for i in range(4):
+        assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"a{i}"}) is None
+    assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "spent"})) == "deny"
+
+    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search",
+         {"results": [{"anchors": [f"b{i}.py#B"]} for i in range(4)]})   # 4 + 3 = 7
+    for i in range(7):
+        assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"b{i}"}) is None
+    assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "again"})) == "deny"
+
+
+def test_credit_cannot_be_farmed_by_repeating_a_cheap_query(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A grant REPLACES rather than accumulates, which is why `max` and not `+`.
+    Otherwise `kg_stats` in a loop banks the session: five answers naming nothing
+    would buy fifteen searches for having learned nothing."""
+    for _ in range(5):
+        post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_stats", {})
+    for i in range(3):
+        assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"c{i}"}) is None
+    assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "farmed"})) == "deny"
+
+
+def test_a_smaller_answer_never_lowers_the_credit_in_hand(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other half of `max`: consulting the graph again must never cost an
+    agent the allowance a bigger answer already earned it."""
+    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search",
+         {"results": [{"anchors": [f"d{i}.py#D"]} for i in range(6)]})   # 9
+    assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "one"}) is None  # 8 left
+    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_stats", {})          # worth 3
+    for i in range(8):
+        assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"e{i}"}) is None
+    assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "gone"})) == "deny"
+
+
 def test_gate_credit_is_configurable(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

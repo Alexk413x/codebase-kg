@@ -353,9 +353,12 @@ def _run(data: dict[str, object]) -> None:
             earned = credit_for(data.get("tool_response"), cfg)
         else:
             earned = gate_credit(cfg)
-        # Never take credit away: the two passes fire around one call, and the
-        # PreToolUse floor must not be lowered by a PostToolUse that counted no
-        # anchors in an answer the agent still found useful.
+        # A grant REPLACES rather than accumulates, and takes the larger of the
+        # two. Both halves earn their place: `+` would let `kg_stats` in a loop
+        # bank the whole session for having learned nothing, and taking the new
+        # value outright would let a cheap follow-up query cost an agent the
+        # allowance a bigger answer already earned it. Running out is not
+        # terminal either way — asking again tops it back up.
         try:
             held = int(state.get("credit", 0))  # type: ignore[arg-type]
         except (TypeError, ValueError):
