@@ -107,8 +107,9 @@ It **converts, not regenerates** — ids, kinds, anchors, edges and parity survi
 scrubs ticket refs, dates and change narrative out of the summaries, drops any dangling edges, and
 reports everything it changed. The markdown file is left untouched; delete it once you are happy.
 
-Add `knowledge/code_graph.db binary diff=codegraph` to the repo's `.gitattributes` and commit the
-result, then run `/codebase-kg:setup-diff` so the graph shows up as a readable diff in review.
+Add `*.db binary diff=codegraph` and `code_graph.db binary diff=codegraph` to the repo's
+`.gitattributes` and commit the result, then run `/codebase-kg:setup` — it wires the staleness checks
+and the textconv driver that makes the graph show up as a readable diff in review.
 
 ### Already on a `code_graph.db`?
 
@@ -137,12 +138,38 @@ codebase-kg/
 │   ├── code_graph.template.json
 │   └── codebase-kg.local.md.example
 ├── .mcp.json                 # registers the codebase-kg MCP server (uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp)
-├── commands/                 # /codebase-kg:build|refresh|audit|link|validate|install-hooks (thin → skills)
-├── skills/                   # kg-build / kg-refresh / kg-audit / kg-link / kg-validate
+├── commands/                 # /codebase-kg:query|build|refresh|audit|link|validate → skills; setup is inline
+├── skills/                   # kg-query / kg-build / kg-refresh / kg-audit / kg-link / kg-validate
 ├── mcp/                      # the query server + build/export/migrate CLIs (uvx-run Python)
-├── hooks/                    # advisory in-session post-edit nudge (Claude Code hook)
-└── git-hooks/                # advisory pre-push staleness check, vendorable into any repo (stdlib-only)
+├── hooks/                    # Claude Code hooks: the search gate + the post-edit nudge
+└── git-hooks/                # advisory pre-commit + pre-push staleness checks, vendored into any repo (stdlib-only)
 ```
+
+## Making the graph get used
+
+A map nobody opens is worth nothing. Left alone, an agent reaches for `Grep` and re-derives the map
+it already has — slower, and blind to the components a search string does not appear in.
+
+The **search gate** (`hooks/kg_search_gate.py`, a `PreToolUse` hook) fixes that. In any repo that has
+a `knowledge/code_graph.db`, the first `Grep`, `Glob`, or shell `grep`/`rg`/`find -name` of a session
+is denied once, with the instruction to query the graph first. Then it **stands down for the rest of
+that session** — whether or not the agent complied. Querying any codebase-kg MCP tool stands it down
+too, so an agent that already started at the graph never sees it.
+
+One interruption per session. It cannot loop, and no search is ever permanently blocked: if the
+graph does not cover what you need, run the search again and it goes through.
+
+It ships with the plugin, so there is nothing to install — it activates in every repo that has a
+graph, and stays silent in every repo that does not. `SKIP_KG=1` silences it for a shell;
+`search_gate: warn` in `.claude/codebase-kg.local.md` downgrades it to a message, and
+`search_gate: off` disables it.
+
+The `kg-query` skill (`/codebase-kg:query`) is the workflow it hands off to: `kg_search` to locate,
+`kg_neighborhood` to expand, then read the anchored files.
+
+The division of labor it enforces: **the graph is authoritative for where code lives; the source is
+authoritative for what it does now.** The graph is a committed snapshot, so orient with it, then read
+the anchored files to confirm behavior.
 
 ## Keeping the graph in sync with commits
 
@@ -150,10 +177,13 @@ Two advisory layers, both pointing at the same fix (`/codebase-kg:refresh`):
 
 - **In-session nudge** (`hooks/`): while Claude edits source, it says so the first time you touch a
   file no node covers, and periodically once enough mapped files have changed.
-- **Pre-push check** (`git-hooks/`): installed per-repo via `/codebase-kg:install-hooks`. It compares
-  the commits you're pushing against the graph and reports new source no node covers, plus deleted
-  files the graph still anchors on. It **never blocks** — there is no `--no-verify` to remember. It's
-  stdlib-only and vendored into the repo, so it runs for every clone and CI.
+- **Commit/push checks** (`git-hooks/`): installed per-repo via `/codebase-kg:setup`. They compare
+  the change set against the graph and report three things: source no node covers, deleted files the
+  graph still anchors on, and mapped files whose contents no longer match the digest recorded when
+  the graph was built. That third one is the one that catches ordinary work — a change set is mostly
+  modifications, and a check that reads only additions and deletions is silent through most of the
+  drift. They **never block** — there is no `--no-verify` to remember. They're stdlib-only and
+  vendored into the repo, so they run for every clone and CI.
 
 Neither checks a date. An earlier version blocked pushes when the graph's `refreshed:` header wasn't
 today; that measured whether someone edited the file, not whether the nodes matched the code — and

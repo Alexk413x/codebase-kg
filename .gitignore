@@ -25,3 +25,7 @@ Thumbs.db
 .coverage
 .coverage.*
 htmlcov/
+
+# The refresh/audit working file — a snapshot, never an artifact. A stale one
+# still parses and silently reverts a later build.
+.kg-export.json

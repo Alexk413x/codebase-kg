@@ -2,18 +2,30 @@
 name: kg-build
 description: This skill should be used when the user asks to "build a code graph", "build a knowledge graph", "bootstrap a KG", "create a code_graph.db", "map this codebase", "generate the code graph", or onboard a repo that has no graph yet (or whose graph is too narrow to keep). It reads the source tree and emits a source-derived, symbol-anchored, committed code_graph.db per the codebase-kg schema. (For updating an existing graph against changed source, use kg-refresh instead. For converting an old KNOWLEDGE_GRAPH.md, run python -m codebase_kg.migrate — do not rebuild from scratch.)
 allowed-tools:
+  # Both names the host gives the server: bare when the MCP server is installed
+  # directly, prefixed when it arrives as a plugin. Listing only the bare form
+  # denies a plugin-installed skill its own query surface.
   - mcp__codebase-kg__kg_validate
   - mcp__codebase-kg__kg_stats
+  - mcp__plugin_codebase-kg_codebase-kg__kg_validate
+  - mcp__plugin_codebase-kg_codebase-kg__kg_stats
   - Read
   - Grep
   - Glob
   - Bash(git ls-files:*)
-  - Bash(git diff:*)
   - Bash(python -m codebase_kg.build:*)
   - Bash(python -m codebase_kg.export:*)
+  - Bash(python -m codebase_kg.migrate:*)
+  - Bash(rm:*)
   - Task
   - Write
   - Edit
+  # The runnable forms outside the plugin's own checkout. kg_stats reports
+  # which one applies; `python -m` only works where the package imports.
+  - Bash(uvx:*)
+  - Bash(codebase-kg-build:*)
+  - Bash(codebase-kg-export:*)
+  - Bash(codebase-kg-migrate:*)
 ---
 
 # kg-build — bootstrap a code graph from source
@@ -29,6 +41,19 @@ symbols; never paste code). It is **descriptive**, not prescriptive.
 **If the repo already has a `knowledge/KNOWLEDGE_GRAPH.md`, stop and migrate instead:**
 `python -m codebase_kg.migrate knowledge/KNOWLEDGE_GRAPH.md`. Converting preserves curated
 structure; rebuilding throws it away.
+
+**If the repo already has a `code_graph.db`** (the "too narrow to keep" case), the plugin's search
+gate denies the first `Grep`/`Glob` of the session once, telling you to query the graph instead.
+That instruction does not apply here — a bootstrap re-derives from source on purpose, and the graph
+you are about to replace is not the authority. Run the search again; the gate stands down for the
+rest of the session either way.
+
+> **Before running any CLI below, call `kg_stats` and read its `cli` field.** It reports the
+> invocation that works *in this repo* — `uvx --from "<plugin>/mcp" codebase-kg-build …` when the
+> plugin ships as a source checkout, or the bare `codebase-kg-build` when the package is installed.
+> The `python -m codebase_kg.…` form written below is the plugin's own-checkout form; in a target
+> repo that has the plugin but no importable `codebase_kg` it is a `ModuleNotFoundError`, and
+> `CLAUDE_PLUGIN_ROOT` is not set in your shell so you cannot construct the path yourself.
 
 ## How the graph is written
 
@@ -115,12 +140,28 @@ declared its scope cannot report a file type it never covered, so a clean result
 not evidence of anything.
 
 ### 6. Commit
-Add `knowledge/code_graph.db binary diff=codegraph` to the repo's `.gitattributes`, then commit the
-graph. It is a committed artifact — that is the point of it. The `diff=codegraph` half makes the
-file reviewable once a clone runs `/codebase-kg:setup-diff`; committing the attribute means every
-clone gets the wiring even though the driver itself is local config.
+Add both lines to the repo's `.gitattributes`, then commit the graph:
 
-### 7. Parity (only if paired)
+```
+*.db binary diff=codegraph
+code_graph.db binary diff=codegraph
+```
+
+It is a committed artifact — that is the point of it. The `diff=codegraph` half makes the file
+reviewable once a clone runs `/codebase-kg:setup`; committing the attribute means every clone gets
+the wiring even though the driver itself is local config. Both lines, so a repo that overrides
+`graph_path` still matches.
+
+### 7. Wire the repo
+Run `/codebase-kg:setup` once. It is idempotent and non-destructive: it vendors the advisory
+pre-commit and pre-push staleness checks into the repo's hooks dir and registers the textconv driver
+step 6 just declared the attribute for. Without it a freshly built graph has no wiring at all —
+nothing reports when the code moves away from it.
+
+The search gate and the post-edit nudge ship inside the plugin and need no install; they activate on
+their own now that the repo has a graph.
+
+### 8. Parity (only if paired)
 If a `counterpart` repo exists, leave parity fields out of this pass and hand off to `kg-link`,
 which reads both codebases. Building one side cleanly first is the right order.
 

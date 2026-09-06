@@ -2,6 +2,99 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.4.0] — 2026-09-06 — the graph gets consulted first, and one command wires the repo
+
+### Added — a PreToolUse search gate
+
+`hooks/kg_search_gate.py`. The graph was complete, indexed, committed, and unused: nothing made an
+agent reach for it, so `Grep` re-derived the map every session — slower than the graph, and blind to
+the components a search string does not appear in. Documentation did not fix this, because an
+instruction that competes with a habit loses.
+
+The gate denies the **first** `Grep`, `Glob`, or shell `grep`/`rg`/`fd`/`find -name` of a session,
+with the instruction to query `kg_search` / `kg_node` / `kg_neighborhood` first, then stands down for
+the rest of that session — complied with or not. Any codebase-kg MCP call stands it down too, so an
+agent that already started at the graph never sees it.
+
+Three properties, in this order:
+
+- **It cannot strand an agent.** One interruption per session, spent before the message is emitted so
+  a failure between the two cannot re-gate the next search. A malformed payload, an unreadable graph,
+  or an unwritable state file all fail *open*. No search is permanently blocked: if the graph does
+  not cover it, run it again.
+- **It fires on the search, not the neighbors.** Shell detection is deliberately narrow — a false
+  positive denies unrelated work — so `find` and `Get-ChildItem` count only with a name/path filter,
+  and an ordinary `find . -type d` does not.
+- **It stays out of repos it has no business in.** No graph, `SKIP_KG` set, `search_gate: off`, or a
+  search scoped outside `root` or into an ignored dir, and it is silent.
+
+`search_gate` (`block` | `warn` | `off`) and `gate_shell_search` join the per-dev
+`.claude/codebase-kg.local.md`. `search_gate: off` arrives at the hook as a bool, because the
+frontmatter parser coerces `off` — handled, since the alternative is a setting that reads as unknown
+and silently stays on.
+
+Ships with the plugin. There is nothing to install per repo.
+
+### Added — `kg-query`, the skill the search gate hands off to
+
+The gate denies a search and instructs the agent to run `kg_search`, then `kg_node` /
+`kg_neighborhood`, then read the anchored files. No skill owned that workflow, no description
+triggered on "where does the feed ranking live", and `kg_neighborhood` and `kg_find_by_link` were
+registered, tested, documented in the README, and named in **no** skill's `allowed-tools` — so the
+gate interrupted an agent and handed it to nothing.
+
+`/codebase-kg:query` and `skills/kg-query` are that handoff: locate through the index, expand through
+the neighborhood, confirm in the source, and report any stale map you crossed on the way. Read-only
+by construction — it has no write tools.
+
+### Fixed — the CLIs the skills instruct are now runnable outside the plugin
+
+Every skill's build step said `python -m codebase_kg.build`. That works inside the plugin's own
+checkout and nowhere else: a target repo has the plugin but no importable `codebase_kg`, so the
+instruction was a `ModuleNotFoundError` at the moment a skill had finished its real work. The
+`uvx --from <plugin>/mcp` form would have worked, but a skill cannot build it — `CLAUDE_PLUGIN_ROOT`
+is not set in the shell a skill's Bash runs in, and the console scripts are not on PATH.
+
+`codebase-kg-build` and `codebase-kg-migrate` join `codebase-kg-export` as entry points, and
+`kg_stats` now reports a `cli` field carrying the invocation that works *in this repo* — the
+`uvx --from` form from a source checkout, the bare console script from a wheel install. The server is
+the one component that knows where it was loaded from, so it answers rather than the caller guessing.
+The skills read it before running anything.
+
+### Fixed — the staleness checks read status `M`, and the digests they never opened
+
+`analyze()` split a change set into `A` (source nothing anchors) and `D` (anchored source that is
+gone) and dropped everything else. A real change set is mostly `M`, so both hooks were silent
+through the drift that actually accumulates. On one repo that let a graph fall 48 commits behind:
+the check would have named the 27 new files and said nothing about the 47 modified ones — two
+thirds of the drift. The `source` table of SHA-256 digests, written on every build and documented in
+SCHEMA.md §6.3 as the thing that makes a green `kg_validate` mean something, was read by neither
+hook.
+
+Two changes, one bucket each:
+
+- **A modified file that no node covers is now reported.** Keying the gap bucket on `A` meant a file
+  that predates the graph was invisible forever — it is never "added" again, so it was never
+  mentioned again.
+- **A modified file that *is* mapped is compared against its recorded digest.** A mismatch is the
+  `changed_since_built` signal, scoped to the change set: the anchor still resolves, so nothing else
+  in the toolchain notices, but the description may no longer fit.
+
+Digests come out of git, never off disk — the index (`:path`) at commit time, the pushed tips at
+push time, one `git cat-file --batch` for the whole set. Reading the working tree would have
+compared a push of a branch that is not checked out against whatever happened to be on disk. A file
+with no baseline is not reported: absent evidence reads as "no baseline", never as "unchanged".
+
+`read_graph` and `analyze` now return `NamedTuple`s (`Graph`, `Findings`) rather than bare tuples,
+so the next field is an addition instead of a break.
+
+### Changed — `/codebase-kg:setup` replaces `install-hooks` and `setup-diff`
+
+Two commands to wire one repo left the textconv driver reading as optional, and it is not: without it
+`git diff` says "Binary files differ" and a reviewer takes the commit message on faith. One
+idempotent command now does the git hooks, the `.gitattributes` attribute, and the textconv driver,
+and is safe to re-run to repair the wiring.
+
 ## [0.3.0] — 2026-09-06 — write tools, and hooks that actually fire
 
 ### Added — write tools, so a one-field fix is not a whole rebuild
@@ -106,7 +199,7 @@ way to notice. That is the same invisible-disable the frontmatter comment-strip 
 typo costs the setting, not the feature. Falsy still means "unset" — the fix is to the crash, not to
 the semantics.
 
-### `/codebase-kg:setup-diff`, tested through real git
+### `/codebase-kg:setup`, tested through real git
 
 The exporter had unit tests and still shipped broken for the one use that matters, because nothing
 ran it the way git does: git spawns the textconv command itself, with no shell in between, and reads
@@ -171,7 +264,7 @@ stakes are lower — but it remains the one surface with its own notion of "sour
 Descriptions routinely contain `—`, `…` and `→`. On Windows a piped stdout defaults to the ANSI
 code page, which encodes none of them, so the exporter died with `UnicodeEncodeError` *after*
 doing all its work. Git's textconv driver pipes exactly that stdout, which made
-`/codebase-kg:setup-diff` fail on every repo with a committed graph — and the only workaround was
+`/codebase-kg:setup` fail on every repo with a committed graph — and the only workaround was
 prefixing `PYTHONIOENCODING=utf-8`, which git gives you nowhere to put.
 
 New `cli.py`: `use_utf8()` on every CLI entry point, and `write_out()` for the exporter, which
@@ -256,7 +349,7 @@ Two decisions keep it honest:
 
 ### Added — readable diffs for the committed database
 
-`.gitattributes` now marks the graph `diff=codegraph`, and `/codebase-kg:setup-diff` configures a
+`.gitattributes` now marks the graph `diff=codegraph`, and `/codebase-kg:setup` configures a
 textconv driver so `git diff` / `show` / `log -p` render the graph as its JSON export instead of
 `Binary files differ`. What is committed is unchanged; a clone that skips the setup sees the old
 behaviour rather than an error. Merge-conflict resolution via export → merge → rebuild is documented
@@ -404,7 +497,7 @@ JSON round trip, and migration fidelity against the fixtures.
   with the remote default (else every not-yet-remote commit), ref deletions skipped. A manual run
   without stdin falls back to `@{u}...HEAD` / `origin/main|master...HEAD` and **fails loudly** when
   no base exists instead of silently passing. `git-hooks/README.md`, the `pre-push` wrapper, and
-  `/codebase-kg:install-hooks` note the stdin ordering requirement. +8 tests, verified end-to-end
+  `/codebase-kg:setup` note the stdin ordering requirement. +8 tests, verified end-to-end
   against a real repo (existing ref / new branch / deletion / manual run).
 - **Anchor check understands `Type.method` (M1).** `kg_validate` grepped the anchor symbol as one
   literal word, so the SCHEMA-endorsed `File.kt#Type.method` form was false-flagged ("symbol not
@@ -430,7 +523,7 @@ JSON round trip, and migration fidelity against the fixtures.
   `last refreshed` regex gains `(?i)` to match its sibling; the advisory hook's `exclude_ext` now
   matches dotfiles like `.gitignore` (aligned with the pre-push twin); `kg_validate`'s
   `root.strip("/")` no longer mangles roots (trailing slashes only; SCHEMA.md §3 + template now say
-  `root` is repo-relative); `/codebase-kg:install-hooks` references the vendored files via
+  `root` is repo-relative); `/codebase-kg:setup` references the vendored files via
   `${CLAUDE_PLUGIN_ROOT}/git-hooks/…`; `docs/DESIGN.md` stale `/codebase-kg:kg-*` command names
   corrected; dead `_HEADER_KEYS` removed from the loader; `.claude-plugin/plugin.json` gains
   `"version": "0.1.0"` (matching `mcp/pyproject.toml`); `_suggest` sorts by `(-score, id)` so the
@@ -492,7 +585,7 @@ JSON round trip, and migration fidelity against the fixtures.
   `KNOWLEDGE_GRAPH.md` isn't in sync (not in the changeset, or header `refreshed:`/legacy
   `last refreshed` not today). Override: `git push --no-verify`. No dependency on the MCP package, so
   it runs for every clone/CI. The semantic update stays the agent's `/codebase-kg:refresh`.
-- `/codebase-kg:install-hooks` command — agent-guided, non-destructive install (vendors the checker,
+- `/codebase-kg:setup` command — agent-guided, non-destructive install (vendors the checker,
   wires `core.hooksPath`/`pre-push`, integrates into an existing hook rather than overwriting it).
 - +10 tests (35 passing). This is the **enforcement** layer complementing the in-session nudge; the
   two linked repos stay eventually consistent because refresh reconciles parity vs the peer KG.

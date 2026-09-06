@@ -45,7 +45,7 @@ Anything the scrubber cannot clean automatically is left empty and named under `
 5. **Delete `knowledge/KNOWLEDGE_GRAPH.md`** once you're satisfied. Migration leaves it untouched, so
    there is no hurry — but two artifacts is exactly the state this rewrite exists to avoid, and the
    MCP server only reads the `.db`.
-6. **Re-run `/codebase-kg:install-hooks`** if the repo had the old blocking pre-push gate. The new
+6. **Re-run `/codebase-kg:setup`** if the repo had the old blocking pre-push gate. The new
    check is advisory and content-based; the old one blocked on a date.
 
 ## If the repo has a wide-table graph

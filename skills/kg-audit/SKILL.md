@@ -1,20 +1,35 @@
 ---
 name: kg-audit
 description: >-
-  This skill should be used when the user asks to "audit the code graph", "check the KG against the source", "is the graph accurate", "find stale or inaccurate nodes", or wants a source-vs-graph verification sweep. It is the deep, SEMANTIC, multi-agent sweep: it partitions the graph, verifies each node's anchors and claims against current source, and reports STALE / MISSING / INACCURATE — advisory output, no edits. (For the fast, deterministic check, use kg-validate instead; to actually fix what the audit finds, use kg-refresh.)
+  This skill should be used when the user asks to "audit the code graph", "is the graph telling the truth", "are the descriptions still accurate", "find stale or inaccurate nodes", or wants a source-vs-graph verification sweep. It is the deep, SEMANTIC, multi-agent sweep: it partitions the graph, verifies each node's anchors and claims against current source, and reports STALE / MISSING / INACCURATE — advisory output, no edits. (For the fast, deterministic check, use kg-validate instead; to actually fix what the audit finds, use kg-refresh.)
 allowed-tools:
+  # Both names the host gives the server: bare when the MCP server is installed
+  # directly, prefixed when it arrives as a plugin.
   - mcp__codebase-kg__kg_stats
   - mcp__codebase-kg__kg_node
   - mcp__codebase-kg__kg_search
   - mcp__codebase-kg__kg_find_by_kind
   - mcp__codebase-kg__kg_find_by_path
   - mcp__codebase-kg__kg_validate
+  - mcp__codebase-kg__kg_neighborhood
+  - mcp__plugin_codebase-kg_codebase-kg__kg_stats
+  - mcp__plugin_codebase-kg_codebase-kg__kg_node
+  - mcp__plugin_codebase-kg_codebase-kg__kg_search
+  - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_kind
+  - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_path
+  - mcp__plugin_codebase-kg_codebase-kg__kg_validate
+  - mcp__plugin_codebase-kg_codebase-kg__kg_neighborhood
   - Read
   - Grep
   - Glob
   - Bash(git ls-files:*)
   - Bash(python -m codebase_kg.export:*)
   - Task
+  - Bash(rm:*)
+  # The runnable forms outside the plugin's own checkout. kg_stats reports
+  # which one applies; `python -m` only works where the package imports.
+  - Bash(uvx:*)
+  - Bash(codebase-kg-export:*)
 ---
 
 # kg-audit — source-vs-graph accuracy sweep (advisory)
@@ -25,6 +40,14 @@ it does not edit (hand fixes to `kg-refresh`). Advisory, never blocking.
 
 > For the multi-agent partitioning recipe and the per-node verification checklist, read
 > `references/audit-pattern.md`.
+
+
+> **Before running any CLI below, call `kg_stats` and read its `cli` field.** It reports the
+> invocation that works *in this repo* — `uvx --from "<plugin>/mcp" codebase-kg-build …` when the
+> plugin ships as a source checkout, or the bare `codebase-kg-build` when the package is installed.
+> The `python -m codebase_kg.…` form written below is the plugin's own-checkout form; in a target
+> repo that has the plugin but no importable `codebase_kg` it is a `ModuleNotFoundError`, and
+> `CLAUDE_PLUGIN_ROOT` is not set in your shell so you cannot construct the path yourself.
 
 ## What it catches that kg-validate can't
 

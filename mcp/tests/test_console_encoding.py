@@ -4,7 +4,7 @@ Descriptions, progress lines and the exported JSON all carry em-dashes, `…` an
 `→`. On Windows a piped stdout defaults to the ANSI code page, which encodes
 none of them, so `codebase-kg-export` died with UnicodeEncodeError *after* doing
 all the work — and git's textconv driver, which pipes exactly that stdout, made
-`/codebase-kg:setup-diff` fail on every repo with a committed graph.
+`/codebase-kg:setup` fail on every repo with a committed graph.
 
 `PYTHONIOENCODING=cp1252` reproduces it on any platform, so this is a real
 regression test rather than a Windows-only one.
@@ -69,7 +69,7 @@ def test_export_stdout_is_valid_utf8_under_ascii_too(db_with_non_ascii: Path) ->
 def test_build_progress_output_survives_a_legacy_code_page(tmp_path: Path) -> None:
     """`build`'s report contains an em-dash on the no-source-tree path."""
     doc = {
-        "meta": {"codebase": "test", "root": "src", "generated": "2026-07-31"},
+        "codebase": "test", "root": "src", "generated": "2026-07-31",
         "nodes": [{
             "id": "feed_ranker", "kind": "Domain (pure)", "description": SPICY,
             "anchors": ["domain/FeedRanker.kt#FeedRanker"], "edges": [],

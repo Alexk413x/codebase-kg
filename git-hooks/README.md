@@ -1,12 +1,29 @@
 # git-hooks/ — code-graph staleness checks
 
 **Advisory, vendorable** git hooks. They compare a change set against the committed
-`knowledge/code_graph.db` and report two things:
+`knowledge/code_graph.db` and report three things:
 
-- **new source files no node covers** — code nobody mapped;
-- **deleted source files the graph still anchors on** — pointers into code that is gone.
+- **source files no node covers** — code nobody mapped, whether this change added it or only
+  touched it;
+- **deleted source files the graph still anchors on** — pointers into code that is gone;
+- **mapped files whose contents no longer match the digest recorded when the graph was built**
+  (SCHEMA.md §6.3) — the anchor still resolves, so nothing else notices, but the description may no
+  longer fit.
 
 They **never block**. Exit status is always 0.
+
+### Why the third one exists
+
+The first two versions of this check read only git's `A` and `D` status letters. A real change set
+is mostly `M`, so the check was silent through exactly the drift that accumulates: on one repo it
+would have named the 27 new files and said nothing about the 47 modified ones — two thirds of a
+graph that had fallen 48 commits behind. The `source` table of digests was written on every build
+and read by neither hook.
+
+Digests are read out of git, never off disk: the index (`:path`) at commit time, the pushed tips at
+push time. A push of a branch that is not checked out would otherwise be compared against whatever
+happens to be in the working tree. A file with no recorded baseline is not reported — absent
+evidence reads as "no baseline", never as "unchanged".
 
 ## Two hooks, because they answer at different moments
 
@@ -54,7 +71,7 @@ hooks dir**, with no path back to the plugin. It works anywhere Python 3 + git e
 
 ## Install
 
-Use `/codebase-kg:install-hooks` (agent-guided — handles the cases below), or by hand:
+Use `/codebase-kg:setup` (agent-guided — handles the cases below), or by hand:
 
 **Fresh repo (no existing hooks):**
 ```sh
@@ -84,5 +101,9 @@ Same rules as the in-session hook: files under the graph's `root`, excluding doc
 (`.md`, `.json`, `.yaml`, …) and ignored directories (`.git`, `node_modules`, `build`, `Pods`,
 `DerivedData`, …). The graph file itself never triggers it.
 
-A modification to an already-mapped file is deliberately *not* reported — that would fire on every
-push and mean nothing. Description drift is what `kg_validate` and `kg-audit` are for.
+A modification to an already-mapped file is reported only when its bytes no longer match the digest
+recorded at build time. The status letter alone is not the signal — reporting every `M` would fire on
+every push and mean nothing, which is why an earlier version reported none of them and went silent
+through most of the drift instead. The digest is what makes the difference between "this file was
+touched" and "this file is no longer what the description was written against". Judging whether the
+description still fits is still `kg_validate` and `kg-audit`; this only says where to look.

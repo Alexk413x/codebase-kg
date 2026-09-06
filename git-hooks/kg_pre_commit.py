@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """codebase-kg staleness check over the STAGED change set. Advisory.
 
-The same question `kg_pre_push.py` asks, asked one step earlier: does this
-change add source no node covers, or delete source the graph still anchors on?
+The same questions `kg_pre_push.py` asks, asked one step earlier: does this
+change touch source no node covers, delete source the graph still anchors on, or
+rewrite a mapped file past the digest its description was written against?
 Finding out at commit is worth more than finding out at push, because the commit
 that needs the graph update is still the one in front of you.
+
+Digests come from the index (`:path`), not the working tree — the staged bytes
+are what the commit will contain, and they are what the comparison has to use.
 
 It does NOT refresh anything, and cannot. `/codebase-kg:refresh` maps changed
 files to nodes, hands a JSON diff to a person to read, and decides what to add,
@@ -32,7 +36,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from kg_pre_push import (  # noqa: E402
-    _emit, _git, analyze, find_graph_rel, load_config, read_graph,
+    _emit, _git, analyze, digests_for, drift_candidates, find_graph_rel,
+    load_config, read_graph,
 )
 
 
@@ -63,23 +68,28 @@ def main() -> int:
     graph_rel = find_graph_rel(repo, cfg)
     if graph_rel is None:
         return 0
-    loaded = read_graph(repo / graph_rel)
-    if loaded is None:
+    graph = read_graph(repo / graph_rel)
+    if graph is None:
         return 0
-    graph_root, anchored, covers, exempt = loaded
-    root = (cfg.get("root") or graph_root).replace("\\", "/").strip("/")
+    root = (cfg.get("root") or graph.root).replace("\\", "/").strip("/")
 
     changed = staged_files()
     if not changed:
         return 0
-    unmapped, deleted = analyze(changed, root, graph_rel, anchored, covers, exempt)
-    if unmapped or deleted:
-        _emit(unmapped, deleted, graph_rel)
-        # `_emit` is the vendored pre-push wording and says "your push is going
-        # through". Say which change set this actually was, rather than editing
-        # a file that has to stay byte-identical to upstream.
-        print("[codebase-kg]   (staged changes; the commit is going through.)",
-              file=sys.stderr)
+    candidates = drift_candidates(
+        changed, root, graph_rel, graph.anchored, graph.covers, graph.exempt
+    )
+    # `""` as the rev means the index: `:path` is the staged blob.
+    current = digests_for(candidates, [""]) if candidates else {}
+    findings = analyze(
+        changed, root, graph_rel, graph.anchored, graph.covers, graph.exempt,
+        graph.baselines, current,
+    )
+    if any(findings):
+        # `_emit` takes the action, so the header names this change set rather
+        # than a push that is not happening. The correcting line that used to be
+        # printed here is gone with the thing it corrected.
+        _emit(findings, graph_rel, action="commit")
         print("[codebase-kg]   Skip this check with SKIP_KG=1.", file=sys.stderr)
     return 0  # advisory, always
 

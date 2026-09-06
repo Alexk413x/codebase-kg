@@ -208,3 +208,59 @@ def test_export_cli_reports_a_missing_graph(
 ) -> None:
     assert export.main([str(tmp_path / "nope.db")]) == 1
     assert "no code graph" in capsys.readouterr().err
+
+
+# --- a document that silently produced a rootless graph ----------------------
+# Nesting the meta fields is the natural guess, and it used to build cleanly:
+# unknown scalars are carried into `extra` and anything structured was skipped,
+# so the block was dropped whole. Anchors are stored relative to `root`, so the
+# result was a graph whose every path comparison in the hooks missed.
+NESTED = {
+    "meta": {"codebase": "x", "root": "src", "generated": "2026-09-06"},
+    "nodes": [{"id": "a", "kind": "K", "description": "A thing.", "anchors": [], "edges": []}],
+}
+
+
+def test_meta_nested_under_a_meta_object_is_refused() -> None:
+    with pytest.raises(codec.DecodeError) as exc:
+        codec.from_dict(NESTED)
+    assert "top level" in str(exc.value)
+
+
+def test_the_refusal_names_the_fields_to_move() -> None:
+    """The author is an agent that just generated the file; the message has to
+    be enough to fix it without a second attempt."""
+    with pytest.raises(codec.DecodeError) as exc:
+        codec.from_dict(NESTED)
+    message = str(exc.value)
+    for field in ("codebase", "root", "generated"):
+        assert field in message
+
+
+def test_the_build_cli_refuses_it_too(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    """The path that actually shipped the bad graph."""
+    doc = tmp_path / "doc.json"
+    doc.write_text(json.dumps(NESTED), encoding="utf-8")
+    out = tmp_path / "code_graph.db"
+    assert build_cli.main([str(doc), "-o", str(out)]) == 1
+    assert "top level" in capsys.readouterr().err
+    assert not out.exists(), "a refused document must write nothing"
+
+
+def test_an_unknown_structured_key_is_named_rather_than_dropped() -> None:
+    with pytest.raises(codec.DecodeError) as exc:
+        codec.from_dict({"codebase": "x", "settings": {"a": 1}, "nodes": []})
+    assert "settings" in str(exc.value)
+
+
+def test_unknown_scalars_are_still_carried_as_config() -> None:
+    """The permissive behaviour for scalars is deliberate and stays."""
+    meta, _, _ = codec.from_dict({"codebase": "x", "team": "platform", "nodes": []})
+    assert meta.extra["team"] == "platform"
+
+
+def test_comment_keys_are_still_ignored() -> None:
+    """The authoring template uses `_`-prefixed keys as comments, including
+    structured ones — they must not trip the new check."""
+    meta, _, _ = codec.from_dict({"codebase": "x", "_note": {"why": "a comment"}, "nodes": []})
+    assert "_note" not in meta.extra
