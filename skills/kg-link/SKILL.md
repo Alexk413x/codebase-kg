@@ -2,22 +2,35 @@
 name: kg-link
 description: This skill should be used when the user asks to "link two code graphs", "set up parity between iOS and Android", "find feature gaps between the apps", "add counterpart links", "map parity across codebases", or wants to track what matches/diverges between a codebase and its port (both repos must have a code_graph.db and be readable). It reads BOTH codebases' graphs and source, then sets reciprocal counterpart + parity + divergence fields. (For single-codebase work use kg-build / kg-refresh.)
 allowed-tools:
+  # Both names the host gives the server: bare when the MCP server is installed
+  # directly, prefixed when it arrives as a plugin.
   - mcp__codebase-kg__kg_parity_gaps
   - mcp__codebase-kg__kg_validate
   - mcp__codebase-kg__kg_node
   - mcp__codebase-kg__kg_search
   - mcp__codebase-kg__kg_stats
+  - mcp__codebase-kg__kg_upsert_node
+  - mcp__codebase-kg__kg_add_link
+  - mcp__codebase-kg__kg_remove_link
+  - mcp__codebase-kg__kg_find_by_link
+  - mcp__plugin_codebase-kg_codebase-kg__kg_parity_gaps
+  - mcp__plugin_codebase-kg_codebase-kg__kg_validate
+  - mcp__plugin_codebase-kg_codebase-kg__kg_node
+  - mcp__plugin_codebase-kg_codebase-kg__kg_search
+  - mcp__plugin_codebase-kg_codebase-kg__kg_stats
+  - mcp__plugin_codebase-kg_codebase-kg__kg_upsert_node
+  - mcp__plugin_codebase-kg_codebase-kg__kg_add_link
+  - mcp__plugin_codebase-kg_codebase-kg__kg_remove_link
+  - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_link
   - Read
   - Grep
   - Glob
   - Bash(git ls-files:*)
   - Bash(python -m codebase_kg.export:*)
   - Bash(python -m codebase_kg.build:*)
-  - mcp__codebase-kg__kg_upsert_node
-  - mcp__codebase-kg__kg_add_link
-  - mcp__codebase-kg__kg_remove_link
   - Write
   - Edit
+  - Bash(rm:*)
 ---
 
 # kg-link — cross-codebase parity (counterpart linking)

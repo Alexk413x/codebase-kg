@@ -38,14 +38,21 @@ Run `git config core.hooksPath`:
 - **Unset** → use `.githooks/` and run `git config core.hooksPath .githooks` (the shareable pattern;
   `.git/hooks/` is not committed, so other clones wouldn't get it).
 
-### 4. Vendor the checker
-Copy `${CLAUDE_PLUGIN_ROOT}/git-hooks/kg_pre_push.py` into the hooks dir. It is **stdlib-only**
-(sqlite3 included), so it runs for every clone and CI with no plugin install.
+### 4. Vendor both checkers
+Copy **`${CLAUDE_PLUGIN_ROOT}/git-hooks/kg_pre_push.py` and
+`${CLAUDE_PLUGIN_ROOT}/git-hooks/kg_pre_commit.py`** into the hooks dir. They are **stdlib-only**
+(sqlite3 included), so they run for every clone and CI with no plugin install.
+
+Copy both regardless of which hooks the repo already has. `kg_pre_commit.py` imports the coverage
+and digest rules from `kg_pre_push.py` beside it rather than repeating them, so the two must land
+together — and step 5 wires a call to it in either branch. An earlier version of this command copied
+it only in the fresh-repo branch, so a repo with an existing `pre-commit` got a hook line pointing at
+a file that was never installed; `|| true` swallowed the error and the check silently never ran while
+step 9 reported it as live.
 
 ### 5. Wire the `pre-commit`
 - **No existing `pre-commit`** → copy `${CLAUDE_PLUGIN_ROOT}/git-hooks/pre-commit` into the hooks
-  dir; `chmod +x` it. Copy `kg_pre_commit.py` beside `kg_pre_push.py`; it imports the coverage rule
-  from it rather than repeating it.
+  dir; `chmod +x` it.
 - **Existing `pre-commit`** → **do not overwrite it.** Add these lines near the top:
   ```sh
   [ -n "$SKIP_KG" ] || {

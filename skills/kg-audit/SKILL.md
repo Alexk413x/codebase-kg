@@ -1,20 +1,31 @@
 ---
 name: kg-audit
 description: >-
-  This skill should be used when the user asks to "audit the code graph", "check the KG against the source", "is the graph accurate", "find stale or inaccurate nodes", or wants a source-vs-graph verification sweep. It is the deep, SEMANTIC, multi-agent sweep: it partitions the graph, verifies each node's anchors and claims against current source, and reports STALE / MISSING / INACCURATE — advisory output, no edits. (For the fast, deterministic check, use kg-validate instead; to actually fix what the audit finds, use kg-refresh.)
+  This skill should be used when the user asks to "audit the code graph", "is the graph telling the truth", "are the descriptions still accurate", "find stale or inaccurate nodes", or wants a source-vs-graph verification sweep. It is the deep, SEMANTIC, multi-agent sweep: it partitions the graph, verifies each node's anchors and claims against current source, and reports STALE / MISSING / INACCURATE — advisory output, no edits. (For the fast, deterministic check, use kg-validate instead; to actually fix what the audit finds, use kg-refresh.)
 allowed-tools:
+  # Both names the host gives the server: bare when the MCP server is installed
+  # directly, prefixed when it arrives as a plugin.
   - mcp__codebase-kg__kg_stats
   - mcp__codebase-kg__kg_node
   - mcp__codebase-kg__kg_search
   - mcp__codebase-kg__kg_find_by_kind
   - mcp__codebase-kg__kg_find_by_path
   - mcp__codebase-kg__kg_validate
+  - mcp__codebase-kg__kg_neighborhood
+  - mcp__plugin_codebase-kg_codebase-kg__kg_stats
+  - mcp__plugin_codebase-kg_codebase-kg__kg_node
+  - mcp__plugin_codebase-kg_codebase-kg__kg_search
+  - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_kind
+  - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_path
+  - mcp__plugin_codebase-kg_codebase-kg__kg_validate
+  - mcp__plugin_codebase-kg_codebase-kg__kg_neighborhood
   - Read
   - Grep
   - Glob
   - Bash(git ls-files:*)
   - Bash(python -m codebase_kg.export:*)
   - Task
+  - Bash(rm:*)
 ---
 
 # kg-audit — source-vs-graph accuracy sweep (advisory)

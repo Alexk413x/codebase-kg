@@ -16,7 +16,7 @@ structure. Rebuilding from scratch throws that away.
 2. Scope: if `$ARGUMENTS` names a path/subsystem, build just that; otherwise the whole `root`.
 3. **Invoke the `kg-build` skill** and follow its workflow (survey → derive symbol-anchored nodes →
    author the JSON → `python -m codebase_kg.build` → `kg_validate`).
-4. Add `knowledge/code_graph.db binary` to `.gitattributes` and commit the graph.
+4. Add `*.db binary diff=codegraph` and `code_graph.db binary diff=codegraph` to `.gitattributes`, then commit the graph. The `diff=codegraph` half is what makes it reviewable once a clone runs `/codebase-kg:setup`.
 
 Posture: source-derived, symbol anchors only (never line numbers), point-don't-copy. Descriptions
 are one line about what a thing is and does — no ticket ids, no dates, no change narrative (the

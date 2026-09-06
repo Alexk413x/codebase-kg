@@ -1,7 +1,9 @@
 ---
 name: kg-refresh
-description: This skill should be used when the user asks to "refresh the code graph", "update the KG", "re-sync code_graph.db with the code", "the graph is stale", or after shipping a feature when the graph should reflect new/changed/deleted code. It comprehensively re-derives the affected nodes against current source and rebuilds the committed database. (For a from-scratch graph use kg-build; for a read-only drift report use kg-audit or kg-validate.)
+description: This skill should be used when the user asks to "refresh the code graph", "update the KG", "re-sync code_graph.db with the code", "the graph is stale", after shipping a feature when the graph should reflect new/changed/deleted code, or after a codebase-kg pre-commit/pre-push staleness message naming unmapped, deleted-but-anchored, or digest-drifted files. It comprehensively re-derives the affected nodes against current source and rebuilds the committed database. This skill WRITES. (For a from-scratch graph use kg-build; for a read-only report of what is stale without changing anything, use kg-audit or kg-validate.)
 allowed-tools:
+  # Both names the host gives the server: bare when the MCP server is installed
+  # directly, prefixed when it arrives as a plugin.
   - mcp__codebase-kg__kg_validate
   - mcp__codebase-kg__kg_stats
   - mcp__codebase-kg__kg_search
@@ -11,6 +13,17 @@ allowed-tools:
   - mcp__codebase-kg__kg_delete_node
   - mcp__codebase-kg__kg_add_link
   - mcp__codebase-kg__kg_remove_link
+  - mcp__codebase-kg__kg_neighborhood
+  - mcp__plugin_codebase-kg_codebase-kg__kg_validate
+  - mcp__plugin_codebase-kg_codebase-kg__kg_stats
+  - mcp__plugin_codebase-kg_codebase-kg__kg_search
+  - mcp__plugin_codebase-kg_codebase-kg__kg_node
+  - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_path
+  - mcp__plugin_codebase-kg_codebase-kg__kg_upsert_node
+  - mcp__plugin_codebase-kg_codebase-kg__kg_delete_node
+  - mcp__plugin_codebase-kg_codebase-kg__kg_add_link
+  - mcp__plugin_codebase-kg_codebase-kg__kg_remove_link
+  - mcp__plugin_codebase-kg_codebase-kg__kg_neighborhood
   - Read
   - Grep
   - Glob
@@ -21,6 +34,7 @@ allowed-tools:
   - Bash(python -m codebase_kg.build:*)
   - Write
   - Edit
+  - Bash(rm:*)
 ---
 
 # kg-refresh — re-derive the graph against current source
@@ -79,16 +93,23 @@ write-tool call silently reverts that call, and the result looks like a clean re
 ### 1. Scope the change set
 Determine what changed since the graph was last built:
 
-- `git diff --name-only <since>...HEAD`, where `<since>` is a commit near the graph's `generated`
-  date (`kg_stats` reports it), or `git log --since=<generated>`. If unsure, scope to the user's
-  named feature.
+- **If a pre-commit or pre-push staleness message brought you here, start from its three lists.**
+  They are already scoped and categorized: source no node covers (`+`), deleted files the graph still
+  anchors on (`-`), and mapped files whose contents no longer match the digest recorded at build time
+  (`~` — the anchor still resolves, the description may not; `SCHEMA.md` §6.3). Each list caps at 15
+  entries, so re-derive with `git diff` only when one says "and N more".
+- Otherwise: `git diff --name-only <since>...HEAD`, where `<since>` is a commit near the graph's
+  `generated` date (`kg_stats` reports it), or `git log --since=<generated>`. If unsure, scope to the
+  user's named feature.
 - Map changed files → owning nodes with **`kg_find_by_path`** (that is what it is for), falling back
   to `kg_search` for concepts.
 
 ### 2. Re-derive each affected node
 For every changed file / feature, **read the current source** and reconcile its node:
 
-- **Added** files/units → **add** a node (schema shape; grep-confirmed `path#Symbol` anchors).
+- **Unmapped** files/units — newly added, or long-present and never mapped → **add** a node (schema
+  shape; grep-confirmed `path#Symbol` anchors). Not only the newly added ones: a file created ten
+  commits ago and never covered is reported by the hooks and is exactly as much of a hole.
 - **Changed** units → **edit** the node: fix `anchors` (symbols added/renamed/removed), rewrite the
   `description` to current behavior, update `edges`.
 - **Deleted/renamed** units → **remove** or **rename** the node and fix every `edges` entry that

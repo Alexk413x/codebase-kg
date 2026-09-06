@@ -137,7 +137,7 @@ codebase-kg/
 │   ├── code_graph.template.json
 │   └── codebase-kg.local.md.example
 ├── .mcp.json                 # registers the codebase-kg MCP server (uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp)
-├── commands/                 # /codebase-kg:build|refresh|audit|link|validate|setup (thin → skills)
+├── commands/                 # /codebase-kg:build|refresh|audit|link|validate → skills; setup is inline
 ├── skills/                   # kg-build / kg-refresh / kg-audit / kg-link / kg-validate
 ├── mcp/                      # the query server + build/export/migrate CLIs (uvx-run Python)
 ├── hooks/                    # Claude Code hooks: the search gate + the post-edit nudge

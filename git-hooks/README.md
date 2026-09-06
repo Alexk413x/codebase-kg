@@ -101,5 +101,9 @@ Same rules as the in-session hook: files under the graph's `root`, excluding doc
 (`.md`, `.json`, `.yaml`, …) and ignored directories (`.git`, `node_modules`, `build`, `Pods`,
 `DerivedData`, …). The graph file itself never triggers it.
 
-A modification to an already-mapped file is deliberately *not* reported — that would fire on every
-push and mean nothing. Description drift is what `kg_validate` and `kg-audit` are for.
+A modification to an already-mapped file is reported only when its bytes no longer match the digest
+recorded at build time. The status letter alone is not the signal — reporting every `M` would fire on
+every push and mean nothing, which is why an earlier version reported none of them and went silent
+through most of the drift instead. The digest is what makes the difference between "this file was
+touched" and "this file is no longer what the description was written against". Judging whether the
+description still fits is still `kg_validate` and `kg-audit`; this only says where to look.
