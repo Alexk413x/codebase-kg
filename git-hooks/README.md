@@ -1,17 +1,36 @@
-# git-hooks/ — pre-push code-graph staleness check
+# git-hooks/ — code-graph staleness checks
 
-An **advisory, vendorable** git pre-push hook. It compares the commits you are about to push against
-the committed `knowledge/code_graph.db` and reports two things:
+**Advisory, vendorable** git hooks. They compare a change set against the committed
+`knowledge/code_graph.db` and report two things:
 
 - **new source files no node covers** — code nobody mapped;
 - **deleted source files the graph still anchors on** — pointers into code that is gone.
 
-It **never blocks**. Exit status is always 0, so there is no `--no-verify` to remember.
+They **never block**. Exit status is always 0.
+
+## Two hooks, because they answer at different moments
+
+`pre-commit` checks what is **staged**. This is the one that catches things: the commit that needs
+the graph update is still in front of you, and staged-against-HEAD is a comparison that is always
+available.
+
+`pre-push` checks the commits being **pushed**, against the upstream branch. That range is empty
+once you have pushed — so the check goes quiet at precisely the moment someone thinks to look at it.
+It is still worth having for the commits it does see, but it is not the one to rely on.
+
+Neither runs `/codebase-kg:refresh`, and neither can. Refresh maps changed files to nodes, hands a
+JSON diff to a person to read, and decides what to add, edit or remove. A shell hook has no way to
+make those calls, and one that wrote its own guess into the graph would be manufacturing knowledge
+rather than recording it. The hooks say the graph needs attention; a person or an agent refreshes it.
+
+`SKIP_KG=1` silences the commit-time check when a change deliberately outruns the graph.
 
 | File | Role |
 |---|---|
 | `kg_pre_push.py` | The check — **stdlib only** (sqlite3 included), **no codebase-kg dependency**, so it vendors into any repo. Reads `root` from the committed graph's `meta` table (auto-discovers the graph; an optional, gitignored `.claude/codebase-kg.local.md` may override). No committed config file required. |
 | `pre-push` | Thin `sh` wrapper that runs `kg_pre_push.py` next to it. |
+| `kg_pre_commit.py` | The same check over the staged change set. Imports the coverage rule from `kg_pre_push.py` rather than repeating it, so there is one implementation to keep in step with `codebase_kg/coverage.py`. |
+| `pre-commit` | Thin `sh` wrapper, honouring `SKIP_KG`. |
 
 ## Why it doesn't block any more
 
@@ -42,7 +61,9 @@ Use `/codebase-kg:install-hooks` (agent-guided — handles the cases below), or 
 mkdir -p .githooks
 cp "$PLUGIN/git-hooks/kg_pre_push.py" .githooks/
 cp "$PLUGIN/git-hooks/pre-push" .githooks/
-chmod +x .githooks/pre-push
+cp "$PLUGIN/git-hooks/kg_pre_commit.py" .githooks/
+cp "$PLUGIN/git-hooks/pre-commit" .githooks/
+chmod +x .githooks/pre-push .githooks/pre-commit
 git config core.hooksPath .githooks
 ```
 
