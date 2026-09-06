@@ -77,6 +77,15 @@ def from_dict(doc: Any) -> tuple[Meta, list[Node], dict[str, str]]:
         covers=_str_list(doc, "covers", "meta"),
         exempt=_str_list(doc, "exempt", "meta"),
     )
+    # Nested meta used to build cleanly into a graph with no root, which makes
+    # every anchor comparison in the hooks miss silently.
+    if isinstance(doc.get("meta"), dict):
+        raise DecodeError(
+            "`meta` fields belong at the top level, not nested under a `meta` object — "
+            "move codebase / root / generated / language / counterpart / covers / exempt "
+            "up one level, beside `nodes`"
+        )
+
     extra = doc.get("extra")
     if isinstance(extra, dict):
         meta.extra = {str(k): str(v) for k, v in extra.items()}
@@ -88,6 +97,14 @@ def from_dict(doc: Any) -> tuple[Meta, list[Node], dict[str, str]]:
             continue
         if isinstance(value, (str, int, float)):
             meta.extra.setdefault(str(key), str(value))
+        else:
+            # A structured value cannot become an `extra` string; dropping it
+            # silently is how the nested-meta case hid.
+            raise DecodeError(
+                f"`{key}` is not a known top-level key and its value is not a scalar, "
+                "so it cannot be carried as config — remove it, or move its contents "
+                "to the keys they belong to"
+            )
 
     raw_sources = doc.get("sources")
     sources: dict[str, str] = {}

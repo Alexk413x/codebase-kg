@@ -190,6 +190,43 @@ def test_a_path_git_cannot_resolve_yields_no_entry(
     assert g.digests_for(["src/ui/Ghost.kt"], ["HEAD"]) == {}
 
 
+# --- the report names the change set it is about -----------------------------
+def test_the_commit_report_never_announces_a_push(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_emit` is shared with the push hook and used to hardcode "your push is
+    going through", corrected by a line printed underneath — so every commit
+    report contradicted its own header two lines later."""
+    (repo / "src" / "ui" / "Known.kt").write_bytes(REWRITTEN)
+    _git(repo, "add", "-A")
+    err = _run_commit_hook(repo, monkeypatch)
+    assert "your commit is going through" in err
+    assert "staged changes" in err
+    assert "push" not in err.lower(), f"commit report mentions a push:\n{err}"
+
+
+def test_the_push_report_still_says_push(capsys: pytest.CaptureFixture[str]) -> None:
+    """The default action is unchanged, so the push hook — which does not pass
+    one — keeps its own wording."""
+    g._emit(g.Findings(unmapped=["src/ui/New.kt"], deleted=[], drifted=[]), "code_graph.db")
+    err = capsys.readouterr().err
+    assert "your push is going through" in err
+    assert "commits being pushed" in err
+    assert "commit is going through" not in err
+
+
+def test_every_findings_bucket_reaches_the_report(capsys: pytest.CaptureFixture[str]) -> None:
+    """Adding the drift bucket to `Findings` is worth nothing if `_emit` drops
+    it — the two are edited in different places."""
+    g._emit(
+        g.Findings(unmapped=["a/New.kt"], deleted=["a/Gone.kt"], drifted=["a/Changed.kt"]),
+        "code_graph.db",
+    )
+    err = capsys.readouterr().err
+    assert "a/New.kt" in err and "a/Gone.kt" in err and "a/Changed.kt" in err
+    assert "changed since" in err
+
+
 # --- posture -----------------------------------------------------------------
 def test_a_graph_with_no_baselines_reports_no_drift(
     repo: Path, monkeypatch: pytest.MonkeyPatch

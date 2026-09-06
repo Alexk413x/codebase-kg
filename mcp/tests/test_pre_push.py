@@ -170,6 +170,27 @@ def test_drift_candidates_are_the_mapped_in_scope_non_deletions() -> None:
     assert got == ["src/ui/Known.kt"]
 
 
+@pytest.mark.parametrize(
+    ("changed", "bucket"),
+    [
+        ([("A", "src/ui/Known.kt"), ("M", "src/ui/Known.kt")], "drifted"),
+        ([("A", "src/ui/Brand.kt"), ("M", "src/ui/Brand.kt")], "unmapped"),
+        ([("D", "src/ui/Known.kt"), ("D", "src/ui/Known.kt")], "deleted"),
+    ],
+)
+def test_a_path_is_reported_once_however_many_statuses_it_has(
+    changed: list[tuple[str, str]], bucket: str
+) -> None:
+    """A push spanning several commits reports one path under more than one
+    status. Counting it twice makes the header wrong — a real push of one
+    modified file announced "2 mapped file(s)" and listed it twice."""
+    f = g.analyze(
+        changed, "src", None, ANCHORED,
+        baselines=BASELINES, current={"src/ui/Known.kt": "c" * 64},
+    )
+    assert getattr(f, bucket) == [changed[0][1]]
+
+
 def test_drift_candidates_deduplicates() -> None:
     """A rename splits into D+A on the same path pair; a multi-ref push unions
     change sets. Hashing the same blob twice is pure waste."""

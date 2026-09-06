@@ -86,12 +86,10 @@ def main() -> int:
         graph.baselines, current,
     )
     if any(findings):
-        _emit(findings, graph_rel)
-        # `_emit` is the vendored pre-push wording and says "your push is going
-        # through". Say which change set this actually was, rather than editing
-        # a file that has to stay byte-identical to upstream.
-        print("[codebase-kg]   (staged changes; the commit is going through.)",
-              file=sys.stderr)
+        # `_emit` takes the action, so the header names this change set rather
+        # than a push that is not happening. The correcting line that used to be
+        # printed here is gone with the thing it corrected.
+        _emit(findings, graph_rel, action="commit")
         print("[codebase-kg]   Skip this check with SKIP_KG=1.", file=sys.stderr)
     return 0  # advisory, always
 

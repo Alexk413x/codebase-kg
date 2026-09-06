@@ -107,7 +107,7 @@ def test_the_reported_build_command_runs_outside_the_plugin(tmp_path: Path) -> N
     string would have passed while the instruction stayed unrunnable."""
     doc = tmp_path / "doc.json"
     doc.write_text(
-        '{"meta": {"codebase": "smoke", "root": "src", "generated": "2026-09-06"},'
+        '{"codebase": "smoke", "root": "src", "generated": "2026-09-06",'
         ' "nodes": [{"id": "a", "kind": "K", "description": "A thing.",'
         ' "section": "S", "anchors": [], "edges": []}]}',
         encoding="utf-8",
@@ -127,7 +127,7 @@ def test_the_module_forms_still_work_inside_the_checkout(tmp_path: Path) -> None
     you are working in the plugin's own repo, which is where its tests run."""
     doc = tmp_path / "doc.json"
     doc.write_text(
-        '{"meta": {"codebase": "smoke", "root": "", "generated": "2026-09-06"},'
+        '{"codebase": "smoke", "root": "", "generated": "2026-09-06",'
         ' "nodes": [{"id": "a", "kind": "K", "description": "A thing.",'
         ' "section": "S", "anchors": [], "edges": []}]}',
         encoding="utf-8",

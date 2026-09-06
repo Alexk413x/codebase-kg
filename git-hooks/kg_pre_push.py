@@ -510,7 +510,9 @@ def analyze(
             base, now = baselines.get(key), current.get(rel)
             if base and now and base != now:
                 drifted.append(rel)
-    return Findings(unmapped, deleted, drifted)
+    # A push spanning several commits reports one path under more than one
+    # status, so the same file reaches a bucket twice and the count doubles.
+    return Findings(*(list(dict.fromkeys(b)) for b in (unmapped, deleted, drifted)))
 
 
 def _block(msg: list[str], files: list[str], heading: str, marker: str) -> None:
@@ -523,10 +525,20 @@ def _block(msg: list[str], files: list[str], heading: str, marker: str) -> None:
     msg.append("[codebase-kg]")
 
 
-def _emit(findings: Findings, graph_rel: str) -> None:
+def _emit(findings: Findings, graph_rel: str, action: str = "push") -> None:
+    """Report the findings on stderr.
+
+    `action` names the change set being reported on. It is a parameter because
+    this function is shared with the commit hook: hardcoding "push" made that
+    hook announce a push that was not happening, and the fix at the time was a
+    correcting line printed underneath — so every commit-time report contradicted
+    its own header two lines later.
+    """
     unmapped, deleted, drifted = findings
+    scope = "staged changes" if action == "commit" else "commits being pushed"
     msg = [
-        "[codebase-kg] Code-graph staleness check (advisory — your push is going through).",
+        f"[codebase-kg] Code-graph staleness check on the {scope} "
+        f"(advisory - your {action} is going through).",
         "[codebase-kg]",
     ]
     if deleted:
@@ -537,7 +549,7 @@ def _emit(findings: Findings, graph_rel: str) -> None:
         _block(
             msg,
             drifted,
-            f"{len(drifted)} mapped file(s) changed since {graph_rel} was built — "
+            f"{len(drifted)} mapped file(s) changed since {graph_rel} was built - "
             "the anchors still resolve, the descriptions may not:",
             "~",
         )
