@@ -42,6 +42,27 @@ and the build path cannot drift on how a node is indexed or how a new file lands
 moved to `tools.open_peer`, because a write judged by a validation run that skipped the peer would
 accept the one thing that check exists to catch.
 
+### Added — the staleness check runs at commit, not only at push
+
+`pre-push` compares against the upstream branch. Once you have pushed, that range is empty and the
+check reports nothing — which is exactly when someone thinks to look at it. A repo can drift a whole
+session's work past the graph and be told nothing at any point.
+
+`pre-commit` asks the same question of the staged change set. Staged-against-HEAD is a comparison
+that is always available, and the commit needing the graph update is still the one in front of you.
+
+`kg_pre_commit.py` imports the coverage rule from `kg_pre_push.py` rather than repeating it, so there
+is one implementation to keep in step with `codebase_kg/coverage.py`.
+
+**Neither hook refreshes, and neither can.** `/codebase-kg:refresh` maps changed files to nodes,
+hands a JSON diff to a person to read, and decides what to add, edit or remove. A shell hook has no
+way to make those calls, and one that wrote its own guess into the graph would be manufacturing
+knowledge rather than recording it. The hooks say the graph needs attention; a person refreshes it.
+
+Advisory and never blocking, like the hook beside it — a gate that stops a commit gets bypassed with
+`--no-verify` and then ignored. On by default, silenced with `SKIP_KG=1` when a change deliberately
+outruns the graph.
+
 ### Fixed — `root: "."` silenced both hooks while the graph validated clean
 
 A graph whose `meta.root` was `.` rather than the empty string disabled the post-edit nudge and the
