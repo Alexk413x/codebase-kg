@@ -37,7 +37,7 @@ These are locked — change them only with a deliberate reason.
 |---|---|---|
 | **Storage format** | Committed SQLite (`code_graph.db`) | Constant-time open, write-time integrity, persisted FTS5. Supersedes "Markdown-as-source". |
 | **Human readability** | Explicitly a non-goal | The artifact is AI-consumed. It is not read raw and not reviewed in diffs. |
-| **Plugin name** | `codebase-kg` | Unchanged **on purpose** — see "The rename we didn't do". Commands `/codebase-kg:build\|refresh\|audit\|link\|validate\|install-hooks`; MCP server `codebase-kg`. |
+| **Plugin name** | `codebase-kg` | Unchanged **on purpose** — see "The rename we didn't do". Commands `/codebase-kg:build\|refresh\|audit\|link\|validate\|setup`; MCP server `codebase-kg`. |
 | **MCP tool names** | `kg_*` | Unchanged, same reason. |
 | **Repo layout** | Standalone plugin at root | `plugin.json` at root + a thin `marketplace.json` so it installs. |
 | **Graph location** | Per-repo `knowledge/code_graph.db` | Always `knowledge/` (no repo-root fallback); override per clone via `graph_path` in `.local.md`. |

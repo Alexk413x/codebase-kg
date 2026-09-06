@@ -33,6 +33,14 @@ post_edit_nudge: true
 # Nudge once per this many edits to already-mapped source files. (A file that no node covers is
 # reported the first time you touch it, regardless of this.)
 nudge_every: 5
+
+# The search gate: the first Grep/Glob of a session is denied with instructions to query the graph
+# first, then it stands down for that session. `warn` sends the message without denying; `off`
+# disables it. SKIP_KG=1 in the environment silences it for one shell.
+search_gate: block
+
+# Also treat a shell `grep`/`rg`/`find -name` as a search. Set false to gate only the search tools.
+gate_shell_search: true
 ---
 
 # codebase-kg — local config

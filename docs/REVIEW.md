@@ -15,7 +15,7 @@ $ git diff -- knowledge/code_graph.db
 Binary files a/knowledge/code_graph.db and b/knowledge/code_graph.db differ
 ```
 
-With the textconv driver configured (`/codebase-kg:setup-diff`):
+With the textconv driver configured (`/codebase-kg:setup`):
 
 ```diff
 $ git diff -- knowledge/code_graph.db
@@ -68,7 +68,7 @@ mechanical step rather than a judgement call about binary content.
 
 It was considered and rejected. Committing `.kg-export.json` and generating the `.db`
 via a `post-merge`/`post-checkout` hook gives real three-way merges — but hooks
-do not run in CI, do not run for anyone who skips `/codebase-kg:install-hooks`,
+do not run in CI, do not run for anyone who skips `/codebase-kg:setup`,
 and do not run on a plain `git archive` export. The MCP server needs the `.db`
 on disk, so a missed rebuild is not a degraded experience, it is dead tooling
 that fails at the moment someone is trying to get oriented.

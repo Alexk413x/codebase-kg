@@ -1,4 +1,4 @@
-"""`/codebase-kg:setup-diff` end to end, driven by real git.
+"""`/codebase-kg:setup` end to end, driven by real git.
 
 The exporter had unit tests and still shipped broken for the use that matters:
 git spawns the textconv command *itself*, with no shell in between, and reads
@@ -62,7 +62,7 @@ def _graph(path: Path, description: str) -> None:
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    """A repo wired exactly as `/codebase-kg:setup-diff` documents."""
+    """A repo wired exactly as `/codebase-kg:setup` documents."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q")
@@ -133,7 +133,7 @@ def test_the_diff_survives_a_legacy_code_page(repo: Path) -> None:
 
     Git spawns textconv directly — there is no shell to carry a
     `PYTHONIOENCODING=utf-8` prefix — so this has to work with the console
-    encoding hostile, or `/codebase-kg:setup-diff` is broken on Windows.
+    encoding hostile, or `/codebase-kg:setup` is broken on Windows.
     """
     _graph(repo / "knowledge" / "code_graph.db", "Ranks the feed by recency only.")
     out = _git(repo, "diff", "--", "knowledge/code_graph.db", encoding="cp1252")

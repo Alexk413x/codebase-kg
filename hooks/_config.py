@@ -19,6 +19,9 @@ DEFAULTS: dict[str, object] = {
     "graph_path": "knowledge/code_graph.db",
     "post_edit_nudge": True,  # master off-switch for the hook
     "nudge_every": 5,  # nudge once per this many source edits since the graph was touched
+    # The PreToolUse search gate: block | warn | off. See kg_search_gate.py.
+    "search_gate": "block",
+    "gate_shell_search": True,  # also gate grep/rg/find -name run through a shell
     # Generic doc/config exclusions (NOT language detection) — these edits don't
     # imply graph drift. Kept identical to the pre-push gate's EXCLUDE_EXT; the
     # two are asserted equal by test_hook_parity.py, because the copies had

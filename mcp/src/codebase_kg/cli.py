@@ -4,7 +4,7 @@ Every CLI here writes text containing em-dashes, ellipses and arrows — the
 docstrings, the `…and N more` truncation line, the exported JSON. On Windows a
 piped stdout defaults to the ANSI code page (cp1252), which cannot encode any of
 them, so the process died with `UnicodeEncodeError` at the moment it had the
-answer. `/codebase-kg:setup-diff` hit this every time: git's textconv driver
+answer. `/codebase-kg:setup` hit this every time: git's textconv driver
 pipes the exporter's stdout, so the diff of a committed graph was a traceback.
 
 Reconfiguring beats prefixing `PYTHONIOENCODING=utf-8` onto every invocation,

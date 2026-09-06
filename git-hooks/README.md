@@ -54,7 +54,7 @@ hooks dir**, with no path back to the plugin. It works anywhere Python 3 + git e
 
 ## Install
 
-Use `/codebase-kg:install-hooks` (agent-guided — handles the cases below), or by hand:
+Use `/codebase-kg:setup` (agent-guided — handles the cases below), or by hand:
 
 **Fresh repo (no existing hooks):**
 ```sh

@@ -2,6 +2,46 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.4.0] — 2026-09-06 — the graph gets consulted first, and one command wires the repo
+
+### Added — a PreToolUse search gate
+
+`hooks/kg_search_gate.py`. The graph was complete, indexed, committed, and unused: nothing made an
+agent reach for it, so `Grep` re-derived the map every session — slower than the graph, and blind to
+the components a search string does not appear in. Documentation did not fix this, because an
+instruction that competes with a habit loses.
+
+The gate denies the **first** `Grep`, `Glob`, or shell `grep`/`rg`/`fd`/`find -name` of a session,
+with the instruction to query `kg_search` / `kg_node` / `kg_neighborhood` first, then stands down for
+the rest of that session — complied with or not. Any codebase-kg MCP call stands it down too, so an
+agent that already started at the graph never sees it.
+
+Three properties, in this order:
+
+- **It cannot strand an agent.** One interruption per session, spent before the message is emitted so
+  a failure between the two cannot re-gate the next search. A malformed payload, an unreadable graph,
+  or an unwritable state file all fail *open*. No search is permanently blocked: if the graph does
+  not cover it, run it again.
+- **It fires on the search, not the neighbors.** Shell detection is deliberately narrow — a false
+  positive denies unrelated work — so `find` and `Get-ChildItem` count only with a name/path filter,
+  and an ordinary `find . -type d` does not.
+- **It stays out of repos it has no business in.** No graph, `SKIP_KG` set, `search_gate: off`, or a
+  search scoped outside `root` or into an ignored dir, and it is silent.
+
+`search_gate` (`block` | `warn` | `off`) and `gate_shell_search` join the per-dev
+`.claude/codebase-kg.local.md`. `search_gate: off` arrives at the hook as a bool, because the
+frontmatter parser coerces `off` — handled, since the alternative is a setting that reads as unknown
+and silently stays on.
+
+Ships with the plugin. There is nothing to install per repo.
+
+### Changed — `/codebase-kg:setup` replaces `install-hooks` and `setup-diff`
+
+Two commands to wire one repo left the textconv driver reading as optional, and it is not: without it
+`git diff` says "Binary files differ" and a reviewer takes the commit message on faith. One
+idempotent command now does the git hooks, the `.gitattributes` attribute, and the textconv driver,
+and is safe to re-run to repair the wiring.
+
 ## [0.3.0] — 2026-09-06 — write tools, and hooks that actually fire
 
 ### Added — write tools, so a one-field fix is not a whole rebuild
@@ -106,7 +146,7 @@ way to notice. That is the same invisible-disable the frontmatter comment-strip 
 typo costs the setting, not the feature. Falsy still means "unset" — the fix is to the crash, not to
 the semantics.
 
-### `/codebase-kg:setup-diff`, tested through real git
+### `/codebase-kg:setup`, tested through real git
 
 The exporter had unit tests and still shipped broken for the one use that matters, because nothing
 ran it the way git does: git spawns the textconv command itself, with no shell in between, and reads
@@ -171,7 +211,7 @@ stakes are lower — but it remains the one surface with its own notion of "sour
 Descriptions routinely contain `—`, `…` and `→`. On Windows a piped stdout defaults to the ANSI
 code page, which encodes none of them, so the exporter died with `UnicodeEncodeError` *after*
 doing all its work. Git's textconv driver pipes exactly that stdout, which made
-`/codebase-kg:setup-diff` fail on every repo with a committed graph — and the only workaround was
+`/codebase-kg:setup` fail on every repo with a committed graph — and the only workaround was
 prefixing `PYTHONIOENCODING=utf-8`, which git gives you nowhere to put.
 
 New `cli.py`: `use_utf8()` on every CLI entry point, and `write_out()` for the exporter, which
@@ -256,7 +296,7 @@ Two decisions keep it honest:
 
 ### Added — readable diffs for the committed database
 
-`.gitattributes` now marks the graph `diff=codegraph`, and `/codebase-kg:setup-diff` configures a
+`.gitattributes` now marks the graph `diff=codegraph`, and `/codebase-kg:setup` configures a
 textconv driver so `git diff` / `show` / `log -p` render the graph as its JSON export instead of
 `Binary files differ`. What is committed is unchanged; a clone that skips the setup sees the old
 behaviour rather than an error. Merge-conflict resolution via export → merge → rebuild is documented
@@ -404,7 +444,7 @@ JSON round trip, and migration fidelity against the fixtures.
   with the remote default (else every not-yet-remote commit), ref deletions skipped. A manual run
   without stdin falls back to `@{u}...HEAD` / `origin/main|master...HEAD` and **fails loudly** when
   no base exists instead of silently passing. `git-hooks/README.md`, the `pre-push` wrapper, and
-  `/codebase-kg:install-hooks` note the stdin ordering requirement. +8 tests, verified end-to-end
+  `/codebase-kg:setup` note the stdin ordering requirement. +8 tests, verified end-to-end
   against a real repo (existing ref / new branch / deletion / manual run).
 - **Anchor check understands `Type.method` (M1).** `kg_validate` grepped the anchor symbol as one
   literal word, so the SCHEMA-endorsed `File.kt#Type.method` form was false-flagged ("symbol not
@@ -430,7 +470,7 @@ JSON round trip, and migration fidelity against the fixtures.
   `last refreshed` regex gains `(?i)` to match its sibling; the advisory hook's `exclude_ext` now
   matches dotfiles like `.gitignore` (aligned with the pre-push twin); `kg_validate`'s
   `root.strip("/")` no longer mangles roots (trailing slashes only; SCHEMA.md §3 + template now say
-  `root` is repo-relative); `/codebase-kg:install-hooks` references the vendored files via
+  `root` is repo-relative); `/codebase-kg:setup` references the vendored files via
   `${CLAUDE_PLUGIN_ROOT}/git-hooks/…`; `docs/DESIGN.md` stale `/codebase-kg:kg-*` command names
   corrected; dead `_HEADER_KEYS` removed from the loader; `.claude-plugin/plugin.json` gains
   `"version": "0.1.0"` (matching `mcp/pyproject.toml`); `_suggest` sorts by `(-score, id)` so the
@@ -492,7 +532,7 @@ JSON round trip, and migration fidelity against the fixtures.
   `KNOWLEDGE_GRAPH.md` isn't in sync (not in the changeset, or header `refreshed:`/legacy
   `last refreshed` not today). Override: `git push --no-verify`. No dependency on the MCP package, so
   it runs for every clone/CI. The semantic update stays the agent's `/codebase-kg:refresh`.
-- `/codebase-kg:install-hooks` command — agent-guided, non-destructive install (vendors the checker,
+- `/codebase-kg:setup` command — agent-guided, non-destructive install (vendors the checker,
   wires `core.hooksPath`/`pre-push`, integrates into an existing hook rather than overwriting it).
 - +10 tests (35 passing). This is the **enforcement** layer complementing the in-session nudge; the
   two linked repos stay eventually consistent because refresh reconciles parity vs the peer KG.

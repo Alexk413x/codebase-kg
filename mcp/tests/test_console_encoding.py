@@ -4,7 +4,7 @@ Descriptions, progress lines and the exported JSON all carry em-dashes, `…` an
 `→`. On Windows a piped stdout defaults to the ANSI code page, which encodes
 none of them, so `codebase-kg-export` died with UnicodeEncodeError *after* doing
 all the work — and git's textconv driver, which pipes exactly that stdout, made
-`/codebase-kg:setup-diff` fail on every repo with a committed graph.
+`/codebase-kg:setup` fail on every repo with a committed graph.
 
 `PYTHONIOENCODING=cp1252` reproduces it on any platform, so this is a real
 regression test rather than a Windows-only one.

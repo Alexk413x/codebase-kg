@@ -117,7 +117,7 @@ not evidence of anything.
 ### 6. Commit
 Add `knowledge/code_graph.db binary diff=codegraph` to the repo's `.gitattributes`, then commit the
 graph. It is a committed artifact — that is the point of it. The `diff=codegraph` half makes the
-file reviewable once a clone runs `/codebase-kg:setup-diff`; committing the attribute means every
+file reviewable once a clone runs `/codebase-kg:setup`; committing the attribute means every
 clone gets the wiring even though the driver itself is local config.
 
 ### 7. Parity (only if paired)
