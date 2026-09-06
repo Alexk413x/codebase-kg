@@ -133,6 +133,19 @@ def test_a_skill_allows_both_names_the_host_may_give_the_server(skill: Path) -> 
     )
 
 
+@pytest.mark.parametrize("skill", SKILLS, ids=lambda p: p.parent.name)
+def test_a_skill_that_must_ask_for_the_cli_may_call_kg_stats(skill: Path) -> None:
+    """The CLI invocation is only knowable from `kg_stats`'s `cli` field. A skill
+    told to read it, but not permitted to call it, is back to guessing a path it
+    cannot see."""
+    text = skill.read_text(encoding="utf-8")
+    if "read its `cli` field" not in text:
+        pytest.skip("this skill runs no CLI")
+    assert "kg_stats" in allowed_kg_tools(skill), (
+        f"{skill.parent.name} is told to read kg_stats's cli field but may not call kg_stats"
+    )
+
+
 # --- the gate hands off to something that exists -----------------------------
 def test_the_gate_message_names_only_real_tools() -> None:
     """The gate denies a search and tells the agent what to run instead. If that
