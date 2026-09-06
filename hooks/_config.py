@@ -22,6 +22,11 @@ DEFAULTS: dict[str, object] = {
     # The PreToolUse search gate: block | warn | off. See kg_search_gate.py.
     "search_gate": "block",
     "gate_shell_search": True,  # also gate grep/rg/find -name run through a shell
+    # The buffer added to the anchor count when a codebase-kg query grants credit
+    # (see kg_search_gate.credit_for). 0 means an answer is worth exactly the
+    # files it named; the repeat-to-override escape hatch applies either way, so
+    # no setting here can strand an agent.
+    "gate_credit": 3,
     # Generic doc/config exclusions (NOT language detection) — these edits don't
     # imply graph drift. Kept identical to the pre-push gate's EXCLUDE_EXT; the
     # two are asserted equal by test_hook_parity.py, because the copies had

@@ -5,8 +5,8 @@ both no-op in a repo with no `knowledge/code_graph.db`.
 
 | File | Role |
 |---|---|
-| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob\|Bash\|PowerShell` and on the codebase-kg MCP tools → `kg_search_gate.py`; PostToolUse on `Edit\|Write\|MultiEdit` → `kg_post_edit_check.py`. |
-| `kg_search_gate.py` | The gate. Denies the first search of a session with the instruction to query the graph, then stands down for that session. |
+| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob\|Bash\|PowerShell` and on the codebase-kg MCP tools → `kg_search_gate.py`; PostToolUse on those same MCP tools → `kg_search_gate.py` (that pass sizes the credit); PostToolUse on `Edit\|Write\|MultiEdit` → `kg_post_edit_check.py`. |
+| `kg_search_gate.py` | The gate. Denies a search aimed at mapped code with the instruction to query the graph, and keeps doing it — a query buys credit, a located search is free, a repeat always passes. |
 | `kg_post_edit_check.py` | The nudge. Two signals: the edited file isn't in the graph at all, or enough mapped files have changed since the graph was rebuilt. |
 | `_config.py` | Reads `root` from the committed graph's `meta` table (auto-discovers `knowledge/code_graph.db`); a gitignored `.claude/codebase-kg.local.md` may override. Decides what counts as a source file. |
 
@@ -15,17 +15,29 @@ both no-op in a repo with no `knowledge/code_graph.db`.
 The only part of the plugin that can **deny** a tool call, and the only reason the graph gets used at
 all. Left alone, an agent greps and re-derives the map it already has.
 
-- The first `Grep` / `Glob` — or a shell `grep`, `rg`, `fd`, `find -name`, `Get-ChildItem -Recurse` —
-  of a session is denied once, with instructions to run `kg_search` / `kg_node` / `kg_neighborhood`
-  first.
-- Then it **stands down for the rest of that session**, complied with or not. One interruption per
-  session; it cannot loop, and no search is permanently blocked. If the graph does not cover what you
-  need, run the search again and it goes through.
-- Any codebase-kg MCP call also stands it down, so an agent that started at the graph never sees it.
+A `Grep` / `Glob` — or a shell `grep`, `rg`, `fd`, `find -name`, `Get-ChildItem -Recurse` — aimed at
+mapped code is denied, with instructions to run `kg_search` / `kg_node` / `kg_neighborhood` first.
+It **keeps asking**: an earlier version stood down for the session after one nudge, which an agent
+paid once before grepping freely for the rest of the turn.
+
+A `PreToolUse` hook cannot add an argument to `Grep`, so there is no `force` flag — and that is the
+better design, since a self-declared override is a rubber stamp an agent learns to always pass.
+Three ways through, each inferred from what the agent actually did:
+
+| Way through | What it means |
+|---|---|
+| **A query buys credit** | A codebase-kg MCP call grants one search per distinct file its answer named, plus `gate_credit` as a buffer. **Uncapped**, because the count is what the graph named rather than a number this hook guessed — an answer naming a hundred files is an agent with a hundred places to look. |
+| **A located search** | A search scoped to a file the graph already anchors is never gated and spends no credit. The agent has evidently found it; gating that buys nothing. A *directory* is still gated — that is where you look when you do not yet know the file. |
+| **Repeat to insist** | The identical search, immediately after a denial, is always allowed. This is the escape hatch for code the graph has not mapped yet, and it is what makes the gate unable to strand anyone. |
+
 - **No-ops** when the repo has no graph, when `SKIP_KG` is set, when `search_gate` is `off`, and when
   the search is scoped outside the graph's `root` or into an ignored dir (`node_modules`, `build`, …).
-- **Fails open.** A malformed payload, an unreadable graph, or an unwritable state file lets the
-  search through. A gate that strands an agent is worse than no gate.
+- **Fails open.** A malformed payload or an unreadable graph lets the search through. An unwritable
+  state file degrades the deny to a **warn**, because the escape hatch lives in that file: a denial
+  that cannot be recorded is one a repeat could not be recognised against.
+- The grant is sized on `PostToolUse`, where the answer exists to be counted. The `PreToolUse` pass
+  grants the buffer alone, so a query that errors — or one this hook cannot parse — is still worth
+  something rather than nothing, and never lowers credit already held.
 
 Shell detection is deliberately narrow — a false positive denies unrelated work. `find` and
 `Get-ChildItem` only count when they carry a name/path filter, so an ordinary `find . -type d` is not
@@ -60,6 +72,7 @@ See `../templates/codebase-kg.local.md.example`.
 |---|---|---|
 | `search_gate` | `block` | `block` \| `warn` (message, no deny) \| `off` |
 | `gate_shell_search` | `true` | also gate `grep`/`rg`/`find -name` run through a shell |
+| `gate_credit` | `3` | buffer added to the file count when a graph query grants credit; the count itself is uncapped |
 | `post_edit_nudge` | `true` | master off-switch for the nudge |
 | `nudge_every` | `5` | edits to mapped files between periodic nudges |
 | `root` | from the graph | only paths under here count |
