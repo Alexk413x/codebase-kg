@@ -2,7 +2,7 @@
 
 All notable changes to the `codebase-kg` plugin.
 
-## [Unreleased]
+## [0.3.0] — 2026-09-06 — write tools, and hooks that actually fire
 
 ### Added — write tools, so a one-field fix is not a whole rebuild
 
