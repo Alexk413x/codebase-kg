@@ -245,8 +245,9 @@ Staleness is answered by comparing the graph to the code:
 - **`kg_validate`** — anchors whose file or symbol no longer exists, files under `root` that
   `covers` says should be mapped and aren't (§3.1), and files whose contents changed since the
   graph was built (§6.3). All three are facts about the source tree.
-- **the pre-push check** — the same two questions, scoped to the commits you are pushing. It reports
-  and exits 0. It never blocks.
+- **the staleness hooks** — the same three questions, scoped to what you are committing or pushing.
+  They read the digests out of git (the index, or the pushed tips), report, and exit 0. They never
+  block.
 - **the post-edit hook** — says so the first time you edit a file no node anchors on.
 
 The rule for an update is unchanged and still matters: **update all affected nodes** — add nodes for

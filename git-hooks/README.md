@@ -1,12 +1,29 @@
 # git-hooks/ — code-graph staleness checks
 
 **Advisory, vendorable** git hooks. They compare a change set against the committed
-`knowledge/code_graph.db` and report two things:
+`knowledge/code_graph.db` and report three things:
 
-- **new source files no node covers** — code nobody mapped;
-- **deleted source files the graph still anchors on** — pointers into code that is gone.
+- **source files no node covers** — code nobody mapped, whether this change added it or only
+  touched it;
+- **deleted source files the graph still anchors on** — pointers into code that is gone;
+- **mapped files whose contents no longer match the digest recorded when the graph was built**
+  (SCHEMA.md §6.3) — the anchor still resolves, so nothing else notices, but the description may no
+  longer fit.
 
 They **never block**. Exit status is always 0.
+
+### Why the third one exists
+
+The first two versions of this check read only git's `A` and `D` status letters. A real change set
+is mostly `M`, so the check was silent through exactly the drift that accumulates: on one repo it
+would have named the 27 new files and said nothing about the 47 modified ones — two thirds of a
+graph that had fallen 48 commits behind. The `source` table of digests was written on every build
+and read by neither hook.
+
+Digests are read out of git, never off disk: the index (`:path`) at commit time, the pushed tips at
+push time. A push of a branch that is not checked out would otherwise be compared against whatever
+happens to be in the working tree. A file with no recorded baseline is not reported — absent
+evidence reads as "no baseline", never as "unchanged".
 
 ## Two hooks, because they answer at different moments
 

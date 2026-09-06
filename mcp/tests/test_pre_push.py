@@ -5,6 +5,7 @@ Two properties matter most: it reports the right files, and it never blocks.
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 
@@ -64,45 +65,118 @@ def test_unreadable_graph_stays_quiet(
 
 # --- analyze (pure) ----------------------------------------------------------
 ANCHORED = {"ui/Known.kt", "domain/Ranker.kt"}
+BASELINES = {"ui/Known.kt": "a" * 64, "domain/Ranker.kt": "b" * 64}
 
 
 def test_new_unmapped_source_is_reported() -> None:
-    unmapped, deleted = g.analyze([("A", "src/ui/Brand.kt")], "src", None, ANCHORED)
-    assert unmapped == ["src/ui/Brand.kt"] and deleted == []
+    f = g.analyze([("A", "src/ui/Brand.kt")], "src", None, ANCHORED)
+    assert f.unmapped == ["src/ui/Brand.kt"] and f.deleted == [] and f.drifted == []
 
 
 def test_new_source_that_is_already_anchored_is_not_reported() -> None:
-    unmapped, _ = g.analyze([("A", "src/ui/Known.kt")], "src", None, ANCHORED)
-    assert unmapped == []
+    assert g.analyze([("A", "src/ui/Known.kt")], "src", None, ANCHORED).unmapped == []
 
 
 def test_deleted_but_still_anchored_source_is_reported() -> None:
-    _, deleted = g.analyze([("D", "src/ui/Known.kt")], "src", None, ANCHORED)
-    assert deleted == ["src/ui/Known.kt"]
+    assert g.analyze([("D", "src/ui/Known.kt")], "src", None, ANCHORED).deleted == [
+        "src/ui/Known.kt"
+    ]
 
 
 def test_deleted_unanchored_source_is_not_reported() -> None:
-    _, deleted = g.analyze([("D", "src/ui/Scratch.kt")], "src", None, ANCHORED)
-    assert deleted == []
-
-
-def test_modified_source_is_not_reported() -> None:
-    # A modification is not evidence of drift on its own; the post-edit hook
-    # and kg_validate cover description drift.
-    unmapped, deleted = g.analyze([("M", "src/ui/Brand.kt")], "src", None, ANCHORED)
-    assert unmapped == [] and deleted == []
+    assert g.analyze([("D", "src/ui/Scratch.kt")], "src", None, ANCHORED).deleted == []
 
 
 def test_paths_outside_root_are_ignored() -> None:
-    unmapped, _ = g.analyze([("A", "docs/Notes.kt")], "src", None, ANCHORED)
-    assert unmapped == []
+    assert g.analyze([("A", "docs/Notes.kt")], "src", None, ANCHORED).unmapped == []
 
 
 def test_the_graph_itself_is_never_a_trigger() -> None:
-    unmapped, _ = g.analyze(
-        [("A", "knowledge/code_graph.db")], "", "knowledge/code_graph.db", ANCHORED
+    f = g.analyze([("A", "knowledge/code_graph.db")], "", "knowledge/code_graph.db", ANCHORED)
+    assert f.unmapped == []
+
+
+# --- status M: the two thirds of a change set the check used to drop ----------
+# `analyze` keyed the unmapped bucket on `A` and had no drift bucket at all, so
+# a change set of modifications produced silence. That is how a graph fell 48
+# commits behind while the hook ran on every one of them.
+def test_modifying_a_file_no_node_covers_is_reported() -> None:
+    """Keying on `A` meant a file that predates the graph was invisible forever
+    — it is never "added" again, so it was never mentioned again."""
+    assert g.analyze([("M", "src/ui/Brand.kt")], "src", None, ANCHORED).unmapped == [
+        "src/ui/Brand.kt"
+    ]
+
+
+def test_modifying_a_mapped_file_past_its_baseline_is_drift() -> None:
+    f = g.analyze(
+        [("M", "src/ui/Known.kt")], "src", None, ANCHORED,
+        baselines=BASELINES, current={"src/ui/Known.kt": "c" * 64},
     )
-    assert unmapped == []
+    assert f.drifted == ["src/ui/Known.kt"] and f.unmapped == []
+
+
+def test_a_mapped_file_matching_its_baseline_is_silent() -> None:
+    """Touched by the change set, byte-identical to what was mapped — a
+    whitespace-only commit or a revert. Nothing to say."""
+    f = g.analyze(
+        [("M", "src/ui/Known.kt")], "src", None, ANCHORED,
+        baselines=BASELINES, current={"src/ui/Known.kt": "a" * 64},
+    )
+    assert f.drifted == []
+
+
+def test_no_baseline_means_no_claim() -> None:
+    """A graph built with no source tree in reach records no digests. That reads
+    as "no baseline", never as "unchanged" — SCHEMA.md §6.3."""
+    f = g.analyze(
+        [("M", "src/ui/Known.kt")], "src", None, ANCHORED,
+        baselines={}, current={"src/ui/Known.kt": "c" * 64},
+    )
+    assert f.drifted == []
+
+
+def test_an_unreadable_current_digest_makes_no_claim() -> None:
+    """`digests_for` drops what git could not resolve. A file it could not read
+    must not be reported as drifted on the strength of the baseline alone."""
+    f = g.analyze(
+        [("M", "src/ui/Known.kt")], "src", None, ANCHORED, baselines=BASELINES, current={}
+    )
+    assert f.drifted == []
+
+
+def test_drift_and_gaps_are_reported_together() -> None:
+    f = g.analyze(
+        [("M", "src/ui/Known.kt"), ("M", "src/ui/Brand.kt"), ("D", "src/domain/Ranker.kt")],
+        "src", None, ANCHORED,
+        baselines=BASELINES, current={"src/ui/Known.kt": "c" * 64},
+    )
+    assert f.drifted == ["src/ui/Known.kt"]
+    assert f.unmapped == ["src/ui/Brand.kt"]
+    assert f.deleted == ["src/domain/Ranker.kt"]
+
+
+# --- drift_candidates: only hash what a comparison could use ------------------
+def test_drift_candidates_are_the_mapped_in_scope_non_deletions() -> None:
+    got = g.drift_candidates(
+        [
+            ("M", "src/ui/Known.kt"),      # mapped → worth hashing
+            ("M", "src/ui/Brand.kt"),      # unmapped → the gap bucket, no digest needed
+            ("D", "src/domain/Ranker.kt"),  # deleted → no blob to hash
+            ("M", "docs/Notes.kt"),        # outside root
+        ],
+        "src", None, ANCHORED,
+    )
+    assert got == ["src/ui/Known.kt"]
+
+
+def test_drift_candidates_deduplicates() -> None:
+    """A rename splits into D+A on the same path pair; a multi-ref push unions
+    change sets. Hashing the same blob twice is pure waste."""
+    got = g.drift_candidates(
+        [("A", "src/ui/Known.kt"), ("M", "src/ui/Known.kt")], "src", None, ANCHORED
+    )
+    assert got == ["src/ui/Known.kt"]
 
 
 # --- is_source ---------------------------------------------------------------
@@ -246,7 +320,29 @@ def test_read_graph_returns_root_anchors_and_the_coverage_declaration(tmp_path: 
         Meta(codebase="x", root="src", generated="2026-07-30"),
         [Node(id="a", kind="K", anchors=[Anchor("ui/Known.kt", "Known")])],
     )
-    assert g.read_graph(db) == ("src", {"ui/Known.kt"}, [], [])
+    assert g.read_graph(db) == ("src", {"ui/Known.kt"}, [], [], {})
+
+
+def test_read_graph_returns_the_source_baselines(tmp_path: Path) -> None:
+    """The digests are the whole point of the drift check, and nothing read them
+    before — the table was written at build time and never opened again by
+    either hook."""
+    src = tmp_path / "src" / "ui"
+    src.mkdir(parents=True)
+    (src / "Known.kt").write_text("class Known", encoding="utf-8")
+    db = tmp_path / "knowledge" / "code_graph.db"
+    db.parent.mkdir()
+    build(
+        db,
+        Meta(codebase="x", root="src", generated="2026-07-30"),
+        [Node(id="a", kind="K", anchors=[Anchor("ui/Known.kt", "Known")])],
+        source_root=tmp_path / "src",
+    )
+    graph = g.read_graph(db)
+    assert graph is not None
+    baselines = graph.baselines
+    assert set(baselines) == {"ui/Known.kt"}
+    assert baselines["ui/Known.kt"] == hashlib.sha256(b"class Known").hexdigest()
 
 
 def test_read_graph_of_a_non_database_is_none(tmp_path: Path) -> None:

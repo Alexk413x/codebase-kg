@@ -4,10 +4,18 @@
 Reports when the commits you are about to push move the code away from what
 `knowledge/code_graph.db` says about it:
 
-  * a source file changed in this push that **no node anchors on** — new code
-    nobody mapped;
+  * a source file changed in this push that **no node anchors on** — code nobody
+    mapped, whether it was added here or merely touched here;
   * a source file **deleted** in this push that the graph still anchors on — a
-    pointer into code that is gone.
+    pointer into code that is gone;
+  * a **mapped** file whose contents no longer match the digest recorded when
+    the graph was built (SCHEMA.md §6.3) — the anchor still resolves, so nothing
+    else notices, but the description may no longer fit.
+
+The third one is why the first two were not enough. A change set is mostly
+status `M`, and a check that reads only `A` and `D` is silent through exactly
+the drift that accumulates: on one repo it let a graph fall 48 commits behind,
+of which two thirds were modifications it never mentioned.
 
 It **never blocks**. Exit status is always 0. That is a deliberate reversal: the
 old version of this hook blocked a push when the graph's `refreshed:` header was
@@ -33,11 +41,13 @@ Config (optional), from `.claude/codebase-kg.local.md` in the repo root:
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 DEFAULT_GRAPH = "knowledge/code_graph.db"
 
@@ -70,6 +80,68 @@ def _git(*args: str) -> str:
 def _is_zero(sha: str) -> bool:
     """git uses an all-zeros sha for 'no ref' (new branch / deleted ref)."""
     return bool(sha) and set(sha) == {"0"}
+
+
+def blob_digests(specs: list[str]) -> dict[str, str]:
+    """SHA-256 of each `<rev>:<path>` blob, skipping any git cannot resolve.
+
+    One `git cat-file --batch` for the whole set rather than a process per file:
+    this runs while someone is waiting on a commit or a push, and a change set
+    of a few hundred files is ordinary.
+
+    The digest must be computed the same way `writer.file_sha` computes it —
+    SHA-256 over the raw bytes, no decoding — or every comparison reads as
+    permanent drift.
+    """
+    if not specs:
+        return {}
+    try:
+        proc = subprocess.run(
+            ["git", "cat-file", "--batch"],
+            input="\n".join(specs).encode("utf-8") + b"\n",
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return {}
+    out, pos, result = proc.stdout, 0, {}
+    for spec in specs:
+        nl = out.find(b"\n", pos)
+        if nl < 0:
+            break
+        header = out[pos:nl].decode("utf-8", "replace").split()
+        pos = nl + 1
+        # `<spec> missing` for anything unresolvable — a path added in this
+        # change has no blob at an older rev, which is not an error. No content
+        # follows such a line, so `pos` is already correct.
+        if len(header) < 3 or header[1] != "blob":
+            continue
+        try:
+            size = int(header[2])
+        except ValueError:
+            break  # desynced from the stream — stop rather than misalign
+        result[spec] = hashlib.sha256(out[pos : pos + size]).hexdigest()
+        pos += size + 1  # git writes a newline after the content
+    return result
+
+
+def digests_for(paths: list[str], revs: list[str]) -> dict[str, str]:
+    """SHA-256 per repo-relative path, read from the first `rev` that has it.
+
+    Read out of git, never off disk. A push of a branch that is not checked out
+    would otherwise be digested against whatever happens to be in the working
+    tree and report drift on files the push does not touch. `""` as a rev means
+    the index — `:path` is the staged blob, which is what a commit will contain.
+    """
+    out: dict[str, str] = {}
+    for rev in revs:
+        todo = [p for p in paths if p not in out]
+        if not todo:
+            break
+        by_spec = {f"{rev}:{p}": p for p in todo}
+        for spec, sha in blob_digests(list(by_spec)).items():
+            out[by_spec[spec]] = sha
+    return out
 
 
 def parse_push_refs(stdin_text: str) -> list[tuple[str, str, str, str]]:
@@ -152,6 +224,17 @@ def changed_files_for_push(refs: list[tuple[str, str, str, str]]) -> list[tuple[
             continue  # deleting a remote ref — nothing pushed
         pairs += changed_files_for_ref(local_sha, remote_sha)
     return list(dict.fromkeys(pairs))
+
+
+def push_tips(refs: list[tuple[str, str, str, str]]) -> list[str]:
+    """The commits being published, in the order git listed their refs.
+
+    These are the revisions whose blobs are the content of this push, so they
+    are what a digest comparison has to read. Ordered rather than merged: a push
+    of several refs is rare, and trying them in turn resolves each path against
+    the first tip that has it instead of guessing.
+    """
+    return [local for _lr, local, _rr, _rs in refs if not _is_zero(local)]
 
 
 def _parse_frontmatter(text: str) -> dict[str, str]:
@@ -277,11 +360,23 @@ def is_source(rel: str, root: str, graph_rel: str | None, covers=None, exempt=No
     return True
 
 
-def read_graph(db: Path) -> tuple[str, set[str], list[str], list[str]] | None:
-    """`(root, anchored_paths, covers, exempt)`, or None if it can't be read.
+class Graph(NamedTuple):
+    """What the check needs out of the store, read once."""
+
+    root: str
+    anchored: set[str]
+    covers: list[str]
+    exempt: list[str]
+    baselines: dict[str, str]  # root-relative path → sha256 at build time (§6.3)
+
+
+def read_graph(db: Path) -> Graph | None:
+    """The graph's root, anchors, coverage declaration and source baselines, or
+    None if it can't be read.
 
     Unreadable is not an error worth shouting about in a push hook — the check
-    simply doesn't run.
+    simply doesn't run. A graph predating the `source` table reads as no
+    baselines, which means no drift reported: absent evidence, never "unchanged".
     """
     try:
         conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
@@ -295,15 +390,24 @@ def read_graph(db: Path) -> tuple[str, set[str], list[str], list[str]] | None:
             )
         }
         paths = {r[0].replace("\\", "/") for r in conn.execute("SELECT DISTINCT path FROM anchor")}
+        try:
+            baselines = {
+                r[0].replace("\\", "/"): r[1] for r in conn.execute("SELECT path, sha FROM source")
+            }
+        except sqlite3.DatabaseError:
+            # Schema predates the table. The other two checks still work, so
+            # losing the baselines must not lose the whole run.
+            baselines = {}
     except sqlite3.DatabaseError:
         return None
     finally:
         conn.close()
-    return (
+    return Graph(
         meta.get("root", ""),
         paths,
         parse_patterns(meta.get("covers")),
         parse_patterns(meta.get("exempt")),
+        baselines,
     )
 
 
@@ -333,6 +437,39 @@ def _rel_to_root(rel: str, root: str) -> str:
     return rel
 
 
+class Findings(NamedTuple):
+    """The three ways a change set can move the code away from the graph."""
+
+    unmapped: list[str]  # source in this change that no node anchors on
+    deleted: list[str]  # source removed that the graph still anchors on
+    drifted: list[str]  # mapped source whose bytes no longer match the baseline
+
+
+def drift_candidates(
+    changed: list[tuple[str, str]],
+    root: str,
+    graph_rel: str | None,
+    anchored: set[str],
+    covers: list[str] | None = None,
+    exempt: list[str] | None = None,
+) -> list[str]:
+    """The paths worth digesting: in-scope source that a node actually anchors.
+
+    Split out of `analyze` so the caller hashes only files that could possibly
+    drift. Digesting the whole change set would read blobs for deletions and for
+    files nobody mapped, which no comparison would ever use.
+    """
+    covers_re = compile_patterns(covers or [])
+    exempt_re = compile_patterns(exempt or [])
+    out: list[str] = []
+    for status, rel in changed:
+        if status == "D" or not is_source(rel, root, graph_rel, covers_re, exempt_re):
+            continue
+        if _rel_to_root(rel, root) in anchored:
+            out.append(rel)
+    return list(dict.fromkeys(out))
+
+
 def analyze(
     changed: list[tuple[str, str]],
     root: str,
@@ -340,12 +477,23 @@ def analyze(
     anchored: set[str],
     covers: list[str] | None = None,
     exempt: list[str] | None = None,
-) -> tuple[list[str], list[str]]:
-    """Split the changeset into `(unmapped_new, anchored_but_deleted)`."""
+    baselines: dict[str, str] | None = None,
+    current: dict[str, str] | None = None,
+) -> Findings:
+    """Split the changeset into unmapped / deleted / drifted.
+
+    `baselines` maps a root-relative path to the digest recorded when the graph
+    was built; `current` maps a repo-relative path to its digest in the change
+    set being checked. With neither, the drift bucket is empty — a missing
+    baseline reads as "no baseline", never as "unchanged" (SCHEMA.md §6.3).
+    """
     covers_re = compile_patterns(covers or [])
     exempt_re = compile_patterns(exempt or [])
+    baselines = baselines or {}
+    current = current or {}
     unmapped: list[str] = []
     deleted: list[str] = []
+    drifted: list[str] = []
     for status, rel in changed:
         if not is_source(rel, root, graph_rel, covers_re, exempt_re):
             continue
@@ -353,30 +501,46 @@ def analyze(
         if status == "D":
             if key in anchored:
                 deleted.append(rel)
-        elif status == "A" and key not in anchored:
+        elif key not in anchored:
+            # Not keyed on `A`. A file nobody mapped is a gap whether it was
+            # added in this change or merely touched by it — keying on `A` alone
+            # meant a file that predates the graph stayed invisible forever.
             unmapped.append(rel)
-    return unmapped, deleted
+        else:
+            base, now = baselines.get(key), current.get(rel)
+            if base and now and base != now:
+                drifted.append(rel)
+    return Findings(unmapped, deleted, drifted)
 
 
-def _emit(unmapped: list[str], deleted: list[str], graph_rel: str) -> None:
+def _block(msg: list[str], files: list[str], heading: str, marker: str) -> None:
+    """One findings section, capped so a large change set stays readable."""
+    msg.append(f"[codebase-kg]   {heading}")
+    for f in files[:15]:
+        msg.append(f"[codebase-kg]     {marker} {f}")
+    if len(files) > 15:
+        msg.append(f"[codebase-kg]     … and {len(files) - 15} more")
+    msg.append("[codebase-kg]")
+
+
+def _emit(findings: Findings, graph_rel: str) -> None:
+    unmapped, deleted, drifted = findings
     msg = [
         "[codebase-kg] Code-graph staleness check (advisory — your push is going through).",
         "[codebase-kg]",
     ]
     if deleted:
-        msg.append(f"[codebase-kg]   {len(deleted)} deleted file(s) still anchored in {graph_rel}:")
-        for f in deleted[:15]:
-            msg.append(f"[codebase-kg]     - {f}")
-        if len(deleted) > 15:
-            msg.append(f"[codebase-kg]     … and {len(deleted) - 15} more")
-        msg.append("[codebase-kg]")
+        _block(msg, deleted, f"{len(deleted)} deleted file(s) still anchored in {graph_rel}:", "-")
     if unmapped:
-        msg.append(f"[codebase-kg]   {len(unmapped)} new source file(s) that no node covers:")
-        for f in unmapped[:15]:
-            msg.append(f"[codebase-kg]     + {f}")
-        if len(unmapped) > 15:
-            msg.append(f"[codebase-kg]     … and {len(unmapped) - 15} more")
-        msg.append("[codebase-kg]")
+        _block(msg, unmapped, f"{len(unmapped)} source file(s) that no node covers:", "+")
+    if drifted:
+        _block(
+            msg,
+            drifted,
+            f"{len(drifted)} mapped file(s) changed since {graph_rel} was built — "
+            "the anchors still resolve, the descriptions may not:",
+            "~",
+        )
     msg += [
         "[codebase-kg]   Run  /codebase-kg:refresh  to bring the graph back in line.",
         "[codebase-kg]   Nothing is blocked; this is a heads-up.",
@@ -390,14 +554,13 @@ def main() -> int:
     graph_rel = find_graph_rel(repo, cfg)
     if graph_rel is None:
         return 0  # no graph in this repo → nothing to check
-    loaded = read_graph(repo / graph_rel)
-    if loaded is None:
+    graph = read_graph(repo / graph_rel)
+    if graph is None:
         return 0  # unreadable store → stay silent rather than nag
-    graph_root, anchored, covers, exempt = loaded
 
     # `root` is the committed, shared config in the graph itself; an optional
     # per-dev .claude/codebase-kg.local.md may override it.
-    root = norm_root(cfg.get("root") or graph_root)
+    root = norm_root(cfg.get("root") or graph.root)
 
     # git feeds the pushed refs on stdin — that is the authoritative changeset.
     # Only when stdin is empty (manual invocation) fall back to guessing a range.
@@ -411,9 +574,20 @@ def main() -> int:
             return 0  # nothing to compare against — advisory checks stay quiet
         changed = changed_files(rng)
 
-    unmapped, deleted = analyze(changed, root, graph_rel, anchored, covers, exempt)
-    if unmapped or deleted:
-        _emit(unmapped, deleted, graph_rel)
+    candidates = drift_candidates(
+        changed, root, graph_rel, graph.anchored, graph.covers, graph.exempt
+    )
+    # The pushed tips, so the digest is of what is being published rather than
+    # of whatever the working tree happens to hold. `HEAD` is the fallback for a
+    # manual run, where the range came from the upstream branch anyway.
+    current = digests_for(candidates, push_tips(refs) or ["HEAD"]) if candidates else {}
+
+    findings = analyze(
+        changed, root, graph_rel, graph.anchored, graph.covers, graph.exempt,
+        graph.baselines, current,
+    )
+    if any(findings):
+        _emit(findings, graph_rel)
     return 0  # advisory, always
 
 

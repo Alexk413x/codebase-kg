@@ -35,6 +35,33 @@ and silently stays on.
 
 Ships with the plugin. There is nothing to install per repo.
 
+### Fixed — the staleness checks read status `M`, and the digests they never opened
+
+`analyze()` split a change set into `A` (source nothing anchors) and `D` (anchored source that is
+gone) and dropped everything else. A real change set is mostly `M`, so both hooks were silent
+through the drift that actually accumulates. On one repo that let a graph fall 48 commits behind:
+the check would have named the 27 new files and said nothing about the 47 modified ones — two
+thirds of the drift. The `source` table of SHA-256 digests, written on every build and documented in
+SCHEMA.md §6.3 as the thing that makes a green `kg_validate` mean something, was read by neither
+hook.
+
+Two changes, one bucket each:
+
+- **A modified file that no node covers is now reported.** Keying the gap bucket on `A` meant a file
+  that predates the graph was invisible forever — it is never "added" again, so it was never
+  mentioned again.
+- **A modified file that *is* mapped is compared against its recorded digest.** A mismatch is the
+  `changed_since_built` signal, scoped to the change set: the anchor still resolves, so nothing else
+  in the toolchain notices, but the description may no longer fit.
+
+Digests come out of git, never off disk — the index (`:path`) at commit time, the pushed tips at
+push time, one `git cat-file --batch` for the whole set. Reading the working tree would have
+compared a push of a branch that is not checked out against whatever happened to be on disk. A file
+with no baseline is not reported: absent evidence reads as "no baseline", never as "unchanged".
+
+`read_graph` and `analyze` now return `NamedTuple`s (`Graph`, `Findings`) rather than bare tuples,
+so the next field is an addition instead of a break.
+
 ### Changed — `/codebase-kg:setup` replaces `install-hooks` and `setup-diff`
 
 Two commands to wire one repo left the textconv driver reading as optional, and it is not: without it

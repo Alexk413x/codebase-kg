@@ -173,10 +173,13 @@ Two advisory layers, both pointing at the same fix (`/codebase-kg:refresh`):
 
 - **In-session nudge** (`hooks/`): while Claude edits source, it says so the first time you touch a
   file no node covers, and periodically once enough mapped files have changed.
-- **Pre-push check** (`git-hooks/`): installed per-repo via `/codebase-kg:setup`. It compares
-  the commits you're pushing against the graph and reports new source no node covers, plus deleted
-  files the graph still anchors on. It **never blocks** — there is no `--no-verify` to remember. It's
-  stdlib-only and vendored into the repo, so it runs for every clone and CI.
+- **Commit/push checks** (`git-hooks/`): installed per-repo via `/codebase-kg:setup`. They compare
+  the change set against the graph and report three things: source no node covers, deleted files the
+  graph still anchors on, and mapped files whose contents no longer match the digest recorded when
+  the graph was built. That third one is the one that catches ordinary work — a change set is mostly
+  modifications, and a check that reads only additions and deletions is silent through most of the
+  drift. They **never block** — there is no `--no-verify` to remember. They're stdlib-only and
+  vendored into the repo, so they run for every clone and CI.
 
 Neither checks a date. An earlier version blocked pushes when the graph's `refreshed:` header wasn't
 today; that measured whether someone edited the file, not whether the nodes matched the code — and
