@@ -107,8 +107,9 @@ It **converts, not regenerates** — ids, kinds, anchors, edges and parity survi
 scrubs ticket refs, dates and change narrative out of the summaries, drops any dangling edges, and
 reports everything it changed. The markdown file is left untouched; delete it once you are happy.
 
-Add `knowledge/code_graph.db binary diff=codegraph` to the repo's `.gitattributes` and commit the
-result, then run `/codebase-kg:setup` so the graph shows up as a readable diff in review.
+Add `*.db binary diff=codegraph` and `code_graph.db binary diff=codegraph` to the repo's
+`.gitattributes` and commit the result, then run `/codebase-kg:setup` — it wires the staleness checks
+and the textconv driver that makes the graph show up as a readable diff in review.
 
 ### Already on a `code_graph.db`?
 
@@ -137,11 +138,11 @@ codebase-kg/
 │   ├── code_graph.template.json
 │   └── codebase-kg.local.md.example
 ├── .mcp.json                 # registers the codebase-kg MCP server (uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp)
-├── commands/                 # /codebase-kg:build|refresh|audit|link|validate → skills; setup is inline
-├── skills/                   # kg-build / kg-refresh / kg-audit / kg-link / kg-validate
+├── commands/                 # /codebase-kg:query|build|refresh|audit|link|validate → skills; setup is inline
+├── skills/                   # kg-query / kg-build / kg-refresh / kg-audit / kg-link / kg-validate
 ├── mcp/                      # the query server + build/export/migrate CLIs (uvx-run Python)
 ├── hooks/                    # Claude Code hooks: the search gate + the post-edit nudge
-└── git-hooks/                # advisory pre-push staleness check, vendorable into any repo (stdlib-only)
+└── git-hooks/                # advisory pre-commit + pre-push staleness checks, vendored into any repo (stdlib-only)
 ```
 
 ## Making the graph get used
@@ -162,6 +163,9 @@ It ships with the plugin, so there is nothing to install — it activates in eve
 graph, and stays silent in every repo that does not. `SKIP_KG=1` silences it for a shell;
 `search_gate: warn` in `.claude/codebase-kg.local.md` downgrades it to a message, and
 `search_gate: off` disables it.
+
+The `kg-query` skill (`/codebase-kg:query`) is the workflow it hands off to: `kg_search` to locate,
+`kg_neighborhood` to expand, then read the anchored files.
 
 The division of labor it enforces: **the graph is authoritative for where code lives; the source is
 authoritative for what it does now.** The graph is a committed snapshot, so orient with it, then read

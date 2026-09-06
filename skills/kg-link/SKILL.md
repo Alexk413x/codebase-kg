@@ -31,6 +31,11 @@ allowed-tools:
   - Write
   - Edit
   - Bash(rm:*)
+  # The runnable forms outside the plugin's own checkout. kg_stats reports
+  # which one applies; `python -m` only works where the package imports.
+  - Bash(uvx:*)
+  - Bash(codebase-kg-build:*)
+  - Bash(codebase-kg-export:*)
 ---
 
 # kg-link — cross-codebase parity (counterpart linking)
@@ -43,6 +48,14 @@ skill adds the links, never duplicates the content.
 
 **Descriptive, not prescriptive.** It records what matches and what diverges. It does not assign
 work or decide which side is "right."
+
+
+> **Before running any CLI below, call `kg_stats` and read its `cli` field.** It reports the
+> invocation that works *in this repo* — `uvx --from "<plugin>/mcp" codebase-kg-build …` when the
+> plugin ships as a source checkout, or the bare `codebase-kg-build` when the package is installed.
+> The `python -m codebase_kg.…` form written below is the plugin's own-checkout form; in a target
+> repo that has the plugin but no importable `codebase_kg` it is a `ModuleNotFoundError`, and
+> `CLAUDE_PLUGIN_ROOT` is not set in your shell so you cannot construct the path yourself.
 
 ## Prerequisites
 

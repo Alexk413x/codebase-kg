@@ -20,6 +20,12 @@ allowed-tools:
   - Task
   - Write
   - Edit
+  # The runnable forms outside the plugin's own checkout. kg_stats reports
+  # which one applies; `python -m` only works where the package imports.
+  - Bash(uvx:*)
+  - Bash(codebase-kg-build:*)
+  - Bash(codebase-kg-export:*)
+  - Bash(codebase-kg-migrate:*)
 ---
 
 # kg-build — bootstrap a code graph from source
@@ -41,6 +47,13 @@ gate denies the first `Grep`/`Glob` of the session once, telling you to query th
 That instruction does not apply here — a bootstrap re-derives from source on purpose, and the graph
 you are about to replace is not the authority. Run the search again; the gate stands down for the
 rest of the session either way.
+
+> **Before running any CLI below, call `kg_stats` and read its `cli` field.** It reports the
+> invocation that works *in this repo* — `uvx --from "<plugin>/mcp" codebase-kg-build …` when the
+> plugin ships as a source checkout, or the bare `codebase-kg-build` when the package is installed.
+> The `python -m codebase_kg.…` form written below is the plugin's own-checkout form; in a target
+> repo that has the plugin but no importable `codebase_kg` it is a `ModuleNotFoundError`, and
+> `CLAUDE_PLUGIN_ROOT` is not set in your shell so you cannot construct the path yourself.
 
 ## How the graph is written
 

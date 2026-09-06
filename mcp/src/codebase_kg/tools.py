@@ -290,12 +290,40 @@ def kg_parity_gaps(graph: CodeGraph, status: str | None = None) -> dict[str, Any
 # --------------------------------------------------------------------------- #
 # kg_stats
 # --------------------------------------------------------------------------- #
+def cli_invocations() -> dict[str, str]:
+    """Ready-to-run commands for the build / export / migrate CLIs.
+
+    The skills used to instruct `python -m codebase_kg.build`, which works only
+    where the package is importable — not in a target repo that has the plugin
+    but no install, where it is a bare `ModuleNotFoundError`. A skill cannot
+    assemble the `uvx --from` form for itself either: `CLAUDE_PLUGIN_ROOT` is not
+    set in the shell a skill's Bash runs in. The server knows where it was loaded
+    from, so it answers rather than the caller guessing.
+
+    From a source checkout (`pyproject.toml` beside the package) that is the
+    `uvx --from` form. Installed as a wheel it is the bare console script, which
+    is on PATH exactly when that is the case.
+    """
+    package_root = Path(__file__).resolve().parents[2]
+    from_source = (package_root / "pyproject.toml").is_file()
+    prefix = f'uvx --from "{package_root}" ' if from_source else ""
+    return {
+        "package_root": str(package_root) if from_source else "",
+        "build": f"{prefix}codebase-kg-build",
+        "export": f"{prefix}codebase-kg-export",
+        "migrate": f"{prefix}codebase-kg-migrate",
+    }
+
+
 def kg_stats(graph: CodeGraph) -> dict[str, Any]:
     meta = graph.meta
     counts = graph.counts()
     isolated = graph.isolated_ids(limit=20)
     isolated_total = graph.isolated_count()
     return {
+        # How to run the CLIs from THIS repo. Skills read this instead of
+        # hardcoding an invocation that only works inside the plugin's checkout.
+        "cli": cli_invocations(),
         "codebase": meta.codebase,
         "root": meta.root,
         "language": meta.language,

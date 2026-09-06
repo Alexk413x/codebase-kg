@@ -35,6 +35,32 @@ and silently stays on.
 
 Ships with the plugin. There is nothing to install per repo.
 
+### Added — `kg-query`, the skill the search gate hands off to
+
+The gate denies a search and instructs the agent to run `kg_search`, then `kg_node` /
+`kg_neighborhood`, then read the anchored files. No skill owned that workflow, no description
+triggered on "where does the feed ranking live", and `kg_neighborhood` and `kg_find_by_link` were
+registered, tested, documented in the README, and named in **no** skill's `allowed-tools` — so the
+gate interrupted an agent and handed it to nothing.
+
+`/codebase-kg:query` and `skills/kg-query` are that handoff: locate through the index, expand through
+the neighborhood, confirm in the source, and report any stale map you crossed on the way. Read-only
+by construction — it has no write tools.
+
+### Fixed — the CLIs the skills instruct are now runnable outside the plugin
+
+Every skill's build step said `python -m codebase_kg.build`. That works inside the plugin's own
+checkout and nowhere else: a target repo has the plugin but no importable `codebase_kg`, so the
+instruction was a `ModuleNotFoundError` at the moment a skill had finished its real work. The
+`uvx --from <plugin>/mcp` form would have worked, but a skill cannot build it — `CLAUDE_PLUGIN_ROOT`
+is not set in the shell a skill's Bash runs in, and the console scripts are not on PATH.
+
+`codebase-kg-build` and `codebase-kg-migrate` join `codebase-kg-export` as entry points, and
+`kg_stats` now reports a `cli` field carrying the invocation that works *in this repo* — the
+`uvx --from` form from a source checkout, the bare console script from a wheel install. The server is
+the one component that knows where it was loaded from, so it answers rather than the caller guessing.
+The skills read it before running anything.
+
 ### Fixed — the staleness checks read status `M`, and the digests they never opened
 
 `analyze()` split a change set into `A` (source nothing anchors) and `D` (anchored source that is

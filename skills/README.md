@@ -10,8 +10,16 @@ description + imperative workflow), with the heavy multi-agent procedures pushed
 | [`kg-audit`](kg-audit/SKILL.md) | deep read-only accuracy sweep — STALE / INACCURATE / MISSING | report only |
 | [`kg-link`](kg-link/SKILL.md) | establish/maintain cross-codebase parity (counterpart links) | rebuilds both graphs |
 | [`kg-validate`](kg-validate/SKILL.md) | cheap deterministic drift check against source | report only |
+| [`kg-query`](kg-query/SKILL.md) | "where does X live", "what depends on X" — find code through the graph | report only |
 
-All five lean on the MCP query surface (`mcp__codebase-kg__*`) and the schema (`../SCHEMA.md`).
+All six lean on the MCP query surface and the schema (`../SCHEMA.md`). List **both** server names
+in `allowed-tools` — `mcp__codebase-kg__*` when the server is installed directly and
+`mcp__plugin_codebase-kg_codebase-kg__*` when it arrives as a plugin. `test_plugin_surface.py`
+asserts the two lists match, and that no registered tool is stranded outside every skill.
+
+Each skill opens on an MCP call rather than a `Grep`, which also means the search gate has stood
+down before any search runs. Keep it that way when reordering steps — `kg-build` is the one
+exception and says so inline.
 
 ## Writing the graph
 
@@ -28,6 +36,9 @@ restructuring, a whole refresh's worth of nodes, or anything where reading the J
 building it is the point.
 
 ```sh
+# Call kg_stats first and use its `cli` field — it reports the invocation that
+# works in THIS repo. The `python -m` form below only works inside the plugin's
+# own checkout; a target repo has the plugin but no importable codebase_kg.
 python -m codebase_kg.export -o .kg-export.json      # read  (kg-refresh, kg-link, kg-audit)
 python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
 rm .kg-export.json                                   # a snapshot, not a source

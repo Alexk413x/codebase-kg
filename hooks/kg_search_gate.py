@@ -68,7 +68,8 @@ GATE_MESSAGE = (
     "the string. Then kg_node / kg_neighborhood for anchors and relationships.\n"
     "2. Read the anchored files to confirm current behavior. The graph is "
     "authoritative for WHERE code lives; the source is authoritative for what it "
-    "does now.\n\n"
+    "does now.\n"
+    "The kg-query skill (/codebase-kg:query) is this workflow in full.\n\n"
     "If the graph does not cover what you need, run this search again — the gate "
     "stands down for the rest of this session either way."
 )
