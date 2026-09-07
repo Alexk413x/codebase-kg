@@ -4,6 +4,26 @@ All notable changes to the `codebase-kg` plugin.
 
 ## [Unreleased]
 
+### Fixed — the source digest was unusable on Windows
+
+The builder hashes the working tree; the git hooks hash the blob. On a repo with
+`text=auto eol=lf` checked out on Windows those are never the same bytes, so
+every mapped text file compared unequal and `changed_since_built` fired on all
+of them. The signal carried no information at all — which is worse than the
+`A`/`D`-only check it replaced, because that one at least stayed quiet.
+
+`writer.content_sha` folds CRLF to LF before hashing, and the vendored hook
+carries the same rule beside its copy of the coverage block. A line ending is
+not something a description can be wrong about.
+
+This invalidates every baseline written by 0.4.0: the first refresh after this
+change re-hashes them, and until then the affected files report as drifted.
+
+The unit tests could not have caught it. They wrote LF fixtures, where the two
+readers agree by accident. `test_drift_check.py` now builds a repo that stores
+LF and checks out CRLF, and `test_hook_parity.py` holds the two copies of the
+digest rule together the way it already holds the coverage block.
+
 ### Fixed — `kg_stats.cli` was wrong in the only configuration that ships
 
 `cli_invocations` resolved the package root by looking for a `pyproject.toml`

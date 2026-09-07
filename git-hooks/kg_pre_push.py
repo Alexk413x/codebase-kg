@@ -82,6 +82,14 @@ def _is_zero(sha: str) -> bool:
     return bool(sha) and set(sha) == {"0"}
 
 
+# --- content digest (verbatim copy of codebase_kg/writer.content_sha) --------
+# Copied rather than imported: this file is vendored into repos that have no
+# plugin install. tests/test_hook_parity.py asserts the two stay identical.
+def content_sha(data: bytes) -> str:
+    """SHA-256 of content, with CRLF folded to LF first."""
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+
+
 def blob_digests(specs: list[str]) -> dict[str, str]:
     """SHA-256 of each `<rev>:<path>` blob, skipping any git cannot resolve.
 
@@ -89,9 +97,11 @@ def blob_digests(specs: list[str]) -> dict[str, str]:
     this runs while someone is waiting on a commit or a push, and a change set
     of a few hundred files is ordinary.
 
-    The digest must be computed the same way `writer.file_sha` computes it —
-    SHA-256 over the raw bytes, no decoding — or every comparison reads as
-    permanent drift.
+    The digest must be computed the same way `writer.content_sha` computes it,
+    or every comparison reads as permanent drift — which is exactly what
+    happened before `content_sha` folded CRLF: the builder hashes the working
+    tree and this hashes the blob, and on a repo with `text=auto eol=lf` those
+    differ for every text file on a Windows checkout.
     """
     if not specs:
         return {}
@@ -120,7 +130,7 @@ def blob_digests(specs: list[str]) -> dict[str, str]:
             size = int(header[2])
         except ValueError:
             break  # desynced from the stream — stop rather than misalign
-        result[spec] = hashlib.sha256(out[pos : pos + size]).hexdigest()
+        result[spec] = content_sha(out[pos : pos + size])
         pos += size + 1  # git writes a newline after the content
     return result
 
