@@ -2,6 +2,67 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.5.2] — 2026-09-06 — the gate reads the command, not just the word `grep`
+
+### Changed — the search allowance is flat
+
+A query granted one search per file its answer named, plus a buffer. Those files
+are located searches, which are free — so the grant scaled with the one quantity
+that cannot consume it, and an answer naming three files bought six searches to
+cover three accesses that already cost nothing.
+
+The allowance is now a flat `gate_credit` (default 3), and it is for the
+opposite case: what the answer did NOT name. A partial answer leaves a remainder
+the graph does not know about, and finding it takes exactly the unlocated
+searching this pays for.
+
+`anchors_named` goes with the scaling it existed for, and so does the
+`PostToolUse` pass on the codebase-kg tools: it existed to read the answer,
+nothing reads the answer, and the `PreToolUse` pass already grants the same.
+Four hook entries become three.
+
+### Fixed — a heredoc body is data, not commands
+
+A commit message that discusses `grep` was read as a search, so writing about
+this feature was denied by it. A heredoc is a closed lexical rule rather than
+general shell grammar — `<<WORD` opens one, a line equal to WORD closes it — so
+stripping the bodies before analysis is a dozen lines, not a parser.
+
+Splitting clauses now treats a newline as the separator it is. Without that a
+search on its own line stayed attached to whatever ran above it and was never
+seen, which the heredoc tests caught.
+
+### Fixed — a shell search is scoped to this repo, and only when it is a search
+
+The gate resolves the repo once, from the session, so it had no way to tell what
+a shell command was actually doing. `Grep` and `Glob` answer three questions
+through `tool_input["path"]` — which repo, reading what, and is the file already
+named — and none of them reached a command string. Everything below was denied:
+
+- `cd other-repo && grep -rn x .` — another repo, which this graph cannot answer
+  for. The worst of the four: the gate refused a search using a map of somewhere
+  else.
+- `cat f | grep x` — reads a pipe, never the tree.
+- `grep -m1 version pyproject.toml` — names one file, so the question the gate
+  asks is already answered.
+- `gh pr merge && ... && grep x f.json` — a `PreToolUse` hook allows or denies
+  the whole call, so one incidental clause took an unrelated merge down with it.
+
+One rule now covers all four, and it is the rule `Grep` already followed: gate a
+search aimed at the mapped tree that has not already located its file. It is
+strictly a narrowing, so a real repo-wide search is still denied.
+
+Two bugs found while testing it, both of which would have made the fix worse
+than the problem:
+
+- `shlex.split(posix=True)` reads a backslash as an escape, turning
+  `C:\Users\me\repo` into `C:Usersmerepo` — a path resolving nowhere, so a
+  search of another drive read as a search of this one. Splitting with
+  `posix=False` and stripping quotes by hand keeps Windows paths intact.
+- `find <path> -name x` collects predicates after its paths, so `-name`'s own
+  value was counted as a path. It does not exist, a missing path reads as "still
+  hunting", and the located-search exemption never applied.
+
 ## [0.5.1] — 2026-09-06 — one slash entry per feature
 
 ### Changed — the thin commands are gone; each feature is just its skill

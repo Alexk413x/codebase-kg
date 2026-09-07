@@ -26,7 +26,7 @@ Three ways through, each inferred from what the agent actually did:
 
 | Way through | What it means |
 |---|---|
-| **A query buys credit** | A codebase-kg MCP call grants one search per distinct file its answer named, plus `gate_credit` as a buffer. **Uncapped**, because the count is what the graph named rather than a number this hook guessed — an answer naming a hundred files is an agent with a hundred places to look. |
+| **A query buys credit** | A codebase-kg MCP call clears the next `gate_credit` searches. The allowance is for what the answer did NOT name — a partial answer leaves a remainder only searching will find. The files it did name are located searches, which cost nothing. |
 | **A located search** | A search scoped to a file the graph already anchors is never gated and spends no credit. The agent has evidently found it; gating that buys nothing. A *directory* is still gated — that is where you look when you do not yet know the file. |
 | **Repeat to insist** | The identical search, immediately after a denial, is always allowed. This is the escape hatch for code the graph has not mapped yet, and it is what makes the gate unable to strand anyone. |
 
@@ -72,7 +72,7 @@ See `../templates/codebase-kg.local.md.example`.
 |---|---|---|
 | `search_gate` | `block` | `block` \| `warn` (message, no deny) \| `off` |
 | `gate_shell_search` | `true` | also gate `grep`/`rg`/`find -name` run through a shell |
-| `gate_credit` | `3` | buffer added to the file count when a graph query grants credit; the count itself is uncapped |
+| `gate_credit` | `3` | searches one graph query clears |
 | `post_edit_nudge` | `true` | master off-switch for the nudge |
 | `nudge_every` | `5` | edits to mapped files between periodic nudges |
 | `root` | from the graph | only paths under here count |

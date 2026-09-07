@@ -185,55 +185,26 @@ def test_a_graph_query_buys_credit_for_the_searches_that_follow(
     assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "d"})) == "deny"
 
 
-def post(
+def query(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     proj: Path,
-    tool: str,
-    response: Any,
+    tool: str = "mcp__codebase-kg__kg_search",
     session: str = "s1",
 ) -> None:
-    """Drive the PostToolUse pass, where the graph's answer exists to be sized."""
-    payload = {
-        "hook_event_name": "PostToolUse",
-        "tool_name": tool,
-        "tool_input": {},
-        "tool_response": response,
-        "cwd": str(proj),
-        "session_id": session,
-    }
-    monkeypatch.setattr(sys, "stdin", _Stdin(json.dumps(payload)))
-    gate.main()
-    capsys.readouterr()
+    """Consult the graph, which is what grants credit."""
+    run(monkeypatch, capsys, proj, tool, {"q": "anything"}, session=session)
 
 
-@pytest.mark.parametrize(("response", "expected"), [
-    ({}, 3),                                                        # buffer only
-    ({"anchors": ["a.py#F", "b.py#G"]}, 5),                         # 2 files + buffer
-    ({"anchors": ["a.py#F", "a.py#G"]}, 4),                         # same file twice
-    ({"results": [{"anchors": ["a.py"]}, {"anchors": ["b.py"]}]}, 5),  # nested
-    ({"nodes": [{"anchors": [f"f{i}.py"]} for i in range(100)]}, 103),  # uncapped
-    ("a string, not a structure", 3),
-])
-def test_an_answer_is_worth_the_files_it_named(
-    response: Any, expected: int
-) -> None:
-    """One search per file the graph handed over, plus the buffer. An answer
-    naming ten files is an agent with ten files to read."""
-    assert gate.credit_for(response, {}) == expected
-
-
-def test_the_grant_is_uncapped_because_the_count_is_evidence(
-    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A hundred uses across a hundred files is a hundred places to look. The
-    anchor count is what the graph itself named, not a number this hook guessed,
-    so there is nothing for a ceiling to protect against."""
-    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search",
-         {"results": [{"anchors": [f"f{i}.py#S"]} for i in range(100)]})
-    for i in range(103):
-        assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"p{i}"}) is None
-    assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "last"})) == "deny"
+@pytest.mark.parametrize(
+    ("cfg", "expected"),
+    [({}, 3), ({"gate_credit": 1}, 1), ({"gate_credit": 0}, 0),
+     ({"gate_credit": -4}, 3), ({"gate_credit": "lots"}, 3)],
+)
+def test_the_allowance_is_the_setting(cfg: dict[str, Any], expected: int) -> None:
+    """Flat, so nothing about the answer changes it. A negative or unparseable
+    value costs the setting, never the feature."""
+    assert gate.gate_credit(cfg) == expected
 
 
 def test_following_up_on_anchored_files_costs_no_credit_at_all(
@@ -253,14 +224,13 @@ def test_following_up_on_anchored_files_costs_no_credit_at_all(
     assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "rank"})) == "deny"
 
 
-def test_the_sized_grant_reaches_the_gate_end_to_end(
+def test_the_grant_reaches_the_gate_end_to_end(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search",
-         {"results": [{"anchors": ["a.py#A"]}, {"anchors": ["b.py#B"]}]})
-    for pattern in "abcde":            # 2 anchors + 3 buffer
+    query(monkeypatch, capsys, repo)
+    for pattern in "abc":
         assert run(monkeypatch, capsys, repo, "Grep", {"pattern": pattern}) is None
-    assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "f"})) == "deny"
+    assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "d"})) == "deny"
 
 
 def test_a_post_pass_never_lowers_the_credit_already_held(
@@ -269,7 +239,7 @@ def test_a_post_pass_never_lowers_the_credit_already_held(
     """Both passes fire around one call. The PostToolUse count must not take
     away the floor the PreToolUse pass granted for an answer it could not read."""
     run(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search", {"q": "feed"})
-    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search", {"error": "boom"})
+    query(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search")
     for pattern in "abc":
         assert run(monkeypatch, capsys, repo, "Grep", {"pattern": pattern}) is None
 
@@ -279,15 +249,13 @@ def test_asking_again_tops_the_credit_back_up(
 ) -> None:
     """The whole recovery path: run out, query again, carry on. Nothing about
     exhausting credit is terminal — it is a prompt to go back to the graph."""
-    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search",
-         {"results": [{"anchors": ["a.py#A"]}]})          # 1 + 3 = 4
-    for i in range(4):
+    query(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search")
+    for i in range(3):
         assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"a{i}"}) is None
     assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "spent"})) == "deny"
 
-    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search",
-         {"results": [{"anchors": [f"b{i}.py#B"]} for i in range(4)]})   # 4 + 3 = 7
-    for i in range(7):
+    query(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search")
+    for i in range(3):
         assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"b{i}"}) is None
     assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "again"})) == "deny"
 
@@ -299,22 +267,21 @@ def test_credit_cannot_be_farmed_by_repeating_a_cheap_query(
     Otherwise `kg_stats` in a loop banks the session: five answers naming nothing
     would buy fifteen searches for having learned nothing."""
     for _ in range(5):
-        post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_stats", {})
+        query(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_stats")
     for i in range(3):
         assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"c{i}"}) is None
     assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "farmed"})) == "deny"
 
 
-def test_a_smaller_answer_never_lowers_the_credit_in_hand(
+def test_a_second_query_tops_up_rather_than_stacking(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The other half of `max`: consulting the graph again must never cost an
-    agent the allowance a bigger answer already earned it."""
-    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search",
-         {"results": [{"anchors": [f"d{i}.py#D"]} for i in range(6)]})   # 9
-    assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "one"}) is None  # 8 left
-    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_stats", {})          # worth 3
-    for i in range(8):
+    """`max`, not `+`: querying again restores the allowance without banking it.
+    Spend one of three, ask again, and there are three — not five."""
+    query(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search")
+    assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "one"}) is None
+    query(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_stats")
+    for i in range(3):
         assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"e{i}"}) is None
     assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "gone"})) == "deny"
 
@@ -563,3 +530,196 @@ def test_an_unreadable_graph_does_not_raise(
     (repo / "knowledge" / "code_graph.db").write_bytes(b"not a database")
     result = run(monkeypatch, capsys, repo, "Grep", {"pattern": "x"})
     assert decision(result) == "deny"  # root unreadable → treated as the whole repo
+
+
+# --- a shell search is scoped to THIS repo -----------------------------------
+# The gate resolves the repo once, from the session, so it could not see that a
+# command had cd'd elsewhere, was reading a pipe, or had already named its file.
+# Grep/Glob get all three answers from `tool_input["path"]`; these give the same
+# answers from a command string. Each case below denied wrongly before.
+@pytest.fixture
+def scoped(tmp_path: Path) -> Path:
+    """A project with one real file, and an unrelated repo beside it."""
+    proj = tmp_path / "proj"
+    (proj / "src").mkdir(parents=True)
+    (proj / "src" / "known.py").write_text("x = 1\n", encoding="utf-8")
+    (proj / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (tmp_path / "other" / "src").mkdir(parents=True)
+    return proj
+
+
+@pytest.mark.parametrize(
+    ("command", "gated", "why"),
+    [
+        ("grep -rn thing .", True, "the whole tree, no file known — the case it exists for"),
+        ("grep -rn thing src", True, "a directory is where you look when you do not know"),
+        ("rg thing src/", True, "same, other tool"),
+        ("grep -n thing src/known.py", False, "names one file"),
+        ("grep -m1 version pyproject.toml", False, "names one file"),
+        ("cat notes.txt | grep thing", False, "reads a pipe, never the tree"),
+        ("git log | grep -i fix", False, "reads a pipe"),
+        ("git status --porcelain", False, "not a search"),
+        ("gh pr merge 11 && grep -n version pyproject.toml", False,
+         "no clause aimed at the tree: the merge must not be denied"),
+        ("find src -name '*.py'", True, "a directory tree"),
+        ("find src/known.py -name x", False, "names one file"),
+    ],
+)
+def test_only_an_unlocated_search_of_this_repo_is_gated(
+    command: str, gated: bool, why: str, scoped: Path
+) -> None:
+    assert gate.shell_search_is_gated(command, scoped) is gated, why
+
+
+def test_a_search_of_another_repo_is_not_this_graphs_business(scoped: Path) -> None:
+    """The denial that was categorically wrong: this repo's graph cannot answer
+    a question about a different repo, so gating it costs a round trip and
+    offers nothing in return."""
+    other = scoped.parent / "other"
+    assert gate.shell_search_is_gated(f"cd {other} && grep -rn thing .", scoped) is False
+    assert gate.shell_search_is_gated(f"grep -rn thing {other}", scoped) is False
+
+
+def test_cd_back_into_the_repo_is_still_gated(scoped: Path) -> None:
+    """Following the `cd` has to work in both directions, or it is just a way
+    to slip past the gate."""
+    assert gate.shell_search_is_gated(f"cd {scoped} && grep -rn thing .", scoped) is True
+
+
+def test_a_command_that_is_not_a_search_returns_none(scoped: Path) -> None:
+    assert gate.shell_search_targets("git status", scoped) is None
+
+
+def test_an_unparseable_command_does_not_raise(scoped: Path) -> None:
+    """The hook fails open; a quoting error in someone's command must not be a
+    traceback in front of their search."""
+    for junk in ['grep "unclosed', "grep 'x", "", "   ", "|||", "&& &&"]:
+        gate.shell_search_is_gated(junk, scoped)
+
+
+def test_the_end_to_end_gate_lets_a_located_shell_search_through(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Through `main`, not just the predicate."""
+    target = repo / "src" / "ui" / "Known.kt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("class Known", encoding="utf-8")
+    result = run(
+        monkeypatch, capsys, repo, "Bash",
+        {"command": f"grep -n Known {target}"},
+    )
+    assert result is None, "a shell search naming one file must not be gated"
+
+
+def test_the_end_to_end_gate_still_denies_a_tree_search(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result = run(monkeypatch, capsys, repo, "Bash", {"command": "grep -rn Known ."})
+    assert decision(result) == "deny", "the case the gate exists for must still fire"
+
+
+# --- an exemption is free, not cheap -----------------------------------------
+def _credit(repo: Path, session: str = "s1") -> int:
+    try:
+        return int(json.loads(gate._state_path(repo, session).read_text(encoding="utf-8"))["credit"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+
+
+@pytest.mark.parametrize(
+    ("label", "command"),
+    [
+        ("names one file", "grep -n Known {known}"),
+        ("reads a pipe", "cat notes.txt | grep Known"),
+        ("another repo", "cd {outside} && grep -rn Known ."),
+    ],
+)
+def test_an_exempt_search_does_not_spend_credit(
+    label: str, command: str, repo: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An exemption means the question the gate asks was already answered, so it
+    costs nothing. Charging for it would make a located search a worse deal than
+    the tree search it replaced."""
+    known = repo / "src" / "ui" / "Known.kt"
+    known.parent.mkdir(parents=True, exist_ok=True)
+    known.write_text("class Known", encoding="utf-8")
+    run(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search", {"q": "known"})
+    before = _credit(repo)
+    assert before > 0, "the graph query should have granted credit"
+
+    result = run(monkeypatch, capsys, repo, "Bash", {
+        "command": command.format(known=known, outside=repo.parent),
+    })
+    assert result is None, f"{label}: must not be gated"
+    assert _credit(repo) == before, f"{label}: an exemption must not cost credit"
+
+
+def test_a_gated_search_does_spend_credit(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other half: credit exists to be spent by the case the gate is for."""
+    run(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search", {"q": "known"})
+    before = _credit(repo)
+    run(monkeypatch, capsys, repo, "Bash", {"command": "grep -rn Known ."})
+    assert _credit(repo) == before - 1
+
+
+# --- a heredoc body is data, not commands ------------------------------------
+COMMIT_ABOUT_GREP = """git add -A && git commit -q -F- <<'MSG'
+fix(gate): read the command, not just the word grep
+
+  cd other-repo && grep -rn x .     another repo
+  cat f | grep x                    reads a pipe
+MSG
+git log --oneline -1"""
+
+PR_BODY_ABOUT_GREP = """gh pr create --body "$(cat <<'BODY'
+`grep -rn x .` and `find src -name '*.py'` remain gated.
+BODY
+)" """
+
+
+@pytest.mark.parametrize(
+    ("label", "command"),
+    [
+        ("a commit message about grep", COMMIT_ABOUT_GREP),
+        ("a PR body about grep", PR_BODY_ABOUT_GREP),
+    ],
+)
+def test_writing_about_grep_is_not_searching(
+    label: str, command: str, scoped: Path
+) -> None:
+    """Both of these were denied while this feature was being written, which is
+    how they came to be the test cases."""
+    assert gate.shell_search_is_gated(command, scoped) is False, label
+    assert gate.is_shell_search(command) is False, label
+
+
+def test_a_real_search_survives_the_stripping(scoped: Path) -> None:
+    """The rule must not become a way to hide a search inside a heredoc-looking
+    command."""
+    assert gate.shell_search_is_gated("cd . && grep -rn thing .", scoped) is True
+    assert gate.shell_search_is_gated("cd . &&\ngrep -rn thing .", scoped) is True
+
+
+def test_a_search_after_a_heredoc_still_counts(scoped: Path) -> None:
+    """Only the body is data. The command that follows the closing delimiter is
+    a command again."""
+    command = "cat <<'EOF' > note.txt\njust text\nEOF\ngrep -rn thing ."
+    assert gate.shell_search_is_gated(command, scoped) is True
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("echo hi", "echo hi"),
+        ("cat <<'EOF'\nbody\nEOF", "cat <<'EOF'"),
+        ("cat <<EOF\nbody\nEOF\nafter", "cat <<EOF\nafter"),
+        ("cat <<-EOF\n\tbody\nEOF", "cat <<-EOF"),
+        ("cat <<'EOF'\nnever closed", "cat <<'EOF'"),   # unterminated: err toward not gating
+        ("grep x <<< 'herestring'", "grep x <<< 'herestring'"),  # <<< is not a heredoc
+    ],
+)
+def test_strip_heredocs(command: str, expected: str) -> None:
+    assert gate.strip_heredocs(command) == expected
