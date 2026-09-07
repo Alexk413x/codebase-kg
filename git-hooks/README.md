@@ -101,7 +101,7 @@ The textconv command it writes is a **tag-pinned** remote, so it means the same 
 machine:
 
 ```
-uvx --quiet --from "git+https://github.com/Alexk413x/codebase-kg.git@codebase-kg--v0.5.3#subdirectory=mcp" codebase-kg-export
+uvx --quiet --from "git+https://github.com/Alexk413x/codebase-kg.git@codebase-kg--v0.5.4#subdirectory=mcp" codebase-kg-export
 ```
 
 `--quiet` is load-bearing: without it uv prints resolution lines into the body of every diff. The tag
