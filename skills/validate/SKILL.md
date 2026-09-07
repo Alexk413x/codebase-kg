@@ -1,6 +1,6 @@
 ---
-name: kg-validate
-description: This skill should be used for the FAST, deterministic check on a repo that already has a graph — when the user asks to "validate the code graph", "lint code_graph.db", "run kg_validate", "find broken anchors", "check the parity links", or wants a cheap pre-check before committing. It reports anchors that no longer resolve to source, source files no node covers, mapped files whose contents changed since the graph was built, and broken or non-reciprocal counterpart and external links. Advisory only, never blocking. (For the deep SEMANTIC accuracy sweep that re-reads the source and judges whether descriptions are still true, use kg-audit instead.)
+name: validate
+description: This skill should be used for the FAST, deterministic check on a repo that already has a graph — when the user asks to "validate the code graph", "lint code_graph.db", "run kg_validate", "find broken anchors", "check the parity links", or wants a cheap pre-check before committing. It reports anchors that no longer resolve to source, source files no node covers, mapped files whose contents changed since the graph was built, and broken or non-reciprocal counterpart and external links. Advisory only, never blocking. (For the deep SEMANTIC accuracy sweep that re-reads the source and judges whether descriptions are still true, use audit instead.)
 allowed-tools:
   # Both names the host gives the server — bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin.
@@ -11,10 +11,10 @@ allowed-tools:
   - Read
 ---
 
-# kg-validate — deterministic drift check (advisory)
+# validate — deterministic drift check (advisory)
 
 Run the codebase-kg validator over a repo's `knowledge/code_graph.db` and report. This is the
-**cheap, deterministic** drift pre-check; `kg-audit` is the deeper source-vs-claim sweep.
+**cheap, deterministic** drift pre-check; `audit` is the deeper source-vs-claim sweep.
 **This skill is advisory — it never blocks a commit, a build, or a tool call.** (The plugin's search
 gate does deny a tool call, once per session; that is a separate component and not this one.)
 
@@ -73,8 +73,8 @@ that was never at risk:
    headline finding, not a footnote: a clean coverage number from an undeclared graph means nothing.
 4. **Report** in the format below. Sort by severity: ungreppable anchors first (they break
    navigation), then coverage gaps, then drift, then counterpart and external link issues.
-5. **Recommend, do not act.** Point each finding at its fix — `kg-refresh` for stale anchors and
-   coverage gaps, `kg-link` for counterpart issues. Do not edit the graph from this skill unless the
+5. **Recommend, do not act.** Point each finding at its fix — `refresh` for stale anchors and
+   coverage gaps, `link` for counterpart issues. Do not edit the graph from this skill unless the
    user asks.
 
 ## Report format
@@ -85,19 +85,19 @@ Source check: <ran against source | skipped — source root not found>
 Anchors checked: <N>
 
 Ungreppable anchors (<n>):
-- <node-id>: `<path#Symbol>` — <file not found | symbol not found in file>  → run kg-refresh
+- <node-id>: `<path#Symbol>` — <file not found | symbol not found in file>  → run refresh
 
 Coverage: <N covered, N gaps, N exempt, N out of scope>   [declared | NOT DECLARED]
-- <path> — in `covers`, no node anchors it  → run kg-refresh
+- <path> — in `covers`, no node anchors it  → run refresh
 
 Changed since built (<n>):
 - <node-id>: `<path>` — source edited after this description was written  → re-read and confirm
 
 Counterpart issues (<n>):
-- <node-id>: <not reciprocal | target id not in peer graph | file not found>  → run kg-link
+- <node-id>: <not reciprocal | target id not in peer graph | file not found>  → run link
 
 External link issues (<n>):
-- <node-id>: <target> — <malformed | names a node the peer graph does not contain>  → run kg-link
+- <node-id>: <target> — <malformed | names a node the peer graph does not contain>  → run link
 - <node-id>: <target> — peer graph absent or unreadable (unknown, not broken)
 
 Guaranteed by the store (not checked, cannot occur): <echo kg_validate's guaranteed_by_schema

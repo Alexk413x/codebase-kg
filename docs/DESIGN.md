@@ -37,13 +37,13 @@ These are locked — change them only with a deliberate reason.
 |---|---|---|
 | **Storage format** | Committed SQLite (`code_graph.db`) | Constant-time open, write-time integrity, persisted FTS5. Supersedes "Markdown-as-source". |
 | **Human readability** | Explicitly a non-goal | The artifact is AI-consumed. It is not read raw and not reviewed in diffs. |
-| **Plugin name** | `codebase-kg` | Unchanged **on purpose** — see "The rename we didn't do". Commands `/codebase-kg:query\|build\|refresh\|audit\|link\|validate\|setup`; MCP server `codebase-kg`. |
+| **Plugin name** | `codebase-kg` | Unchanged **on purpose** — see "The rename we didn't do". Slash `/codebase-kg:query\|build\|refresh\|audit\|link\|validate` (skills) + `setup` (command); MCP server `codebase-kg`. |
 | **MCP tool names** | `kg_*` | Unchanged, same reason. |
 | **Repo layout** | Standalone plugin at root | `plugin.json` at root + a thin `marketplace.json` so it installs. |
 | **Graph location** | Per-repo `knowledge/code_graph.db` | Always `knowledge/` (no repo-root fallback); override per clone via `graph_path` in `.local.md`. |
 | **Refresh engine** | Agent-driven first | The agent reads source and emits nodes — keeps it language-agnostic. Add static parsers later for speed; never as the only path. |
 | **Search index** | FTS5, persisted in the file | An in-memory index was deferred because building it landed on the load path. Persisting it removes that objection entirely: built once at write time, free on open. |
-| **Counterpart direction** | Reciprocal | Both sides link; `kg-validate` flags one-directional or dangling links. |
+| **Counterpart direction** | Reciprocal | Both sides link; `validate` flags one-directional or dangling links. |
 | **Freshness gate** | Content check, advisory | Replaced the date-based push block. See "The gate that measured the wrong thing". |
 
 ## Why a database

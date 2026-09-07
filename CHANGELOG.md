@@ -2,6 +2,37 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.5.1] — 2026-09-06 — one slash entry per feature
+
+### Changed — the thin commands are gone; each feature is just its skill
+
+Every feature shipped twice in the slash menu: `/codebase-kg:refresh` (a command)
+and `/codebase-kg:kg-refresh` (the skill it immediately delegated to). Thirteen
+entries for seven features.
+
+There is no way to hide either one. Skill frontmatter carries `name`,
+`description`, `allowed-tools` and `version` and nothing for visibility, and
+auto-discovery lists everything it finds — so the only control is not shipping
+the duplicate.
+
+The six thin commands are deleted and their skills renamed `kg-refresh` →
+`refresh`, `kg-build` → `build`, and so on. The slash name comes from the
+skill's *directory*, so the short names survive the deletion, and every existing
+`/codebase-kg:refresh` reference — including the ones the hooks print — still
+resolves. Nothing was lost with the commands: their scoping already lived in the
+skills, and a skill auto-triggers on its description where a command never did.
+
+`setup` stays a command. It has no skill, being a fixed procedure with no
+judgement in it, so it was never duplicated.
+
+The one real cost is `argument-hint`, the menu affordance that showed what a
+command takes. Skills have no equivalent; arguments still pass.
+
+`test_plugin_surface.py` now asserts the invariant rather than the old pairing:
+no name appears as both a skill and a command, a skill's directory matches its
+frontmatter `name`, and every `/codebase-kg:x` reference in any document
+resolves to something that exists.
+
 ## [0.5.0] — 2026-09-06 — the gate keeps asking, and the digest means something
 
 ### Changed — the search gate keeps asking instead of standing down

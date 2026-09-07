@@ -1,6 +1,6 @@
-# kg-build — partitioning & node-derivation detail
+# build — partitioning & node-derivation detail
 
-Loaded by `kg-build` when the repo is large enough that a single linear pass would be shallow.
+Loaded by `build` when the repo is large enough that a single linear pass would be shallow.
 
 ## When to parallelize
 

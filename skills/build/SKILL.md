@@ -1,6 +1,6 @@
 ---
-name: kg-build
-description: This skill should be used when the user asks to "build a code graph", "build a knowledge graph", "bootstrap a KG", "create a code_graph.db", "map this codebase", "generate the code graph", or onboard a repo that has no graph yet (or whose graph is too narrow to keep). It reads the source tree and emits a source-derived, symbol-anchored, committed code_graph.db per the codebase-kg schema. (For updating an existing graph against changed source, use kg-refresh instead. For converting an old KNOWLEDGE_GRAPH.md, run python -m codebase_kg.migrate — do not rebuild from scratch.)
+name: build
+description: This skill should be used when the user asks to "build a code graph", "build a knowledge graph", "bootstrap a KG", "create a code_graph.db", "map this codebase", "generate the code graph", or onboard a repo that has no graph yet (or whose graph is too narrow to keep). It reads the source tree and emits a source-derived, symbol-anchored, committed code_graph.db per the codebase-kg schema. (For updating an existing graph against changed source, use refresh instead. For converting an old KNOWLEDGE_GRAPH.md, run python -m codebase_kg.migrate — do not rebuild from scratch.)
 allowed-tools:
   # Both names the host gives the server: bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin. Listing only the bare form
@@ -28,7 +28,7 @@ allowed-tools:
   - Bash(codebase-kg-migrate:*)
 ---
 
-# kg-build — bootstrap a code graph from source
+# build — bootstrap a code graph from source
 
 Read a repo's source tree and emit a committed `knowledge/code_graph.db` that conforms to the
 **schema** (`SCHEMA.md` at the plugin root). The graph is **source-derived** (every claim traces to
@@ -132,7 +132,7 @@ See `references/build-strategy.md`.
 Write the JSON, then run the builder. Iterate on any node it names until it writes cleanly.
 
 ### 5. Validate
-Run `kg_validate` (or the `kg-validate` skill) and fix what it finds — chiefly ungreppable anchors
+Run `kg_validate` (or the `validate` skill) and fix what it finds — chiefly ungreppable anchors
 and `coverage.gaps`. Run `kg_stats` and report the shape (node/edge counts, kinds) to the user.
 
 If `coverage.declared` is `false`, go back to step 2 and write `covers`. A graph that has not
@@ -162,7 +162,7 @@ The search gate and the post-edit nudge ship inside the plugin and need no insta
 their own now that the repo has a graph.
 
 ### 8. Parity (only if paired)
-If a `counterpart` repo exists, leave parity fields out of this pass and hand off to `kg-link`,
+If a `counterpart` repo exists, leave parity fields out of this pass and hand off to `link`,
 which reads both codebases. Building one side cleanly first is the right order.
 
 ## Quality bar

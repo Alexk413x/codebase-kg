@@ -69,10 +69,41 @@ def allowed_kg_tools(path: Path) -> set[str]:
     return out
 
 
+def slash_names() -> set[str]:
+    """Every name that appears in the slash menu.
+
+    A skill and a command are listed the same way, and the name comes from the
+    skill's DIRECTORY rather than its frontmatter `name`. That is why a thin
+    command fronting a same-named skill showed the feature twice.
+    """
+    return {p.parent.name for p in SKILLS} | {p.stem for p in COMMANDS}
+
+
 def test_there_are_skills_to_check() -> None:
     """A glob that silently matches nothing would make every test below pass."""
     assert len(SKILLS) >= 6, [p.parent.name for p in SKILLS]
-    assert len(COMMANDS) >= 6, [p.name for p in COMMANDS]
+    assert len(COMMANDS) >= 1, [p.name for p in COMMANDS]
+
+
+def test_no_feature_appears_in_the_slash_menu_twice() -> None:
+    """The invariant the thin commands broke. Each feature is a skill (which
+    also auto-triggers) or a command (which does not), never both under one
+    name — the harness offers no way to hide either from the menu, so the only
+    control is not shipping the duplicate."""
+    skills = [p.parent.name for p in SKILLS]
+    commands = [p.stem for p in COMMANDS]
+    overlap = sorted(set(skills) & set(commands))
+    assert not overlap, f"listed twice in the slash menu: {overlap}"
+
+
+def test_a_skills_directory_matches_its_frontmatter_name() -> None:
+    """The directory wins in the menu, so a mismatch means the skill is invoked
+    under one name and describes itself as another."""
+    for skill in SKILLS:
+        declared = frontmatter(skill).get("name")
+        assert declared == skill.parent.name, (
+            f"{skill.parent.name}: frontmatter says name={declared!r}"
+        )
 
 
 # --- nothing invented --------------------------------------------------------
@@ -168,16 +199,29 @@ def test_the_gate_hands_off_to_a_skill_that_exists() -> None:
     sys.path.insert(0, str(ROOT / "hooks"))
     import kg_search_gate as gate
 
-    referenced = re.findall(r"/codebase-kg:(\w+)", gate.GATE_MESSAGE)
-    for name in referenced:
-        assert (ROOT / "commands" / f"{name}.md").is_file(), f"gate points at missing /{name}"
+    referenced = set(re.findall(r"/codebase-kg:(\w+)", gate.GATE_MESSAGE))
+    assert referenced, "the gate message no longer points anywhere"
+    missing = referenced - slash_names()
+    assert not missing, f"gate points at slash names that do not exist: {sorted(missing)}"
 
 
-# --- commands and skills line up ---------------------------------------------
-def test_every_command_that_delegates_names_a_real_skill() -> None:
-    skill_names = {p.parent.name for p in SKILLS}
-    for cmd in COMMANDS:
-        for name in re.findall(r"`(kg-[a-z]+)`\s+skill|Run the `(kg-[a-z]+)`", cmd.read_text(encoding="utf-8")):
-            named = next(filter(None, name), None)
-            if named:
-                assert named in skill_names, f"{cmd.name} delegates to missing skill {named}"
+# --- every slash reference resolves ------------------------------------------
+@pytest.mark.parametrize(
+    "doc", SKILLS + COMMANDS, ids=lambda p: p.parent.name if p.name == "SKILL.md" else p.stem
+)
+def test_every_slash_reference_in_a_document_resolves(doc: Path) -> None:
+    """`/codebase-kg:foo` in a skill or command has to name something that
+    exists. The rename from `kg-refresh` to `refresh` moved every one of these,
+    and a missed reference sends the reader to a slash command that is gone.
+    """
+    referenced = set(re.findall(r"/codebase-kg:([a-z][a-z0-9-]*)", doc.read_text(encoding="utf-8")))
+    missing = referenced - slash_names()
+    assert not missing, f"{doc} points at slash names that do not exist: {sorted(missing)}"
+
+
+def test_a_skill_that_names_another_skill_names_a_real_one() -> None:
+    """Cross-references between skills, written as `` `refresh` skill ``."""
+    names = {p.parent.name for p in SKILLS}
+    for doc in SKILLS + COMMANDS:
+        for named in re.findall(r"`([a-z][a-z0-9-]*)`\s+skill\b", doc.read_text(encoding="utf-8")):
+            assert named in names, f"{doc} names a missing skill: {named}"

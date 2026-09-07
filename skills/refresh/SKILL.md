@@ -1,6 +1,6 @@
 ---
-name: kg-refresh
-description: This skill should be used when the user asks to "refresh the code graph", "update the KG", "re-sync code_graph.db with the code", "the graph is stale", after shipping a feature when the graph should reflect new/changed/deleted code, or after a codebase-kg pre-commit/pre-push staleness message naming unmapped, deleted-but-anchored, or digest-drifted files. It comprehensively re-derives the affected nodes against current source and rebuilds the committed database. This skill WRITES. (For a from-scratch graph use kg-build; for a read-only report of what is stale without changing anything, use kg-audit or kg-validate.)
+name: refresh
+description: This skill should be used when the user asks to "refresh the code graph", "update the KG", "re-sync code_graph.db with the code", "the graph is stale", after shipping a feature when the graph should reflect new/changed/deleted code, or after a codebase-kg pre-commit/pre-push staleness message naming unmapped, deleted-but-anchored, or digest-drifted files. It comprehensively re-derives the affected nodes against current source and rebuilds the committed database. This skill WRITES. (For a from-scratch graph use build; for a read-only report of what is stale without changing anything, use audit or validate.)
 allowed-tools:
   # Both names the host gives the server: bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin.
@@ -42,7 +42,7 @@ allowed-tools:
   - Bash(codebase-kg-export:*)
 ---
 
-# kg-refresh — re-derive the graph against current source
+# refresh — re-derive the graph against current source
 
 Update `knowledge/code_graph.db` so it mirrors the code as it is **now**. Every refresh updates
 *all* affected **nodes** — add new, edit changed, remove deleted — plus edges.
@@ -184,7 +184,7 @@ Commit `knowledge/code_graph.db` alongside the source change.
 
 If nodes carry `parity`/`counterpart`, a code change may have **closed or opened a gap** (a feature
 that was `<codebase>-only` now exists on both sides, or a `matched` pair diverged). Update the
-parity fields on the affected nodes, or hand the cross-codebase reconciliation to `kg-link` if it
+parity fields on the affected nodes, or hand the cross-codebase reconciliation to `link` if it
 needs reading the peer repo. Note any parity change in the report.
 
 Remember the store only accepts the three legal shapes (`SCHEMA.md` §9): `matched` needs a
