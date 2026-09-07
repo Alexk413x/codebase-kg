@@ -138,8 +138,8 @@ codebase-kg/
 │   ├── code_graph.template.json
 │   └── codebase-kg.local.md.example
 ├── .mcp.json                 # registers the codebase-kg MCP server (uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp)
-├── commands/                 # /codebase-kg:query|build|refresh|audit|link|validate → skills; setup is inline
-├── skills/                   # kg-query / kg-build / kg-refresh / kg-audit / kg-link / kg-validate
+├── commands/                 # /codebase-kg:setup (the only command; every other feature is a skill)
+├── skills/                   # query / build / refresh / audit / link / validate
 ├── mcp/                      # the query server + build/export/migrate CLIs (uvx-run Python)
 ├── hooks/                    # Claude Code hooks: the search gate + the post-edit nudge
 └── git-hooks/                # advisory pre-commit + pre-push staleness checks, vendored into any repo (stdlib-only)
@@ -164,7 +164,7 @@ graph, and stays silent in every repo that does not. `SKIP_KG=1` silences it for
 `search_gate: warn` in `.claude/codebase-kg.local.md` downgrades it to a message, and
 `search_gate: off` disables it.
 
-The `kg-query` skill (`/codebase-kg:query`) is the workflow it hands off to: `kg_search` to locate,
+The `query` skill (`/codebase-kg:query`) is the workflow it hands off to: `kg_search` to locate,
 `kg_neighborhood` to expand, then read the anchored files.
 
 The division of labor it enforces: **the graph is authoritative for where code lives; the source is

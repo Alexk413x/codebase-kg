@@ -5,12 +5,12 @@ description + imperative workflow), with the heavy multi-agent procedures pushed
 
 | Skill | Use when | Writes? |
 |---|---|---|
-| [`kg-build`](kg-build/SKILL.md) | a repo has no graph (or too narrow a one) — bootstrap from source | writes `code_graph.db` |
-| [`kg-refresh`](kg-refresh/SKILL.md) | code changed — re-sync the affected nodes | rebuilds `code_graph.db` |
-| [`kg-audit`](kg-audit/SKILL.md) | deep read-only accuracy sweep — STALE / INACCURATE / MISSING | report only |
-| [`kg-link`](kg-link/SKILL.md) | establish/maintain cross-codebase parity (counterpart links) | rebuilds both graphs |
-| [`kg-validate`](kg-validate/SKILL.md) | cheap deterministic drift check against source | report only |
-| [`kg-query`](kg-query/SKILL.md) | "where does X live", "what depends on X" — find code through the graph | report only |
+| [`build`](build/SKILL.md) | a repo has no graph (or too narrow a one) — bootstrap from source | writes `code_graph.db` |
+| [`refresh`](refresh/SKILL.md) | code changed — re-sync the affected nodes | rebuilds `code_graph.db` |
+| [`audit`](audit/SKILL.md) | deep read-only accuracy sweep — STALE / INACCURATE / MISSING | report only |
+| [`link`](link/SKILL.md) | establish/maintain cross-codebase parity (counterpart links) | rebuilds both graphs |
+| [`validate`](validate/SKILL.md) | cheap deterministic drift check against source | report only |
+| [`query`](query/SKILL.md) | "where does X live", "what depends on X" — find code through the graph | report only |
 
 All six lean on the MCP query surface and the schema (`../SCHEMA.md`). List **both** server names
 in `allowed-tools` — `mcp__codebase-kg__*` when the server is installed directly and
@@ -18,7 +18,7 @@ in `allowed-tools` — `mcp__codebase-kg__*` when the server is installed direct
 asserts the two lists match, and that no registered tool is stranded outside every skill.
 
 Each skill opens on an MCP call rather than a `Grep`, which also means the search gate has stood
-down before any search runs. Keep it that way when reordering steps — `kg-build` is the one
+down before any search runs. Keep it that way when reordering steps — `build` is the one
 exception and says so inline.
 
 ## Writing the graph
@@ -39,7 +39,7 @@ building it is the point.
 # Call kg_stats first and use its `cli` field — it reports the invocation that
 # works in THIS repo. The `python -m` form below only works inside the plugin's
 # own checkout; a target repo has the plugin but no importable codebase_kg.
-python -m codebase_kg.export -o .kg-export.json      # read  (kg-refresh, kg-link, kg-audit)
+python -m codebase_kg.export -o .kg-export.json      # read  (refresh, link, audit)
 python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
 rm .kg-export.json                                   # a snapshot, not a source
 ```
@@ -51,9 +51,9 @@ file byte-identical.
 
 ## Division of labor
 
-- **kg-validate** — deterministic and cheap: do the anchors still resolve, is any source uncovered,
+- **validate** — deterministic and cheap: do the anchors still resolve, is any source uncovered,
   does the peer link back. Structural integrity is guaranteed by the store, so it is reported rather
   than checked.
-- **kg-audit** — semantic: does the `description` still match what the source does? The only check
+- **audit** — semantic: does the `description` still match what the source does? The only check
   that catches a node whose anchors resolve perfectly but whose claims are wrong.
-- **kg-refresh** — the only one that fixes drift in place.
+- **refresh** — the only one that fixes drift in place.

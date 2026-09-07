@@ -1,6 +1,6 @@
-# kg-audit — the multi-agent verification pattern
+# audit — the multi-agent verification pattern
 
-Loaded by `kg-audit`. The proven 4-agent source-vs-graph sweep.
+Loaded by `audit`. The proven 4-agent source-vs-graph sweep.
 
 ## Why partition
 
@@ -59,7 +59,7 @@ Run all group agents concurrently (one message, multiple `Task` calls).
   wide as the extensions already anchored, so the agents' MISSING is the *only* signal for a file
   type the graph has never touched.
 - Fold in `kg_validate`'s other findings (ungreppable anchors, non-reciprocal counterparts).
-- Sort STALE → INACCURATE → MISSING → structural. Report; recommend `kg-refresh`.
+- Sort STALE → INACCURATE → MISSING → structural. Report; recommend `refresh`.
 
 ## Honesty rules
 

@@ -106,4 +106,4 @@ recorded at build time. The status letter alone is not the signal — reporting 
 every push and mean nothing, which is why an earlier version reported none of them and went silent
 through most of the drift instead. The digest is what makes the difference between "this file was
 touched" and "this file is no longer what the description was written against". Judging whether the
-description still fits is still `kg_validate` and `kg-audit`; this only says where to look.
+description still fits is still `kg_validate` and `audit`; this only says where to look.

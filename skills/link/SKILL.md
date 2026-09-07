@@ -1,6 +1,6 @@
 ---
-name: kg-link
-description: This skill should be used when the user asks to "link two code graphs", "set up parity between iOS and Android", "find feature gaps between the apps", "add counterpart links", "map parity across codebases", or wants to track what matches/diverges between a codebase and its port (both repos must have a code_graph.db and be readable). It reads BOTH codebases' graphs and source, then sets reciprocal counterpart + parity + divergence fields. (For single-codebase work use kg-build / kg-refresh.)
+name: link
+description: This skill should be used when the user asks to "link two code graphs", "set up parity between iOS and Android", "find feature gaps between the apps", "add counterpart links", "map parity across codebases", or wants to track what matches/diverges between a codebase and its port (both repos must have a code_graph.db and be readable). It reads BOTH codebases' graphs and source, then sets reciprocal counterpart + parity + divergence fields. (For single-codebase work use build / refresh.)
 allowed-tools:
   # Both names the host gives the server: bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin.
@@ -38,7 +38,7 @@ allowed-tools:
   - Bash(codebase-kg-export:*)
 ---
 
-# kg-link — cross-codebase parity (counterpart linking)
+# link — cross-codebase parity (counterpart linking)
 
 Connect two repos' graphs so feature parity is **queryable**. Parity is expressed by **direct node
 cross-linking** (`SCHEMA.md` §9) — no separate parity file. Each node gains, where applicable:
@@ -59,7 +59,7 @@ work or decide which side is "right."
 
 ## Prerequisites
 
-- Both repos have a `code_graph.db` (run `kg-build`, or migrate, on each side first).
+- Both repos have a `code_graph.db` (run `build`, or migrate, on each side first).
 - Both codebases are readable locally. The peer path is `meta.counterpart` (or
   `.claude/codebase-kg.local.md`). A port may only be *readable* on this OS (e.g. iOS source on
   Windows) — reading is all this skill needs.

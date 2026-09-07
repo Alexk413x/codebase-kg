@@ -93,7 +93,7 @@ GATE_MESSAGE = (
     "2. Read the anchored files to confirm current behavior. The graph is "
     "authoritative for WHERE code lives; the source is authoritative for what it "
     "does now.\n"
-    "The kg-query skill (/codebase-kg:query) is this workflow in full.\n\n"
+    "The query skill (/codebase-kg:query) is this workflow in full.\n\n"
     "A graph query clears the next {credit} search(es). A search scoped to a file "
     "the graph already anchors is never gated. And if the graph does not cover "
     "what you need, run THIS SAME search again — an immediate repeat is always "

@@ -1,7 +1,7 @@
 ---
-name: kg-audit
+name: audit
 description: >-
-  This skill should be used when the user asks to "audit the code graph", "is the graph telling the truth", "are the descriptions still accurate", "find stale or inaccurate nodes", or wants a source-vs-graph verification sweep. It is the deep, SEMANTIC, multi-agent sweep: it partitions the graph, verifies each node's anchors and claims against current source, and reports STALE / MISSING / INACCURATE — advisory output, no edits. (For the fast, deterministic check, use kg-validate instead; to actually fix what the audit finds, use kg-refresh.)
+  This skill should be used when the user asks to "audit the code graph", "is the graph telling the truth", "are the descriptions still accurate", "find stale or inaccurate nodes", or wants a source-vs-graph verification sweep. It is the deep, SEMANTIC, multi-agent sweep: it partitions the graph, verifies each node's anchors and claims against current source, and reports STALE / MISSING / INACCURATE — advisory output, no edits. (For the fast, deterministic check, use validate instead; to actually fix what the audit finds, use refresh.)
 allowed-tools:
   # Both names the host gives the server: bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin.
@@ -32,11 +32,11 @@ allowed-tools:
   - Bash(codebase-kg-export:*)
 ---
 
-# kg-audit — source-vs-graph accuracy sweep (advisory)
+# audit — source-vs-graph accuracy sweep (advisory)
 
 Verify that an existing `knowledge/code_graph.db` still tells the truth about the code. This is the
 **deep, read-only** check — it reads source and compares it to every node's claims. It **reports**;
-it does not edit (hand fixes to `kg-refresh`). Advisory, never blocking.
+it does not edit (hand fixes to `refresh`). Advisory, never blocking.
 
 > For the multi-agent partitioning recipe and the per-node verification checklist, read
 > `references/audit-pattern.md`.
@@ -49,14 +49,14 @@ it does not edit (hand fixes to `kg-refresh`). Advisory, never blocking.
 > repo that has the plugin but no importable `codebase_kg` it is a `ModuleNotFoundError`, and
 > `CLAUDE_PLUGIN_ROOT` is not set in your shell so you cannot construct the path yourself.
 
-## What it catches that kg-validate can't
+## What it catches that validate can't
 
-`kg-validate` is deterministic: does this anchor resolve, is this file covered, does the peer link
-back. `kg-audit` is **semantic** — it reads the source and asks whether the `description` is still
+`validate` is deterministic: does this anchor resolve, is this file covered, does the peer link
+back. `audit` is **semantic** — it reads the source and asks whether the `description` is still
 *true*: dead class names, renamed symbols, wiring that changed, a node describing behavior the code
 no longer has, claims that were never accurate.
 
-It also catches the failure `kg-validate` structurally cannot: a node whose anchors all resolve
+It also catches the failure `validate` structurally cannot: a node whose anchors all resolve
 perfectly but whose description describes the wrong thing.
 
 ## Getting the nodes
@@ -64,10 +64,10 @@ perfectly but whose description describes the wrong thing.
 Use `python -m codebase_kg.export -o .kg-export.json` for the whole graph as JSON, or `kg_find_by_kind` /
 `kg_node` to pull the slice under audit. Export is usually right here — the audit reads every node
 anyway, and the JSON is easy to partition across sub-agents. Delete the export when the sweep is
-done; it is a snapshot, and building it later would revert whatever `kg-refresh` did in the meantime.
+done; it is a snapshot, and building it later would revert whatever `refresh` did in the meantime.
 
 The export is **read-only input to this skill**. An audit reports; it never writes, so it uses
-neither the round trip's build step nor the MCP write tools. Findings go to `kg-refresh`, which
+neither the round trip's build step nor the MCP write tools. Findings go to `refresh`, which
 picks the write path that fits the size of the fix.
 
 ## Workflow
@@ -96,7 +96,7 @@ one-line extension file may not; a new service does). Supplement with `git ls-fi
 
 ### 4. Consolidate + report
 Merge agent findings, dedup, sort by severity. Fold in `kg_validate`'s findings. Report; recommend
-`kg-refresh` to fix.
+`refresh` to fix.
 
 ## Report format
 
@@ -115,7 +115,7 @@ MISSING (source unit with no node) — <n>:
 
 Structural (from kg_validate): <summary>
 
-Verdict: <accurate | N findings — run kg-refresh to reconcile>
+Verdict: <accurate | N findings — run refresh to reconcile>
 ```
 
 ## Rules
