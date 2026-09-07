@@ -34,13 +34,23 @@ post_edit_nudge: true
 # reported the first time you touch it, regardless of this.)
 nudge_every: 5
 
-# The search gate: the first Grep/Glob of a session is denied with instructions to query the graph
-# first, then it stands down for that session. `warn` sends the message without denying; `off`
-# disables it. SKIP_KG=1 in the environment silences it for one shell.
+# The search gate: a Grep/Glob aimed at mapped code is denied with instructions to query the graph
+# first, and it keeps asking rather than standing down after one nudge. `warn` sends the message
+# without denying; `off` disables it. SKIP_KG=1 in the environment silences it for one shell.
 search_gate: block
 
 # Also treat a shell `grep`/`rg`/`find -name` as a search. Set false to gate only the search tools.
 gate_shell_search: true
+
+# The buffer added when a codebase-kg query grants credit. A query is worth one search per distinct
+# file its answer named, PLUS this — so an answer naming ten files clears thirteen searches. The
+# count itself is uncapped: it is what the graph named, not a number the hook guessed. Raise this
+# for more slack after each query; 0 means an answer is worth exactly the files it named.
+#
+# Two things never spend credit: a search already scoped to a file the graph anchors, and an
+# immediate repeat of a search that was just denied — the escape hatch for code the graph has not
+# mapped yet. No value here can strand an agent.
+gate_credit: 3
 ---
 
 # codebase-kg — local config

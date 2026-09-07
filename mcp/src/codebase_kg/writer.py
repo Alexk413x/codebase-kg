@@ -71,22 +71,35 @@ def fts_text(node: Node) -> str:
     return " ".join(p for p in parts if p)
 
 
-def file_sha(path: Path) -> str | None:
-    """SHA-256 of a file's bytes, or None if it cannot be read.
+def content_sha(data: bytes) -> str:
+    """SHA-256 of content, with CRLF folded to LF first.
 
     Bytes, not decoded text: the point is to notice *any* change to the source,
     and decoding with `errors="ignore"` would silently collapse edits inside
-    invalid sequences. Read in chunks so a large generated file does not have to
-    fit in memory just to be fingerprinted.
+    invalid sequences.
+
+    Line endings are the one thing normalized, because the two readers of this
+    digest never see the same bytes. The builder reads the working tree; the git
+    hooks read the blob, which on a repo with `text=auto eol=lf` is stored with
+    LF whatever the checkout holds. On Windows those differ for every text file,
+    so the comparison reported drift on all of them and meant nothing. A line
+    ending is also not something a description can be wrong about.
+
+    `git-hooks/kg_pre_push.py` carries a copy of this rule, and
+    `tests/test_hook_parity.py` asserts the two agree.
     """
-    h = hashlib.sha256()
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+
+
+def file_sha(path: Path) -> str | None:
+    """SHA-256 of a file's content, or None if it cannot be read."""
     try:
-        with path.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(65536), b""):
-                h.update(chunk)
+        # Read whole rather than in chunks: folding CRLF across a chunk boundary
+        # would need a carry, and a source file is small beside the graph that
+        # is already in memory.
+        return content_sha(path.read_bytes())
     except OSError:
         return None
-    return h.hexdigest()
 
 
 def stamp_hashes(

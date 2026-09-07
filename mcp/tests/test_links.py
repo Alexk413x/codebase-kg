@@ -25,6 +25,16 @@ from codebase_kg.schema import DDL
 from codebase_kg.store import CodeGraph
 from codebase_kg.writer import BuildError, build
 
+
+def node_of(graph: CodeGraph, node_id: str) -> Node:
+    """`CodeGraph.node` returns `Node | None`; every use here needs the node to
+    exist, and a missing one should fail as a named assertion rather than an
+    `AttributeError` on None."""
+    found = graph.node(node_id)
+    assert found is not None, f"no node {node_id!r} in the graph"
+    return found
+
+
 #: Quoted from cartographer's docs/GRAPH-LINKS.md §1. If this stops matching
 #: `links.EXTERNAL_LINK_DDL`, one of the two was edited on its own and the graphs
 #: have stopped speaking the same mechanism.
@@ -306,7 +316,7 @@ def test_a_link_survives_the_export_build_round_trip(tmp_path: Path) -> None:
     build(rebuilt, *codec.from_dict(doc)[:2])
     g2 = CodeGraph(rebuilt)
     try:
-        assert g2.node("rpn_screen").links == nodes[0].links
+        assert node_of(g2, "rpn_screen").links == nodes[0].links
     finally:
         g2.close()
 
@@ -314,7 +324,7 @@ def test_a_link_survives_the_export_build_round_trip(tmp_path: Path) -> None:
 def test_the_forward_direction_says_what_this_code_presents(tmp_path: Path) -> None:
     g = CodeGraph(_linked_graph(tmp_path))
     try:
-        assert [link.as_dict() for link in g.node("rpn_screen").links] == [
+        assert [link.as_dict() for link in node_of(g, "rpn_screen").links] == [
             {"target": "cartographer_graph.db#rpn-main", "kind": "presented-by"}
         ]
         assert tools.kg_node(g, "rpn_screen")["external_links"] == [
@@ -387,7 +397,7 @@ def test_a_graph_written_before_the_table_existed_still_opens(tmp_path: Path) ->
 
     g = CodeGraph(db)
     try:
-        assert g.node("a").links == [], "absent reads as 'no links', never as an error"
+        assert node_of(g, "a").links == [], "absent reads as 'no links', never as an error"
         assert g.external_links() == []
         assert g.nodes_linking_to("anything#at-all") == []
         assert tools.kg_validate(g)["external_link_issues"] == []
@@ -404,7 +414,7 @@ def test_upgrading_carries_links_through(tmp_path: Path) -> None:
     assert upgrade.main([str(db), "--force"]) == 0
     g = CodeGraph(db)
     try:
-        assert g.node("rpn_screen").links == nodes[0].links
+        assert node_of(g, "rpn_screen").links == nodes[0].links
     finally:
         g.close()
 

@@ -74,15 +74,28 @@ step 9 reported it as live.
   The `|| true` matters: this check is advisory and must not fail a push even if it errors.
 
 ### 7. Mark the graph in `.gitattributes`
-The repo needs the `diff=codegraph` attribute. `/codebase-kg:build` normally writes it; add it if it
-is missing. This line is **committed**, so every clone gets the wiring:
+**Check what the repo already says before writing anything:**
 
-```
-*.db binary diff=codegraph
-code_graph.db binary diff=codegraph
+```sh
+git check-attr diff -- knowledge/code_graph.db
 ```
 
-Verify with `git check-attr diff -- knowledge/code_graph.db` — expect `diff: codegraph`.
+- **`diff: codegraph`** → already correct. Change nothing and move to step 8.
+- **`diff: <something else>` or `unspecified`** → add the attribute.
+
+The line is **committed**, so every clone gets the wiring. Which line to add depends on whether this
+repo has other `.db` files:
+
+- **The code graph is the only `.db`** → `*.db binary diff=codegraph` plus
+  `code_graph.db binary diff=codegraph`, so a `graph_path` override still matches.
+- **The repo has other graphs** (a driver corpus, a cartographer map, an app database) → add **only**
+  the specific path: `knowledge/code_graph.db binary diff=codegraph`. A blanket `*.db` would capture
+  them too, and git applies the LAST matching pattern — so a `*.db binary diff=codegraph` written
+  underneath an existing `*_driver_graph.db binary diff=drivergraph` silently reroutes that graph
+  through the wrong exporter. That is not a diff, it is an error on every `git show`.
+
+Re-run `git check-attr` afterwards and confirm it reports `codegraph`. Never widen an attribute that
+already resolves correctly — a repo that routes several graph types has done this deliberately.
 
 ### 8. Register the textconv driver
 Without it, `git diff` says `Binary files a/knowledge/code_graph.db and b/knowledge/code_graph.db

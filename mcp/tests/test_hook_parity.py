@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT / "hooks"))
 import _config  # noqa: E402
 import kg_post_edit_check  # noqa: E402
 import kg_pre_push  # noqa: E402
+from codebase_kg import writer
 
 # DEFAULTS is dict[str, object]; the extension list is the one entry
 # tests need as a real list.
@@ -265,3 +266,52 @@ def test_the_meta_model_refuses_to_carry_a_dot_root() -> None:
 
     assert Meta(codebase="x", root=".").root == ""
     assert Meta(codebase="x", root="app/src").root == "app/src"
+
+
+# --- the content digest ------------------------------------------------------
+# The builder hashes the working tree and the hooks hash the git blob. Those are
+# the same bytes only when the checkout already uses LF. On Windows with
+# `text=auto eol=lf` every text file differed, so `changed_since_built` fired on
+# all of them and the signal meant nothing. Both sides fold CRLF now, and these
+# tests hold the two copies together the way the coverage block is held.
+def test_content_sha_is_identical_in_both_copies() -> None:
+    payload = b"class Known {\r\n    fun rank() = 1\r\n}\r\n"
+    assert kg_pre_push.content_sha(payload) == writer.content_sha(payload)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"a\r\nb\r\n",
+        b"a\nb\n",
+        b"",
+        b"no newline at all",
+        b"mixed\r\nendings\nhere\r\n",
+        b"\x00\x01binary\r\nbytes",
+    ],
+)
+def test_both_copies_agree_on_every_shape(data: bytes) -> None:
+    assert kg_pre_push.content_sha(data) == writer.content_sha(data)
+
+
+def test_crlf_and_lf_hash_the_same() -> None:
+    """The whole point: a checkout's line endings are not a change to the code,
+    and the two readers of this digest never see the same ones."""
+    assert writer.content_sha(b"a\r\nb\r\n") == writer.content_sha(b"a\nb\n")
+
+
+def test_a_real_content_change_still_differs() -> None:
+    """Normalizing line endings must not normalize away the signal."""
+    assert writer.content_sha(b"a\r\nb\r\n") != writer.content_sha(b"a\r\nc\r\n")
+
+
+def test_file_sha_folds_crlf_too(tmp_path) -> None:
+    crlf = tmp_path / "crlf.txt"
+    lf = tmp_path / "lf.txt"
+    crlf.write_bytes(b"one\r\ntwo\r\n")
+    lf.write_bytes(b"one\ntwo\n")
+    assert writer.file_sha(crlf) == writer.file_sha(lf)
+
+
+def test_file_sha_of_an_unreadable_path_is_none(tmp_path) -> None:
+    assert writer.file_sha(tmp_path / "nope.txt") is None

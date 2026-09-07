@@ -2,6 +2,95 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.5.0] — 2026-09-06 — the gate keeps asking, and the digest means something
+
+### Changed — the search gate keeps asking instead of standing down
+
+0.4.0's gate denied one search per session and then stood aside. An agent paid
+that toll once and grepped freely for the rest of the turn, which is most of a
+turn, so the gate was a formality rather than a habit.
+
+It now denies every search aimed at mapped code, and there is no force flag: a
+PreToolUse hook cannot add an argument to `Grep`, and a self-declared override
+is a rubber stamp an agent learns to always pass. Three ways through, each
+inferred from what the agent actually did:
+
+- **A query buys credit** — one search per distinct file the answer named, plus
+  `gate_credit` as a buffer (default 3, per-repo). The grant is `max`, not `+`,
+  so five cheap answers naming nothing are worth 3 rather than 15, and a small
+  answer never lowers an allowance a bigger one already earned.
+- **A located search is free** — a search already scoped to a file the graph
+  anchors is never gated and spends nothing. A directory still is; that is where
+  you look when you do not know the file.
+- **Repeating insists** — the identical search after a denial always passes.
+  That is the escape hatch for unmapped code, and it is what makes the gate
+  unable to strand anyone.
+
+The anchor count is uncapped on purpose: it is not a guess the hook is making,
+it is how many files the graph itself just named.
+
+### Fixed — the source digest was unusable on Windows
+
+The builder hashes the working tree; the git hooks hash the blob. On a repo with
+`text=auto eol=lf` checked out on Windows those are never the same bytes, so
+every mapped text file compared unequal and `changed_since_built` fired on all
+of them. The signal carried no information at all — which is worse than the
+`A`/`D`-only check it replaced, because that one at least stayed quiet.
+
+`writer.content_sha` folds CRLF to LF before hashing, and the vendored hook
+carries the same rule beside its copy of the coverage block. A line ending is
+not something a description can be wrong about.
+
+This invalidates every baseline written by 0.4.0: the first refresh after this
+change re-hashes them, and until then the affected files report as drifted.
+
+The unit tests could not have caught it. They wrote LF fixtures, where the two
+readers agree by accident. `test_drift_check.py` now builds a repo that stores
+LF and checks out CRLF, and `test_hook_parity.py` holds the two copies of the
+digest rule together the way it already holds the coverage block.
+
+### Fixed — `kg_stats.cli` was wrong in the only configuration that ships
+
+`cli_invocations` resolved the package root by looking for a `pyproject.toml`
+beside the package. That is true in a source checkout and false under
+`uvx --from <plugin>/mcp`, where the package lives in a venv — so the field added
+to give skills a runnable command handed them a bare `codebase-kg-build`, which
+is on no skill's PATH. The test only ever exercised the checkout.
+
+`package_root()` now tries three things in order: the repo checkout, the
+directory the distribution records in PEP 610 `direct_url.json` (what `uvx --from`
+leaves behind), and `CLAUDE_PLUGIN_ROOT`. Verified against a real uvx install
+from a copied plugin cache, not just the checkout.
+
+### Fixed — `setup.md` step 7 prescribed an attribute that breaks multi-graph repos
+
+It said to add `*.db binary diff=codegraph`. Git applies the last matching
+pattern, so in a repo that already routes `*_driver_graph.db` or
+`*cartographer_graph*.db` to their own exporters, that line captures them too and
+renders them through the wrong one — an error on every `git show`, not a diff.
+Step 7 now reads `git check-attr` first, leaves correct wiring alone, and adds
+only the specific path when other `.db` files exist.
+
+### Fixed — the export CLI required the repo root as its cwd
+
+`export.py` defaulted to a relative `knowledge/code_graph.db` with no parent
+search while the MCP server had always walked up, so every skill instruction that
+runs the exporter carried an unwritten "from the repo root" precondition. The
+walk-up lives in `store.discover_graph` and is shared rather than copied. An
+explicitly named path is still taken as given.
+
+### Changed — `commands/refresh.md` stops restating the skill
+
+The two write paths were explained in the command, the skill, `skills/README.md`
+and `SCHEMA.md` §7.1. The command now points at the skill, which is what "thin →
+skills" meant.
+
+### Fixed — the last four pyright errors
+
+`test_links.py` called `.links` on `CodeGraph.node`'s `Node | None`. A `node_of`
+helper asserts the node exists, so a missing one fails as a named assertion
+rather than an `AttributeError`.
+
 ## [0.4.0] — 2026-09-06 — the graph gets consulted first, and one command wires the repo
 
 ### Added — a PreToolUse search gate
