@@ -2,6 +2,45 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.5.4] — 2026-09-06 — the verification that verified the wrong repo
+
+Three fixes to the wiring 0.5.3 introduced. All are the same defect 0.5.3 set
+out to remove: a check that passes by testing something other than what it
+claims.
+
+### Fixed — `install.sh` configured the caller's repo, not its own
+
+Its header said it wires "THIS clone", but every path was keyed off the caller's
+working directory. Run as `sh /path/to/clone/.githooks/install.sh` — which is
+exactly what setup's step 10 instructed — it configured whatever repo the caller
+happened to be standing in. Reproduced from an unrelated throwaway repo: it set
+`core.hooksPath` to a `.githooks` that did not exist there, wrote the textconv
+driver, and exited 0.
+
+So step 10 wired and probed the outer repo, then reported the clone as verified.
+The installer now anchors on its own location, checks that path is inside a work
+tree, and `cd`s to that repo root before touching config.
+
+### Fixed — step 10's clone omitted `.gitattributes`
+
+`sparse-checkout set --no-cone .githooks knowledge` left out the file that routes
+the graph to `diff=codegraph`. Without it `check-attr` resolves to nothing and
+the diff falls back to `Binary files differ` however correct the wiring is.
+
+Found in a repo where, in one run, the installer's own probe reported JSON and
+the verification clone reported binary. A confident false failure, in the
+direction that costs most: it tells someone their driver is broken when it works.
+
+### Fixed — step 10 diffed a range that never touched the graph
+
+`HEAD~1 HEAD` is normally the wiring commit. An empty diff proves nothing either
+way. It now picks the last two commits that actually touched the graph, and says
+so when there is only one.
+
+The recipe also runs the installer from inside the clone and asserts `check-attr`
+before reading the diff, so a regression in either fix surfaces as itself rather
+than as a confusing binary fallback.
+
 ## [0.5.3] — 2026-09-06 — the wiring a clone never got
 
 ### Added — `git-hooks/install.sh`, the one command per clone
