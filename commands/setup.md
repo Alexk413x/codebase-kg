@@ -196,18 +196,30 @@ textconv driver as live in a repo where every other clone saw "Binary files diff
 Commit the wiring first (`.githooks/`, the mode changes, `.gitattributes`), then:
 
 ```sh
+# Diff a range that actually touched the graph. HEAD~1..HEAD is usually the
+# wiring commit, which does not touch it, and an empty diff proves nothing.
+NEW=$(git log -1 --format=%H -- knowledge/code_graph.db)
+OLD=$(git log -2 --format=%H -- knowledge/code_graph.db | tail -1)
+
 TMP=$(mktemp -d)
 git clone --shared --no-checkout . "$TMP/kgverify"
-git -C "$TMP/kgverify" sparse-checkout set --no-cone .githooks knowledge
+# .gitattributes is what routes the graph to diff=codegraph. Omit it and
+# check-attr resolves to nothing, so the diff falls back to "Binary files
+# differ" no matter how correct the wiring is — a confident false failure.
+git -C "$TMP/kgverify" sparse-checkout set --no-cone .githooks knowledge .gitattributes
 git -C "$TMP/kgverify" checkout
-sh "$TMP/kgverify/.githooks/install.sh"
-git -C "$TMP/kgverify" diff HEAD~1 HEAD -- knowledge/code_graph.db | head -20
+# Run it from inside the clone. install.sh anchors on its own location, but
+# staying out here hides a regression if that ever breaks again.
+(cd "$TMP/kgverify" && sh .githooks/install.sh)
+git -C "$TMP/kgverify" check-attr diff -- knowledge/code_graph.db
+git -C "$TMP/kgverify" diff "$OLD" "$NEW" -- knowledge/code_graph.db | head -20
 rm -rf "$TMP"
 ```
 
 That clone has its own empty `.git/config`, so it can only pass if the committed installer is what
-made it pass. Confirm the diff prints JSON with `+`/`-` lines rather than "Binary files differ". If
-the graph has only one commit, say so instead of inventing a check.
+made it pass. Confirm `check-attr` reports `codegraph` and the diff prints JSON with `+`/`-` lines
+rather than "Binary files differ". If the graph has only one commit, `OLD` and `NEW` are the same SHA and
+there is nothing to diff — say so instead of inventing a check.
 
 Also confirm, in this repo:
 
