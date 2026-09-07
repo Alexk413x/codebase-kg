@@ -1,5 +1,5 @@
 ---
-description: Wire codebase-kg into the current repo in one pass — advisory pre-commit and pre-push staleness checks, and the textconv driver that makes the committed graph readable in git diffs. Idempotent, non-destructive to existing hooks, and safe to re-run any time to repair or update the wiring.
+description: Wire codebase-kg into the current repo in one pass — advisory pre-commit and pre-push staleness checks, the textconv driver that makes the committed graph readable in git diffs, and a committed install.sh so every other clone gets the same wiring from one command. Idempotent, non-destructive to existing hooks, and safe to re-run any time to repair or update the wiring.
 argument-hint: "[repo path | empty = current repo]"
 ---
 
@@ -35,10 +35,12 @@ override it (see `templates/codebase-kg.local.md.example`).
 Run `git config core.hooksPath`:
 
 - **Set** (e.g. `.githooks`) → that's the hooks dir.
-- **Unset** → use `.githooks/` and run `git config core.hooksPath .githooks` (the shareable pattern;
-  `.git/hooks/` is not committed, so other clones wouldn't get it).
+- **Unset** → use `.githooks/`. Do **not** run `git config core.hooksPath` yourself here; step 9 runs
+  the committed installer, which sets it in this clone the same way it will in every other one. One
+  implementation, exercised by the person who wired the repo. (`.git/hooks/` is not committed, so
+  other clones would not get it either way.)
 
-### 4. Vendor both checkers
+### 4. Vendor the checkers and the installer
 Copy **`${CLAUDE_PLUGIN_ROOT}/git-hooks/kg_pre_push.py` and
 `${CLAUDE_PLUGIN_ROOT}/git-hooks/kg_pre_commit.py`** into the hooks dir. They are **stdlib-only**
 (sqlite3 included), so they run for every clone and CI with no plugin install.
@@ -48,7 +50,38 @@ and digest rules from `kg_pre_push.py` beside it rather than repeating them, so 
 together — and step 5 wires a call to it in either branch. An earlier version of this command copied
 it only in the fresh-repo branch, so a repo with an existing `pre-commit` got a hook line pointing at
 a file that was never installed; `|| true` swallowed the error and the check silently never ran while
-step 9 reported it as live.
+step 10 reported it as live.
+
+**Copy `${CLAUDE_PLUGIN_ROOT}/git-hooks/install.sh` into the hooks dir too, and stamp its version
+pin.** This is the file that makes every *other* clone work. `core.hooksPath` and the
+`diff.codegraph.*` settings live in `.git/config`, which git never clones — so without a committed
+installer, this command wires the one shell it runs in and every other checkout of the repo gets
+inert hooks and "Binary files differ" forever, with nothing anywhere reporting it.
+
+Stamp the pin after copying:
+
+1. Read `version` from `${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json`.
+2. Confirm the matching tag is actually published — an unreleased version pins the installer at a
+   URL that resolves for nobody:
+   ```sh
+   git ls-remote --tags https://github.com/Alexk413x/codebase-kg.git "codebase-kg--v<version>"
+   ```
+   If that prints nothing, use the newest tag it *does* list and say which version you pinned and
+   why.
+3. Rewrite the one line in the copied `install.sh`:
+   ```sh
+   KG_VERSION="${KG_VERSION:-<version>}"
+   ```
+
+The stamp is a starting value, not a live link. `install.sh` is committed, so the pin only moves when
+someone re-runs this command and commits the change — which is what a pin is for. Anyone can override
+per-clone with `KG_VERSION=` or `KG_TEXTCONV=` without editing the committed file.
+
+**Tell the user if the plugin repo is private.** `install.sh` defaults to
+`uvx --from git+https://github.com/Alexk413x/codebase-kg.git@…`, which only resolves for someone with
+read access. On a private repo a teammate without access gets an auth prompt during onboarding, and a
+teammate with access but no credential helper gets one too. Say so, and point at the `KG_TEXTCONV`
+override for anyone who has the package locally.
 
 ### 5. Wire the `pre-commit`
 - **No existing `pre-commit`** → copy `${CLAUDE_PLUGIN_ROOT}/git-hooks/pre-commit` into the hooks
@@ -97,43 +130,108 @@ repo has other `.db` files:
 Re-run `git check-attr` afterwards and confirm it reports `codegraph`. Never widen an attribute that
 already resolves correctly — a repo that routes several graph types has done this deliberately.
 
-### 8. Register the textconv driver
-Without it, `git diff` says `Binary files a/knowledge/code_graph.db and b/knowledge/code_graph.db
-differ` and a reviewer has to take the commit message on faith. With it, git diffs the graph's JSON
-export, so a change shows up as which nodes, anchors and edges moved. Nothing about what is
-committed changes — this only affects how git *displays* the file, per clone.
+### 8. Fix the committed exec bit on the hooks
+
+A hook committed as mode `100644` — the normal outcome of writing it from Windows — is **skipped by
+git on macOS and Linux with no message at all**. The check never runs, and nothing reports that it
+did not. Check what is in the index, not what is on disk:
 
 ```sh
-git config diff.codegraph.textconv "uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp codebase-kg-export"
-git config diff.codegraph.binary true
-git config diff.codegraph.cachetextconv true
+git ls-files -s -- .githooks/pre-commit .githooks/pre-push .githooks/kg_pre_commit.py .githooks/kg_pre_push.py
 ```
 
-`diff.codegraph.binary true` tells git the source really is binary, so it uses textconv for display
-but never tries to generate a patch that could be applied back. `cachetextconv` caches converted
-output per blob, so re-reviewing history does not re-export every time.
-
-If the repo already has the package on its interpreter, prefer the faster form — `uvx` re-resolves
-the environment on each invocation, which is noticeable across a long `git log -p`:
+Any line starting `100644` needs correcting. `chmod +x` alone does not fix it on Windows, where
+`core.filemode` is false and git ignores the on-disk bit entirely — the index is the only thing that
+travels:
 
 ```sh
-git config diff.codegraph.textconv "python -m codebase_kg.export"
+git update-index --chmod=+x .githooks/pre-commit .githooks/pre-push .githooks/kg_pre_commit.py .githooks/kg_pre_push.py
 ```
 
-### 9. Verify + explain
-- Confirm both git hooks are executable and `core.hooksPath` resolves.
-- Confirm `git diff HEAD~1 -- knowledge/code_graph.db` prints JSON with `+`/`-` lines rather than
-  "Binary files differ". (If the graph has only one commit, say so instead of inventing a check.)
-- Tell the user what is now live:
-  - **Search gate** (from the plugin, no install): the first `Grep`/`Glob` or shell `grep`/`rg`/
-    `find -name` of a session is denied once with the instruction to query the graph first, then it
-    stands down for that session. Any codebase-kg MCP call stands it down too.
-  - **Post-edit nudge** (from the plugin, no install): advisory, points at `/codebase-kg:refresh`.
-  - **Git hooks** (installed here): advisory, never blocking. They answer "does this change move the
-    code away from the map?" — `pre-commit` over what is staged, `pre-push` over what is being
-    pushed. `SKIP_KG=1` silences the commit-time one, and the search gate, when a change
-    deliberately outruns the graph.
-  - The fix for drift is `/codebase-kg:refresh`; deeper drift is `/codebase-kg:validate`.
+That stages a mode change. Tell the user it needs committing along with the rest of the wiring;
+uncommitted, it fixes nothing for anyone else.
+
+### 9. Run the committed installer
+
+Everything that is per-clone — `core.hooksPath` and the three `diff.codegraph.*` settings — lives in
+`.git/config`, which git never clones. Rather than setting it here, run the installer you vendored in
+step 4, from the repo root:
+
+```sh
+sh .githooks/install.sh
+```
+
+It sets `core.hooksPath`, `chmod +x`s the four hook files, registers the textconv driver, and then
+**probes it against the real graph** and reports if it did not render JSON. It is idempotent, so
+re-running is free.
+
+Do not re-implement its `git config` calls here. The whole defect this fixes was setup wiring its own
+shell and nothing else; the fix only holds if the shell setup wires is the same one a fresh clone
+gets.
+
+**The textconv value it writes is machine-independent, on purpose:**
+
+```
+uvx --quiet --from "git+https://github.com/Alexk413x/codebase-kg.git@codebase-kg--v<version>#subdirectory=mcp" codebase-kg-export
+```
+
+- **Never `${CLAUDE_PLUGIN_ROOT}`.** That expands to a version-stamped local cache path
+  (`…/.claude/plugins/cache/codebase-kg/codebase-kg/0.5.2/mcp`) and is written into `.git/config`
+  verbatim. It resolves on exactly one machine, and breaks there on the next plugin update. Git
+  reports nothing when a textconv command is missing — it just shows the binary fallback.
+- **A tag, never a branch.** This runs on every diff of the graph; it must not change under the repo
+  silently.
+- **`--quiet` is not cosmetic.** Without it, uv prints resolution lines into the body of every diff.
+
+If `uvx` is missing, the installer skips the textconv half with an explanation and still wires the
+hooks. Report that outcome as a skip, not as success.
+
+### 10. Verify + explain
+
+**Verify the wiring the way a teammate will meet it — in a clone, not in this shell.** Setup's old
+step 9 checked `git diff` in the shell that had just run `git config`, which is a test of the value
+it set one line earlier and passes no matter how machine-local that value is. It reported the
+textconv driver as live in a repo where every other clone saw "Binary files differ".
+
+Commit the wiring first (`.githooks/`, the mode changes, `.gitattributes`), then:
+
+```sh
+TMP=$(mktemp -d)
+git clone --shared --no-checkout . "$TMP/kgverify"
+git -C "$TMP/kgverify" sparse-checkout set --no-cone .githooks knowledge
+git -C "$TMP/kgverify" checkout
+sh "$TMP/kgverify/.githooks/install.sh"
+git -C "$TMP/kgverify" diff HEAD~1 HEAD -- knowledge/code_graph.db | head -20
+rm -rf "$TMP"
+```
+
+That clone has its own empty `.git/config`, so it can only pass if the committed installer is what
+made it pass. Confirm the diff prints JSON with `+`/`-` lines rather than "Binary files differ". If
+the graph has only one commit, say so instead of inventing a check.
+
+Also confirm, in this repo:
+
+- `git ls-files -s` reports `100755` for all four hook files (step 8).
+- `git check-attr diff -- knowledge/code_graph.db` reports `codegraph` (step 7).
+- `git config --get core.hooksPath` resolves to the hooks dir.
+
+Then tell the user what is now live:
+
+- **Search gate** (from the plugin, no install): the first `Grep`/`Glob` or shell `grep`/`rg`/
+  `find -name` of a session is denied once with the instruction to query the graph first, then it
+  stands down for that session. Any codebase-kg MCP call stands it down too.
+- **Post-edit nudge** (from the plugin, no install): advisory, points at `/codebase-kg:refresh`.
+- **Unwired-clone notice** (from the plugin, no install): at session start, a clone of this repo with
+  no `core.hooksPath` or no `diff.codegraph.textconv` gets one line naming `sh .githooks/install.sh`.
+  It only prints — it never writes git config, because git leaves `.git/config` out of a clone
+  precisely so that cloning cannot cause code to run.
+- **Git hooks** (installed here): advisory, never blocking. They answer "does this change move the
+  code away from the map?" — `pre-commit` over what is staged, `pre-push` over what is being
+  pushed. `SKIP_KG=1` silences the commit-time one, and the search gate, when a change
+  deliberately outruns the graph.
+- **One command per clone**: everyone else who clones this repo runs `sh .githooks/install.sh` once.
+  It needs plain git, POSIX sh and `uv` — no Claude Code and no plugin install.
+- The fix for drift is `/codebase-kg:refresh`; deeper drift is `/codebase-kg:validate`.
 
 ## What this does not solve
 
@@ -157,6 +255,8 @@ rebuild after merging is reproducible rather than a third distinct artifact. See
 ## Posture
 
 Non-destructive: never overwrite an existing hook — integrate a call into it. Advisory, always
-exit 0 (this replaced an earlier blocking, date-based gate — see `docs/DESIGN.md`). The hooks and
-`.gitattributes` are committed in the repo, so all clones and CI behave the same; the textconv
-driver is local git config, so a clone that skips setup just sees the old binary behavior.
+exit 0 (this replaced an earlier blocking, date-based gate — see `docs/DESIGN.md`). The hooks,
+`install.sh` and `.gitattributes` are committed in the repo, so all clones and CI behave the same;
+`core.hooksPath` and the textconv driver are local git config, which git never clones, so each clone
+runs `sh .githooks/install.sh` once. A clone that skips it sees inert hooks and the old binary
+behavior — the session-start notice is what makes that visible instead of silent.

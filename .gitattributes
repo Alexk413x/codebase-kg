@@ -16,7 +16,8 @@
 # `diff=codegraph` makes it reviewable anyway: with the driver configured, git
 # renders the graph as its JSON export, so `git diff` / `show` / `log -p` show
 # which nodes changed instead of "Binary files differ". Without the driver
-# nothing breaks — git falls back to treating it as opaque. Configure with:
-#     /codebase-kg:setup-diff        (or see docs/REVIEW.md)
+# nothing breaks — git falls back to treating it as opaque. The driver lives in
+# .git/config, which git never clones, so each clone configures it once:
+#     sh .githooks/install.sh        (or /codebase-kg:setup, or docs/REVIEW.md)
 *.db binary diff=codegraph
 code_graph.db binary diff=codegraph

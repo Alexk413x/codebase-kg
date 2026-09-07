@@ -2,6 +2,102 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.5.3] — 2026-09-06 — the wiring a clone never got
+
+### Added — `git-hooks/install.sh`, the one command per clone
+
+`core.hooksPath` and the `diff.codegraph.*` settings live in `.git/config`, and
+git never clones `.git/config`. So `/codebase-kg:setup` wired the one shell it
+ran in, and every other clone of that repo got inert hooks and
+`Binary files differ` on the graph — with nothing anywhere reporting it, because
+git falls back silently when a textconv command is missing.
+
+The installer is vendored beside the checkers and committed, so a fresh clone
+needs exactly one command:
+
+```sh
+sh .githooks/install.sh
+```
+
+Plain git, POSIX sh and `uv` — no Claude Code and no plugin install. It sets
+`core.hooksPath` (refusing to clobber one that points elsewhere), `chmod +x`es
+the four hook files, registers the three `diff.codegraph.*` settings, and then
+runs the driver against the real graph rather than trusting the value it just
+wrote. Idempotent: a second run changes nothing.
+
+`KG_VERSION`, `KG_SOURCE` and `KG_TEXTCONV` override it per clone without
+editing the committed file.
+
+The driver is probed before it is configured, and a driver that fails is left
+unset — including one an earlier run wrote. A broken textconv does not degrade
+to `Binary files differ`; git aborts with `fatal: unable to read files to diff`.
+An unreachable driver is worse than no driver.
+
+### Fixed — the textconv command was machine-local
+
+Setup wrote `uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp codebase-kg-export` into
+`.git/config`, where `${CLAUDE_PLUGIN_ROOT}` had already expanded to a
+version-stamped local cache path. It resolved on exactly one machine, and broke
+there on the next plugin update.
+
+It is now a tag-pinned remote, which means the same thing everywhere:
+
+```
+uvx --quiet --from "git+https://github.com/Alexk413x/codebase-kg.git@codebase-kg--v0.5.3#subdirectory=mcp" codebase-kg-export
+```
+
+`--quiet` is load-bearing — without it uv prints resolution lines into the body
+of every diff. A tag, never a branch: this runs on every diff of the graph and
+must not change under the repo silently. Setup stamps the version it shipped
+with, after checking the tag is actually published.
+
+`diff.codegraph.cachetextconv` is now conditional on a git identity existing.
+Its cache lives in a notes ref, and without an identity git fails the whole diff
+rather than falling back — a worse outcome than no caching.
+
+### Fixed — setup verified the textconv driver in the shell that had set it
+
+Step 9 ran `git diff` one line after `git config`. That passes no matter how
+machine-local the value is, which is exactly how the command reported the driver
+as live in a repo where every other clone saw `Binary files differ`.
+
+It now verifies from a throwaway clone with its own empty `.git/config`, so the
+only thing that can make it pass is the committed installer.
+
+### Fixed — the shipped hook templates were committed non-executable
+
+`git-hooks/pre-commit`, `pre-push`, `kg_pre_commit.py` and `kg_pre_push.py` were
+all `100644` in this repo. `cp` preserves the source mode, so a repo wired from
+a POSIX plugin cache inherited hooks git would skip. Same defect as below, one
+level up — a test now pins the modes.
+
+### Fixed — setup did not check the committed exec bit
+
+A hook committed as mode `100644`, the normal outcome of writing it from
+Windows, is skipped by git on macOS and Linux with no message at all. `chmod +x`
+does not fix it from Windows either, where `core.filemode` is false and only the
+index travels. Setup now reads `git ls-files -s` and corrects the mode with
+`git update-index --chmod=+x`; the installer names any file still committed
+non-executable.
+
+### Added — a `SessionStart` notice for an unwired clone
+
+`hooks/kg_session_start.py` prints one line naming the install command when this
+clone has the committed checkers but no `core.hooksPath` or no
+`diff.codegraph.textconv`.
+
+**It prints and does nothing else.** Git leaves `.git/config` out of a clone on
+purpose: cloning a repo must not be able to make it execute code, and
+`core.hooksPath` is the switch that makes a repo's vendored `.githooks/*.py`
+run. Wiring it automatically routes around that protection. A plugin the user
+installed may suggest; it may not decide. This is now locked design decision #11.
+
+Silent unless all of: inside a git work tree, the graph exists, a hooks dir with
+both vendored checkers exists, and one of the two settings is unset. Never fires
+when `core.hooksPath` already points somewhere else — that repo made a
+deliberate choice, and nagging it toward clobbering its own config is worse than
+saying nothing.
+
 ## [0.5.2] — 2026-09-06 — the gate reads the command, not just the word `grep`
 
 ### Changed — the search allowance is flat
