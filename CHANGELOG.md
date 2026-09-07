@@ -2,7 +2,32 @@
 
 All notable changes to the `codebase-kg` plugin.
 
-## [Unreleased]
+## [0.5.0] — 2026-09-06 — the gate keeps asking, and the digest means something
+
+### Changed — the search gate keeps asking instead of standing down
+
+0.4.0's gate denied one search per session and then stood aside. An agent paid
+that toll once and grepped freely for the rest of the turn, which is most of a
+turn, so the gate was a formality rather than a habit.
+
+It now denies every search aimed at mapped code, and there is no force flag: a
+PreToolUse hook cannot add an argument to `Grep`, and a self-declared override
+is a rubber stamp an agent learns to always pass. Three ways through, each
+inferred from what the agent actually did:
+
+- **A query buys credit** — one search per distinct file the answer named, plus
+  `gate_credit` as a buffer (default 3, per-repo). The grant is `max`, not `+`,
+  so five cheap answers naming nothing are worth 3 rather than 15, and a small
+  answer never lowers an allowance a bigger one already earned.
+- **A located search is free** — a search already scoped to a file the graph
+  anchors is never gated and spends nothing. A directory still is; that is where
+  you look when you do not know the file.
+- **Repeating insists** — the identical search after a denial always passes.
+  That is the escape hatch for unmapped code, and it is what makes the gate
+  unable to strand anyone.
+
+The anchor count is uncapped on purpose: it is not a guess the hook is making,
+it is how many files the graph itself just named.
 
 ### Fixed — the source digest was unusable on Windows
 
