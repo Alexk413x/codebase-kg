@@ -16,7 +16,10 @@ opposite case: what the answer did NOT name. A partial answer leaves a remainder
 the graph does not know about, and finding it takes exactly the unlocated
 searching this pays for.
 
-`anchors_named` goes with the scaling it existed for.
+`anchors_named` goes with the scaling it existed for, and so does the
+`PostToolUse` pass on the codebase-kg tools: it existed to read the answer,
+nothing reads the answer, and the `PreToolUse` pass already grants the same.
+Four hook entries become three.
 
 ### Fixed — a shell search is scoped to this repo, and only when it is a search
 

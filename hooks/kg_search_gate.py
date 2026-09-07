@@ -177,15 +177,6 @@ def gate_credit(cfg: dict[str, object]) -> int:
     return _int_setting(cfg, "gate_credit", 3)
 
 
-def credit_for(response: object, cfg: dict[str, object]) -> int:
-    """What one graph answer is worth, in searches.
-
-    Flat, because the allowance is for what the answer did NOT name: the files
-    it did name are located searches, which are free.
-    """
-    return gate_credit(cfg)
-
-
 def gate_mode(cfg: dict[str, object]) -> str:
     """`search_gate` as one of block / warn / off.
 
@@ -463,7 +454,7 @@ def _run(data: dict[str, object]) -> None:
     # or that this hook cannot parse worth something rather than nothing.
     if _KG_TOOL.match(tool):
         state = _read_state(proj, session)
-        earned = credit_for(data.get("tool_response"), cfg)
+        earned = gate_credit(cfg)
         # A grant REPLACES rather than accumulates, and takes the larger of the
         # two. Both halves earn their place: `+` would let `kg_stats` in a loop
         # bank the whole session for having learned nothing, and taking the new
