@@ -34,18 +34,26 @@ HOOK_FILES="pre-commit pre-push kg_pre_commit.py kg_pre_push.py"
 say() { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
 
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  warn "codebase-kg: not inside a git work tree. Run this from the repo."
+# Anchor every path on this script's own location, then work from that repo's
+# root. Keyed off the caller's cwd instead, `sh /path/to/other/clone/.githooks/
+# install.sh` silently configured whatever repo the caller was standing in — it
+# set core.hooksPath on the wrong repo and exited 0.
+hooks_abs=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if ! (CDPATH= cd -- "$hooks_abs" && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
+  warn "codebase-kg: $hooks_abs is not inside a git work tree."
   exit 1
 fi
 
 # --show-prefix keeps this on git's own path spelling. Comparing `pwd` against
 # `git rev-parse --show-toplevel` does not work under Git Bash on Windows, where
 # one says /c/Users/... and the other says C:/Users/....
-hooks_abs=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 hooks_rel=$(CDPATH= cd -- "$hooks_abs" && git rev-parse --show-prefix)
 hooks_rel=${hooks_rel%/}
 [ -n "$hooks_rel" ] || hooks_rel="."
+
+# GRAPH and every git config call below are relative to the repo root.
+CDPATH= cd -- "$(CDPATH= cd -- "$hooks_abs" && git rev-parse --show-toplevel)"
 
 status=0
 
