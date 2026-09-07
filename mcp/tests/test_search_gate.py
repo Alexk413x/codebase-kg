@@ -649,3 +649,50 @@ def test_the_end_to_end_gate_still_denies_a_tree_search(
 ) -> None:
     result = run(monkeypatch, capsys, repo, "Bash", {"command": "grep -rn Known ."})
     assert decision(result) == "deny", "the case the gate exists for must still fire"
+
+
+# --- an exemption is free, not cheap -----------------------------------------
+def _credit(repo: Path, session: str = "s1") -> int:
+    try:
+        return int(json.loads(gate._state_path(repo, session).read_text(encoding="utf-8"))["credit"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+
+
+@pytest.mark.parametrize(
+    ("label", "command"),
+    [
+        ("names one file", "grep -n Known {known}"),
+        ("reads a pipe", "cat notes.txt | grep Known"),
+        ("another repo", "cd {outside} && grep -rn Known ."),
+    ],
+)
+def test_an_exempt_search_does_not_spend_credit(
+    label: str, command: str, repo: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An exemption means the question the gate asks was already answered, so it
+    costs nothing. Charging for it would make a located search a worse deal than
+    the tree search it replaced."""
+    known = repo / "src" / "ui" / "Known.kt"
+    known.parent.mkdir(parents=True, exist_ok=True)
+    known.write_text("class Known", encoding="utf-8")
+    run(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search", {"q": "known"})
+    before = _credit(repo)
+    assert before > 0, "the graph query should have granted credit"
+
+    result = run(monkeypatch, capsys, repo, "Bash", {
+        "command": command.format(known=known, outside=repo.parent),
+    })
+    assert result is None, f"{label}: must not be gated"
+    assert _credit(repo) == before, f"{label}: an exemption must not cost credit"
+
+
+def test_a_gated_search_does_spend_credit(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other half: credit exists to be spent by the case the gate is for."""
+    run(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search", {"q": "known"})
+    before = _credit(repo)
+    run(monkeypatch, capsys, repo, "Bash", {"command": "grep -rn Known ."})
+    assert _credit(repo) == before - 1
