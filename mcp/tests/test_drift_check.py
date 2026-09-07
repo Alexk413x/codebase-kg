@@ -275,3 +275,76 @@ def test_the_commit_hook_imports_one_implementation() -> None:
     assert commit_hook.analyze is g.analyze
     assert commit_hook.digests_for is g.digests_for
     assert commit_hook.drift_candidates is g.drift_candidates
+
+
+# --- the checkout's line endings are not a change ----------------------------
+# The builder hashes the working tree; this hook hashes the git blob. On a repo
+# with `text=auto eol=lf` checked out on Windows those differ for every text
+# file, so a comparison between them reported drift on all of them and carried
+# no information at all. The unit tests could not see it: they wrote LF files,
+# where the two happen to agree.
+CRLF_ORIGINAL = b"class Known {\r\n    fun rank() = 1\r\n}\r\n"
+CRLF_REWRITTEN = b"class Known {\r\n    fun rank() = weightedByRecency()\r\n}\r\n"
+
+
+@pytest.fixture
+def crlf_repo(tmp_path: Path) -> Path:
+    """A repo that stores LF and checks out CRLF, with a graph built from the
+    working tree the way `codebase-kg-build --source-root` does."""
+    repo = tmp_path / "crlf"
+    (repo / "src" / "ui").mkdir(parents=True)
+    (repo / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
+    (repo / "src" / "ui" / "Known.kt").write_bytes(CRLF_ORIGINAL)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    db = repo / "knowledge" / "code_graph.db"
+    db.parent.mkdir()
+    build(
+        db,
+        Meta(codebase="test", root="src", generated="2026-09-06"),
+        [Node(
+            id="known", kind="Ui", description="Ranks the feed.",
+            anchors=[Anchor("ui/Known.kt", "Known")], edges=[], section="UI",
+        )],
+        source_root=repo / "src",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "initial")
+    return repo
+
+
+def test_a_crlf_checkout_does_not_read_as_drifted(crlf_repo: Path) -> None:
+    """The regression. The blob is LF, the baseline came from a CRLF working
+    tree, and nothing about the file has changed."""
+    graph = g.read_graph(crlf_repo / "knowledge" / "code_graph.db")
+    assert graph is not None
+    baseline = graph.baselines["ui/Known.kt"]
+    cwd = os.getcwd()
+    try:
+        os.chdir(crlf_repo)
+        from_git = g.digests_for(["src/ui/Known.kt"], ["HEAD"])["src/ui/Known.kt"]
+    finally:
+        os.chdir(cwd)
+    assert from_git == baseline, "a CRLF checkout must not read as drift"
+
+
+def test_a_real_edit_in_a_crlf_checkout_still_reports(
+    crlf_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Folding line endings must not fold away the signal."""
+    (crlf_repo / "src" / "ui" / "Known.kt").write_bytes(CRLF_REWRITTEN)
+    _git(crlf_repo, "add", "src/ui/Known.kt")
+    err = _run_commit_hook(crlf_repo, monkeypatch)
+    assert "changed since" in err
+    assert "src/ui/Known.kt" in err
+
+
+def test_only_the_line_endings_changing_is_not_drift(
+    crlf_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rewriting the file with LF endings and nothing else is not a change the
+    description could be wrong about."""
+    (crlf_repo / "src" / "ui" / "Known.kt").write_bytes(CRLF_ORIGINAL.replace(b"\r\n", b"\n"))
+    _git(crlf_repo, "add", "src/ui/Known.kt")
+    assert "changed since" not in _run_commit_hook(crlf_repo, monkeypatch)

@@ -29,6 +29,28 @@ _MIN_PREFIX = 3
 _MAX_PARAMS = 30000
 
 
+GRAPH_FILENAME = "code_graph.db"
+
+
+def discover_graph(start: Path | None = None) -> Path | None:
+    """Walk up from `start` (default cwd) for `knowledge/code_graph.db`.
+
+    The CLIs default to a relative path, so running one from a subdirectory
+    reported no graph in a repo that plainly has one. The MCP server has always
+    walked up; the commands a skill runs are the ones that need it most, since
+    a skill's cwd is wherever the conversation left it.
+
+    By convention the graph lives in `knowledge/` — there is no repo-root
+    fallback, so a stray `code_graph.db` cannot be picked up by accident.
+    """
+    base = (start or Path.cwd()).resolve()
+    for d in (base, *base.parents):
+        candidate = d / "knowledge" / GRAPH_FILENAME
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 class StoreError(RuntimeError):
     """The file is not a usable code graph."""
 

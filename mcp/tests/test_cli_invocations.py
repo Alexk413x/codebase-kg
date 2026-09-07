@@ -10,13 +10,15 @@ shell a skill's Bash runs in, and the console scripts are not on PATH.
 So `kg_stats` reports the invocation. The server is the one component that knows
 where it was loaded from, which makes it the only honest answer.
 
-Two shapes, because the package is delivered two ways: a source checkout (what
-the plugin ships) gets `uvx --from`, and a wheel install gets the bare console
-script, which is on PATH exactly when that is true.
+Three ways the package is reached, and the answer differs for each: the repo
+checkout it is developed in, the directory it was installed from (PEP 610's
+`direct_url.json`, which is what `uvx --from` leaves behind), and a genuine
+index install where only the console scripts exist.
 """
 
 from __future__ import annotations
 
+import importlib.metadata as importlib_metadata
 import shutil
 import subprocess
 import sys
@@ -43,30 +45,81 @@ def graph(tmp_path: Path) -> CodeGraph:
     return CodeGraph(db)
 
 
-# --- the two shapes ----------------------------------------------------------
+# --- how the root is found ---------------------------------------------------
 def test_a_source_checkout_yields_the_uvx_form() -> None:
-    """What the plugin actually ships. The quoted path matters — the plugin
-    cache lives under a Windows profile path with spaces in it."""
+    """The quoted path matters — the plugin cache lives under a Windows profile
+    path with spaces in it."""
     cli = tools.cli_invocations()
     assert cli["package_root"] == str(PACKAGE_ROOT)
     for key in ("build", "export", "migrate"):
         assert cli[key].startswith(f'uvx --from "{PACKAGE_ROOT}" codebase-kg-')
 
 
-def test_a_wheel_install_yields_the_bare_console_script(
+def test_an_installed_package_is_resolved_from_its_own_dist_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The configuration that actually ships, and the one the first version got
+    wrong. Under `uvx --from <plugin>/mcp` the package lives in a venv, so
+    walking up from `__file__` finds a lib directory and the answer degraded to
+    a bare console script — a command the caller has no way to run, since the
+    scripts are not on a skill's PATH. PEP 610 records the install source.
+    """
+    plugin = tmp_path / "plugin" / "mcp"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text("[project]\nname='codebase-kg'\n", encoding="utf-8")
+    # No pyproject beside the package: this is the venv layout.
+    monkeypatch.setattr(tools, "_checkout_root", lambda: None)
+    monkeypatch.setattr(tools, "_installed_from", lambda: plugin)
+    assert tools.package_root() == plugin
+    assert tools.cli_invocations()["build"] == f'uvx --from "{plugin}" codebase-kg-build'
+
+
+def test_the_plugin_root_env_var_is_the_last_resort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = tmp_path / "plugin"
+    (plugin / "mcp").mkdir(parents=True)
+    (plugin / "mcp" / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    monkeypatch.setattr(tools, "_checkout_root", lambda: None)
+    monkeypatch.setattr(tools, "_installed_from", lambda: None)
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(plugin))
+    assert tools.package_root() == plugin / "mcp"
+
+
+def test_no_resolvable_root_falls_back_to_the_bare_console_script(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Installed into site-packages, `parents[2]` is a lib directory, not
-    something `uvx --from` could resolve. The console scripts are on PATH in
-    exactly that case, so name them instead of building a broken path."""
-    monkeypatch.setattr(Path, "is_file", lambda self: False)
-    cli = tools.cli_invocations()
-    assert cli == {
+    """Genuinely installed from an index: nothing local to point `--from` at,
+    and the console scripts really are on PATH in that case."""
+    monkeypatch.setattr(tools, "_checkout_root", lambda: None)
+    monkeypatch.setattr(tools, "_installed_from", lambda: None)
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    assert tools.cli_invocations() == {
         "package_root": "",
         "build": "codebase-kg-build",
         "export": "codebase-kg-export",
         "migrate": "codebase-kg-migrate",
     }
+
+
+def test_a_non_local_install_url_yields_no_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`direct_url.json` can name a VCS or an index. Neither is a directory
+    `uvx --from` could be handed."""
+    class _Dist:
+        @staticmethod
+        def read_text(_name: str) -> str:
+            return '{"url": "https://example.invalid/codebase-kg.whl"}'
+
+    monkeypatch.setattr(importlib_metadata, "distribution", lambda _n: _Dist())
+    assert tools._installed_from() is None
+
+
+def test_missing_dist_metadata_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(_n: str) -> object:
+        raise importlib_metadata.PackageNotFoundError("codebase-kg")
+
+    monkeypatch.setattr(importlib_metadata, "distribution", boom)
+    assert tools._installed_from() is None
 
 
 def test_every_named_command_is_a_declared_entry_point() -> None:
