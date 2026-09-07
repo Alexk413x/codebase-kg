@@ -141,8 +141,8 @@ codebase-kg/
 ├── commands/                 # /codebase-kg:setup (the only command; every other feature is a skill)
 ├── skills/                   # query / build / refresh / audit / link / validate
 ├── mcp/                      # the query server + build/export/migrate CLIs (uvx-run Python)
-├── hooks/                    # Claude Code hooks: the search gate + the post-edit nudge
-└── git-hooks/                # advisory pre-commit + pre-push staleness checks, vendored into any repo (stdlib-only)
+├── hooks/                    # Claude Code hooks: the search gate, the post-edit nudge, the unwired-clone notice
+└── git-hooks/                # advisory pre-commit + pre-push staleness checks and install.sh, vendored into any repo (stdlib-only)
 ```
 
 ## Making the graph get used
@@ -184,6 +184,29 @@ Two advisory layers, both pointing at the same fix (`/codebase-kg:refresh`):
   modifications, and a check that reads only additions and deletions is silent through most of the
   drift. They **never block** — there is no `--no-verify` to remember. They're stdlib-only and
   vendored into the repo, so they run for every clone and CI.
+
+### One command per clone
+
+`core.hooksPath` and the `diff.codegraph.*` settings live in `.git/config`, and **git never clones
+`.git/config`** — deliberately, so that cloning a repo cannot make it execute code. So a repo can
+commit the checkers, the wrappers and the `.gitattributes` line and still hand every fresh checkout
+inert hooks and `Binary files differ`, with no error anywhere to say so.
+
+`/codebase-kg:setup` therefore vendors `git-hooks/install.sh` into the repo alongside the checkers.
+Everyone who clones runs it once:
+
+```sh
+sh .githooks/install.sh
+```
+
+Plain git, POSIX sh and `uv` — no Claude Code, no plugin install. Idempotent. It sets
+`core.hooksPath`, fixes the exec bits, registers the textconv driver against a **tag-pinned** remote
+(never a local plugin-cache path, which resolves on one machine and breaks on the next update), and
+then probes the driver against the real graph rather than trusting the value it just wrote.
+
+The plugin's `SessionStart` hook prints one line in a clone that has not run it. It only prints — a
+plugin the user installed may suggest, but wiring `core.hooksPath` for them would route around the
+protection git is providing.
 
 Neither checks a date. An earlier version blocked pushes when the graph's `refreshed:` header wasn't
 today; that measured whether someone edited the file, not whether the nodes matched the code — and

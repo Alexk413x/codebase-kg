@@ -1,13 +1,14 @@
 # hooks/
 
-Two Claude Code hooks. Both ship with the plugin — there is **nothing to install per repo** — and
-both no-op in a repo with no `knowledge/code_graph.db`.
+Three Claude Code hooks. All ship with the plugin — there is **nothing to install per repo** — and
+all no-op in a repo with no `knowledge/code_graph.db`.
 
 | File | Role |
 |---|---|
-| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob\|Bash\|PowerShell` and on the codebase-kg MCP tools → `kg_search_gate.py`; PostToolUse on those same MCP tools → `kg_search_gate.py` (that pass sizes the credit); PostToolUse on `Edit\|Write\|MultiEdit` → `kg_post_edit_check.py`. |
+| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob\|Bash\|PowerShell` and on the codebase-kg MCP tools → `kg_search_gate.py`; PostToolUse on `Edit\|Write\|MultiEdit` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_session_start.py`. |
 | `kg_search_gate.py` | The gate. Denies a search aimed at mapped code with the instruction to query the graph, and keeps doing it — a query buys credit, a located search is free, a repeat always passes. |
 | `kg_post_edit_check.py` | The nudge. Two signals: the edited file isn't in the graph at all, or enough mapped files have changed since the graph was rebuilt. |
+| `kg_session_start.py` | The unwired-clone notice. One line when this clone has the committed checkers but no `core.hooksPath` or no `diff.codegraph.textconv`. Prints; never writes. |
 | `_config.py` | Reads `root` from the committed graph's `meta` table (auto-discovers `knowledge/code_graph.db`); a gitignored `.claude/codebase-kg.local.md` may override. Decides what counts as a source file. |
 
 ## The search gate (PreToolUse)
@@ -61,6 +62,38 @@ Also:
 
 Both hooks keep state in the OS temp dir — the nudge keyed by project, the gate by project +
 session. **Nothing is written into the repo.**
+
+## The unwired-clone notice (SessionStart)
+
+`core.hooksPath` and the `diff.codegraph.*` settings live in `.git/config`, which **git never
+clones**. So a repo can commit the checkers, the wrappers, `install.sh` and the `.gitattributes`
+line, and every fresh checkout still starts with the hooks inert and the graph diffing as "Binary
+files differ" — with no error anywhere to say so. This hook is the one thing that notices.
+
+It prints one line naming the command, and does nothing else:
+
+```
+codebase-kg: this clone is not wired for code_graph.db (git hooks and graph diffs).
+git does not clone .git/config, so run:  sh .githooks/install.sh
+```
+
+**It never runs `git config`, and it must not.** Git leaves `.git/config` out of a clone on purpose:
+cloning a repo must not be able to make it execute code. A plugin that set `core.hooksPath` on the
+user's behalf would route around that protection and make the repo's vendored `.githooks/*.py` live
+in a fresh clone without anyone choosing to run them. A plugin the user installed may suggest; it may
+not decide.
+
+Silent unless **all** of these hold:
+
+- inside a git work tree;
+- the graph (`graph_path`) exists;
+- a hooks dir with both vendored checkers exists (`core.hooksPath` if set, otherwise `.githooks/`);
+- `core.hooksPath` is unset, **or** `diff.codegraph.textconv` is unset.
+
+And never when `core.hooksPath` already points somewhere other than that dir — that repo made a
+deliberate choice, and nagging it toward clobbering its own config is worse than saying nothing.
+`SKIP_KG` silences it like the rest. Any error exits silently; a session never fails to start
+because of this.
 
 ## Config — optional per-dev override only (gitignored `.claude/codebase-kg.local.md`)
 

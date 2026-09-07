@@ -30,6 +30,13 @@ These are locked — change them only with a deliberate reason.
    a commit, build, or tool.
 10. **Constraints over checks.** Anything expressible as a constraint in the store is one, so bad
     data fails to be written rather than being found later. See "Why a database" below.
+11. **Suggest, never wire.** Nothing in the plugin writes a repo's git config on the user's behalf.
+    Git leaves `.git/config` out of a clone deliberately, so that cloning a repo cannot cause it to
+    execute code; `core.hooksPath` is the switch that makes a repo's committed `.githooks/*.py` run.
+    Setting it for someone would route around that protection and make vendored scripts live in a
+    fresh clone without anyone choosing to run them. The plugin therefore ships `install.sh` as a
+    committed, per-clone command a person runs, and the `SessionStart` hook only names it. A plugin
+    the user installed may suggest; it may not decide.
 
 ## Resolved open questions
 
@@ -102,6 +109,23 @@ not today's date. It was removed, for two independent reasons:
 What replaced it asks questions with real answers: does every anchor still resolve to code, and does
 any source file in this push have no node covering it. Both are checkable, neither needs a date, and
 the check reports rather than blocks.
+
+## The verification that could only pass
+
+`/codebase-kg:setup` step 9 used to confirm the textconv driver by running `git diff` in the shell
+that had run `git config` one line earlier. That is a test of a value it had just set, and it passes
+no matter how machine-local the value is — which is how the command reported "graph diffs are live"
+in a repo where the configured driver was a version-stamped path under one developer's plugin cache
+(`…/.claude/plugins/cache/codebase-kg/codebase-kg/0.5.2/mcp`), and every other clone silently showed
+`Binary files differ`. Git reports nothing when a textconv command does not exist; it just falls back.
+
+Two rules came out of it, and both are in the command now:
+
+- **A wiring check runs where the wiring will be met.** Setup verifies from a fresh clone with its
+  own empty `.git/config`, so the only thing that can make it pass is the committed installer.
+- **Anything written into `.git/config` must mean the same thing on every machine.** The textconv
+  command is a tag-pinned remote, never `${CLAUDE_PLUGIN_ROOT}` — a tag, because this runs on every
+  diff of the graph and must not change under the repo silently.
 
 ## Genericity rules (do not violate)
 
