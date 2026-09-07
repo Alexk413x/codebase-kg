@@ -563,3 +563,89 @@ def test_an_unreadable_graph_does_not_raise(
     (repo / "knowledge" / "code_graph.db").write_bytes(b"not a database")
     result = run(monkeypatch, capsys, repo, "Grep", {"pattern": "x"})
     assert decision(result) == "deny"  # root unreadable → treated as the whole repo
+
+
+# --- a shell search is scoped to THIS repo -----------------------------------
+# The gate resolves the repo once, from the session, so it could not see that a
+# command had cd'd elsewhere, was reading a pipe, or had already named its file.
+# Grep/Glob get all three answers from `tool_input["path"]`; these give the same
+# answers from a command string. Each case below denied wrongly before.
+@pytest.fixture
+def scoped(tmp_path: Path) -> Path:
+    """A project with one real file, and an unrelated repo beside it."""
+    proj = tmp_path / "proj"
+    (proj / "src").mkdir(parents=True)
+    (proj / "src" / "known.py").write_text("x = 1\n", encoding="utf-8")
+    (proj / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (tmp_path / "other" / "src").mkdir(parents=True)
+    return proj
+
+
+@pytest.mark.parametrize(
+    ("command", "gated", "why"),
+    [
+        ("grep -rn thing .", True, "the whole tree, no file known — the case it exists for"),
+        ("grep -rn thing src", True, "a directory is where you look when you do not know"),
+        ("rg thing src/", True, "same, other tool"),
+        ("grep -n thing src/known.py", False, "names one file"),
+        ("grep -m1 version pyproject.toml", False, "names one file"),
+        ("cat notes.txt | grep thing", False, "reads a pipe, never the tree"),
+        ("git log | grep -i fix", False, "reads a pipe"),
+        ("git status --porcelain", False, "not a search"),
+        ("gh pr merge 11 && grep -n version pyproject.toml", False,
+         "no clause aimed at the tree: the merge must not be denied"),
+        ("find src -name '*.py'", True, "a directory tree"),
+        ("find src/known.py -name x", False, "names one file"),
+    ],
+)
+def test_only_an_unlocated_search_of_this_repo_is_gated(
+    command: str, gated: bool, why: str, scoped: Path
+) -> None:
+    assert gate.shell_search_is_gated(command, scoped) is gated, why
+
+
+def test_a_search_of_another_repo_is_not_this_graphs_business(scoped: Path) -> None:
+    """The denial that was categorically wrong: this repo's graph cannot answer
+    a question about a different repo, so gating it costs a round trip and
+    offers nothing in return."""
+    other = scoped.parent / "other"
+    assert gate.shell_search_is_gated(f"cd {other} && grep -rn thing .", scoped) is False
+    assert gate.shell_search_is_gated(f"grep -rn thing {other}", scoped) is False
+
+
+def test_cd_back_into_the_repo_is_still_gated(scoped: Path) -> None:
+    """Following the `cd` has to work in both directions, or it is just a way
+    to slip past the gate."""
+    assert gate.shell_search_is_gated(f"cd {scoped} && grep -rn thing .", scoped) is True
+
+
+def test_a_command_that_is_not_a_search_returns_none(scoped: Path) -> None:
+    assert gate.shell_search_targets("git status", scoped) is None
+
+
+def test_an_unparseable_command_does_not_raise(scoped: Path) -> None:
+    """The hook fails open; a quoting error in someone's command must not be a
+    traceback in front of their search."""
+    for junk in ['grep "unclosed', "grep 'x", "", "   ", "|||", "&& &&"]:
+        gate.shell_search_is_gated(junk, scoped)
+
+
+def test_the_end_to_end_gate_lets_a_located_shell_search_through(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Through `main`, not just the predicate."""
+    target = repo / "src" / "ui" / "Known.kt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("class Known", encoding="utf-8")
+    result = run(
+        monkeypatch, capsys, repo, "Bash",
+        {"command": f"grep -n Known {target}"},
+    )
+    assert result is None, "a shell search naming one file must not be gated"
+
+
+def test_the_end_to_end_gate_still_denies_a_tree_search(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result = run(monkeypatch, capsys, repo, "Bash", {"command": "grep -rn Known ."})
+    assert decision(result) == "deny", "the case the gate exists for must still fire"

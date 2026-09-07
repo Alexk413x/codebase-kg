@@ -48,6 +48,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 import tempfile
 import time
@@ -240,6 +241,158 @@ def gate_mode(cfg: dict[str, object]) -> str:
     return mode if mode in {"block", "warn", "off"} else "block"
 
 
+# Commands whose FIRST non-flag operand is the pattern, not a path.
+_PATTERN_FIRST = {
+    "grep", "egrep", "fgrep", "rg", "ripgrep", "ag", "ack", "fd", "sls",
+    "select-string",
+}
+# `find <path> -name x` names its path first instead.
+_PATH_FIRST = {"find", "get-childitem", "gci"}
+_SEARCH_WORDS = _PATTERN_FIRST | _PATH_FIRST
+
+
+def _split_clauses(command: str) -> list[tuple[str, bool]]:
+    """Each clause of a shell command, with whether its stdin is a pipe.
+
+    A clause fed by `|` reads the previous command's output, not the tree, so it
+    is not a codebase search however much it looks like one.
+    """
+    parts = re.split(r"(\|\||&&|\||;|&)", command)
+    out: list[tuple[str, bool]] = []
+    piped = False
+    for i in range(0, len(parts), 2):
+        clause = parts[i].strip()
+        if clause:
+            out.append((clause, piped))
+        sep = parts[i + 1] if i + 1 < len(parts) else ""
+        piped = sep == "|"
+    return out
+
+
+def _tokens(clause: str) -> list[str]:
+    """Best-effort argv, with quotes stripped.
+
+    `posix=False` because posix mode treats a backslash as an escape, which
+    turns `C:\\Users\\me\\repo` into `C:Usersmerepo` — a path that resolves
+    nowhere, so a search of another drive read as a search of this repo. Quotes
+    survive that mode, so they come off by hand.
+    """
+    try:
+        toks = shlex.split(clause, posix=False)
+    except ValueError:
+        toks = clause.split()
+    out: list[str] = []
+    for tok in toks:
+        if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in "\"'":
+            tok = tok[1:-1]
+        out.append(tok)
+    return out
+
+
+def _effective_cwd(command: str, proj: Path) -> Path:
+    """Where the search actually runs, following a leading `cd`.
+
+    The hook is told the SESSION's directory, which is not where a command that
+    starts `cd elsewhere && ...` looks. Without this the gate denied searches of
+    unrelated repos using this repo's graph — an answer the graph could not have
+    given.
+    """
+    cwd = proj
+    for clause, _piped in _split_clauses(command):
+        toks = _tokens(clause)
+        if len(toks) >= 2 and toks[0] == "cd":
+            candidate = Path(toks[1])
+            if not candidate.is_absolute():
+                candidate = cwd / toks[1]
+            try:
+                cwd = candidate.resolve()
+            except OSError:
+                return cwd
+    return cwd
+
+
+def shell_search_targets(command: str, proj: Path) -> list[Path] | None:
+    """The paths a shell search is aimed at, or None if it is not one.
+
+    An empty list means "a search with no path operand": `grep foo` reads stdin
+    and is not a tree search, so the caller treats it as nothing to gate.
+    """
+    cwd = _effective_cwd(command, proj)
+    targets: list[Path] = []
+    found_search = False
+    for clause, piped in _split_clauses(command):
+        toks = _tokens(clause)
+        if not toks:
+            continue
+        word = toks[0].lower().lstrip("./\\")
+        if word == "sudo" and len(toks) > 1:
+            toks = toks[1:]
+            word = toks[0].lower()
+        if word not in _SEARCH_WORDS:
+            continue
+        if piped:
+            continue  # reads the previous command's output, never the tree
+        found_search = True
+        operands: list[str] = []
+        for tok in toks[1:]:
+            if tok.startswith("-"):
+                # `find <path> -name x` puts its predicates after the paths, so
+                # the first flag ends the path list. Collecting past it counted
+                # `-name`'s own value as a path that does not exist, and a
+                # missing path reads as "still hunting" — the exact false
+                # positive this function exists to remove.
+                if word in _PATH_FIRST:
+                    break
+                continue
+            operands.append(tok)
+        if word in _PATTERN_FIRST and operands:
+            operands = operands[1:]  # the first operand is the pattern
+        for raw in operands:
+            p = Path(raw)
+            targets.append(p if p.is_absolute() else cwd / raw)
+    if not found_search:
+        return None
+    return targets
+
+
+def shell_search_is_gated(command: str, proj: Path) -> bool:
+    """Is this shell command a search of THIS repo with no file named yet?
+
+    One rule, and it is the same one Grep/Glob already follow: gate a search
+    aimed at the mapped tree that has not already located its file. Everything
+    the gate used to deny wrongly falls out of it —
+
+      * `cd other-repo && grep -r x .`  another repo, which this graph cannot
+                                        answer for;
+      * `cat f | grep x`                reads a pipe, never the tree;
+      * `grep x pyproject.toml`         names one file, so the question the gate
+                                        asks is already answered;
+      * `gh pr merge && ... && grep x f.json`
+                                        no clause aimed at the tree, so the
+                                        whole command stops being denied.
+
+    A directory operand still gates: that is where you look when you do not yet
+    know the file, which is the case this exists for.
+    """
+    targets = shell_search_targets(command, proj)
+    if targets is None:
+        return False  # not a search at all
+    if not targets:
+        return False  # no path operand: reading stdin, not the tree
+    inside: list[Path] = []
+    for t in targets:
+        try:
+            t.resolve().relative_to(proj)
+        except (ValueError, OSError):
+            continue  # outside this repo — not ours to gate
+        inside.append(t)
+    if not inside:
+        return False
+    # Every in-repo target already names a file → located. A directory, or a
+    # path that does not exist, means the tree is still being hunted.
+    return not all(t.is_file() for t in inside)
+
+
 def is_shell_search(command: str) -> bool:
     return bool(_SHELL_SEARCH.search(command))
 
@@ -381,13 +534,21 @@ def _run(data: dict[str, object]) -> None:
     raw_root = str(cfg.get("root") or graph_meta(graph, "root") or "")
     root = raw_root.strip().replace("\\", "/").strip("/")
     root = "" if root == "." else root
-    if not searches_mapped_code(tool_input, proj, root):
-        return
+    # A shell command answers from its own text the three questions
+    # `tool_input["path"]` answers for Grep/Glob: which repo, reading what, and
+    # does it already name the file.
+    if tool in _SHELL_TOOLS:
+        command = tool_input.get("command")
+        if not isinstance(command, str) or not shell_search_is_gated(command, proj):
+            return
+    else:
+        if not searches_mapped_code(tool_input, proj, root):
+            return
 
-    # The agent named a file the graph anchors — it already knows where the code
-    # is, so there is nothing left to send it to the graph for.
-    if searches_an_anchored_path(tool_input, proj, root, graph):
-        return
+        # The agent named a file the graph anchors — it already knows where the
+        # code is, so there is nothing left to send it to the graph for.
+        if searches_an_anchored_path(tool_input, proj, root, graph):
+            return
 
     state = _read_state(proj, session)
     key = search_key(tool, tool_input)
