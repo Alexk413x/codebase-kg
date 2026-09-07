@@ -17,12 +17,10 @@ already made and answers allow or deny. So an override has to be inferred from
 what the agent DID, which is the better design anyway — a self-declared
 `force=true` is a rubber stamp an agent learns to always pass.
 
-  a query buys credit    a codebase-kg MCP call grants one search per distinct
-                         anchor path the answer named, plus `gate_credit` as a
-                         buffer (default 3, settable per repo). An answer naming
-                         ten files is an agent with ten files to read; a fixed
-                         allowance would gate it seven times for doing exactly
-                         what it was told.
+  a query buys credit    a codebase-kg MCP call clears the next `gate_credit`
+                         searches (default 3, settable per repo). The allowance
+                         is for what the answer did NOT name — a partial answer
+                         leaves a remainder only searching will find.
   a located search       a search scoped to a path the graph already anchors is
                          never gated. The agent has evidently found the file;
                          gating it would only cost a round trip.
@@ -175,54 +173,17 @@ def _int_setting(cfg: dict[str, object], key: str, default: int) -> int:
 
 
 def gate_credit(cfg: dict[str, object]) -> int:
-    """The buffer added to whatever the graph's answer named."""
+    """How many unlocated searches one graph query clears."""
     return _int_setting(cfg, "gate_credit", 3)
-
-
-_ANCHOR_KEYS = ("anchors", "anchor", "path", "paths", "file", "files")
-
-
-def anchors_named(response: object, _depth: int = 0) -> set[str]:
-    """Every distinct anchor-ish path anywhere in a graph answer.
-
-    Walks the whole structure rather than matching a per-tool shape: `kg_search`,
-    `kg_node` and `kg_neighborhood` nest their anchors differently, and a
-    per-tool parser would go stale the first time a tool grew a field. Counting
-    slightly wrong is cheap here — the number only sizes a buffer — while a
-    parser that silently found nothing would quietly restore the fixed
-    allowance.
-    """
-    found: set[str] = set()
-    if _depth > 6:
-        return found
-    if isinstance(response, str):
-        return found
-    if isinstance(response, dict):
-        for key, value in response.items():
-            if str(key).lower() in _ANCHOR_KEYS:
-                if isinstance(value, str):
-                    found.add(value.split("#", 1)[0])
-                elif isinstance(value, (list, tuple)):
-                    found.update(
-                        v.split("#", 1)[0] for v in value if isinstance(v, str)
-                    )
-            found |= anchors_named(value, _depth + 1)
-    elif isinstance(response, (list, tuple)):
-        for item in response:
-            found |= anchors_named(item, _depth + 1)
-    return {f for f in found if f.strip()}
 
 
 def credit_for(response: object, cfg: dict[str, object]) -> int:
     """What one graph answer is worth, in searches.
 
-    Deliberately uncapped. The anchor count is not a guess this hook is making —
-    it is the number of distinct files the graph itself just named, so an answer
-    naming a hundred is an agent with a hundred files in front of it. A ceiling
-    would discard that evidence in favour of a round number, and it would bite
-    hardest on exactly the large codebase the graph exists to make navigable.
+    Flat, because the allowance is for what the answer did NOT name: the files
+    it did name are located searches, which are free.
     """
-    return len(anchors_named(response)) + gate_credit(cfg)
+    return gate_credit(cfg)
 
 
 def gate_mode(cfg: dict[str, object]) -> str:
@@ -502,10 +463,7 @@ def _run(data: dict[str, object]) -> None:
     # or that this hook cannot parse worth something rather than nothing.
     if _KG_TOOL.match(tool):
         state = _read_state(proj, session)
-        if data.get("hook_event_name") == "PostToolUse":
-            earned = credit_for(data.get("tool_response"), cfg)
-        else:
-            earned = gate_credit(cfg)
+        earned = credit_for(data.get("tool_response"), cfg)
         # A grant REPLACES rather than accumulates, and takes the larger of the
         # two. Both halves earn their place: `+` would let `kg_stats` in a loop
         # bank the whole session for having learned nothing, and taking the new

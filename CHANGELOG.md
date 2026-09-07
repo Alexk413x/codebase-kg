@@ -4,6 +4,20 @@ All notable changes to the `codebase-kg` plugin.
 
 ## [0.5.2] — 2026-09-06 — the gate reads the command, not just the word `grep`
 
+### Changed — the search allowance is flat
+
+A query granted one search per file its answer named, plus a buffer. Those files
+are located searches, which are free — so the grant scaled with the one quantity
+that cannot consume it, and an answer naming three files bought six searches to
+cover three accesses that already cost nothing.
+
+The allowance is now a flat `gate_credit` (default 3), and it is for the
+opposite case: what the answer did NOT name. A partial answer leaves a remainder
+the graph does not know about, and finding it takes exactly the unlocated
+searching this pays for.
+
+`anchors_named` goes with the scaling it existed for.
+
 ### Fixed — a shell search is scoped to this repo, and only when it is a search
 
 The gate resolves the repo once, from the session, so it had no way to tell what

@@ -207,33 +207,17 @@ def post(
     capsys.readouterr()
 
 
-@pytest.mark.parametrize(("response", "expected"), [
-    ({}, 3),                                                        # buffer only
-    ({"anchors": ["a.py#F", "b.py#G"]}, 5),                         # 2 files + buffer
-    ({"anchors": ["a.py#F", "a.py#G"]}, 4),                         # same file twice
-    ({"results": [{"anchors": ["a.py"]}, {"anchors": ["b.py"]}]}, 5),  # nested
-    ({"nodes": [{"anchors": [f"f{i}.py"]} for i in range(100)]}, 103),  # uncapped
-    ("a string, not a structure", 3),
+@pytest.mark.parametrize("response", [
+    {},
+    {"anchors": ["a.py#F", "b.py#G"]},
+    {"results": [{"anchors": ["a.py"]}, {"anchors": ["b.py"]}]},
+    {"nodes": [{"anchors": [f"f{i}.py"]} for i in range(100)]},
+    "a string, not a structure",
 ])
-def test_an_answer_is_worth_the_files_it_named(
-    response: Any, expected: int
-) -> None:
-    """One search per file the graph handed over, plus the buffer. An answer
-    naming ten files is an agent with ten files to read."""
-    assert gate.credit_for(response, {}) == expected
-
-
-def test_the_grant_is_uncapped_because_the_count_is_evidence(
-    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A hundred uses across a hundred files is a hundred places to look. The
-    anchor count is what the graph itself named, not a number this hook guessed,
-    so there is nothing for a ceiling to protect against."""
-    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search",
-         {"results": [{"anchors": [f"f{i}.py#S"]} for i in range(100)]})
-    for i in range(103):
-        assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"p{i}"}) is None
-    assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "last"})) == "deny"
+def test_every_answer_is_worth_the_same_allowance(response: Any) -> None:
+    """The allowance covers what the answer did NOT name. What it did name is
+    free, so the size of the answer says nothing about the cost that follows."""
+    assert gate.credit_for(response, {}) == 3
 
 
 def test_following_up_on_anchored_files_costs_no_credit_at_all(
@@ -253,14 +237,14 @@ def test_following_up_on_anchored_files_costs_no_credit_at_all(
     assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "rank"})) == "deny"
 
 
-def test_the_sized_grant_reaches_the_gate_end_to_end(
+def test_the_grant_reaches_the_gate_end_to_end(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search",
          {"results": [{"anchors": ["a.py#A"]}, {"anchors": ["b.py#B"]}]})
-    for pattern in "abcde":            # 2 anchors + 3 buffer
+    for pattern in "abc":
         assert run(monkeypatch, capsys, repo, "Grep", {"pattern": pattern}) is None
-    assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "f"})) == "deny"
+    assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "d"})) == "deny"
 
 
 def test_a_post_pass_never_lowers_the_credit_already_held(
@@ -279,15 +263,13 @@ def test_asking_again_tops_the_credit_back_up(
 ) -> None:
     """The whole recovery path: run out, query again, carry on. Nothing about
     exhausting credit is terminal — it is a prompt to go back to the graph."""
-    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search",
-         {"results": [{"anchors": ["a.py#A"]}]})          # 1 + 3 = 4
-    for i in range(4):
+    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search", {"results": []})
+    for i in range(3):
         assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"a{i}"}) is None
     assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "spent"})) == "deny"
 
-    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search",
-         {"results": [{"anchors": [f"b{i}.py#B"]} for i in range(4)]})   # 4 + 3 = 7
-    for i in range(7):
+    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search", {"results": []})
+    for i in range(3):
         assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"b{i}"}) is None
     assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "again"})) == "deny"
 
@@ -305,16 +287,15 @@ def test_credit_cannot_be_farmed_by_repeating_a_cheap_query(
     assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "farmed"})) == "deny"
 
 
-def test_a_smaller_answer_never_lowers_the_credit_in_hand(
+def test_a_second_query_tops_up_rather_than_stacking(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The other half of `max`: consulting the graph again must never cost an
-    agent the allowance a bigger answer already earned it."""
-    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search",
-         {"results": [{"anchors": [f"d{i}.py#D"]} for i in range(6)]})   # 9
-    assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "one"}) is None  # 8 left
-    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_stats", {})          # worth 3
-    for i in range(8):
+    """`max`, not `+`: querying again restores the allowance without banking it.
+    Spend one of three, ask again, and there are three — not five."""
+    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search", {"results": []})
+    assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "one"}) is None
+    post(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_stats", {})
+    for i in range(3):
         assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"e{i}"}) is None
     assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "gone"})) == "deny"
 
