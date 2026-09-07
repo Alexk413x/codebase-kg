@@ -12,29 +12,11 @@ Bring the code graph back in sync with the code.
    files to their nodes with `kg_find_by_path`.
 2. **Invoke the `kg-refresh` skill** and follow its workflow.
 
-**One or two nodes?** Use the write tools — `kg_upsert_node`, `kg_delete_node`, `kg_add_link`,
-`kg_remove_link`. Each call is atomic, validates the whole graph before it lands, and reports every
-field it changed, so the review the JSON diff gave you arrives in the tool's answer and there is no
-scratch file to remember to delete.
-
-**A whole change set?** That is what the round trip is for — a refresh usually touches several nodes
-at once, and reading the JSON diff before building it is the point. The loop is export → edit →
-build:
-
-```sh
-python -m codebase_kg.export -o .kg-export.json    # scratch, gitignored
-#   ... edit .kg-export.json ...
-python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
-rm .kg-export.json                                  # it is a snapshot, not a source
-```
-
-Delete it when you are done. A leftover export is a stale snapshot of the graph that still
-parses, so a later `build` against it silently rebuilds from whenever it was written — a graph
-that looks freshly built and is not. The dot-prefixed name keeps it out of casual `ls` and most
-default ignore habits; add `.kg-export.json` to the repo's `.gitignore` as well.
-
-Building an unedited export is byte-identical, so anything that appears in the git diff is a change
-you actually made. The builder validates first and writes nothing if a node breaks a rule.
+Which of the two write paths to use — the write tools for one or two nodes, the export → edit →
+build round trip for a whole change set — is the skill's call, and the skill states both in full.
+It was restated here too, and in `skills/README.md`, and in `SCHEMA.md` §7.1; four copies of one
+explanation is four places to miss when the round trip changes. Read it in
+[`skills/kg-refresh/SKILL.md`](../skills/kg-refresh/SKILL.md).
 
 Hard rule (`SCHEMA.md` §7): update **all** affected nodes — add new, edit changed, remove deleted —
 plus edges. Finish with `kg_validate`, commit the `.db` alongside the source change, and report the

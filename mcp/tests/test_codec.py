@@ -264,3 +264,55 @@ def test_comment_keys_are_still_ignored() -> None:
     structured ones — they must not trip the new check."""
     meta, _, _ = codec.from_dict({"codebase": "x", "_note": {"why": "a comment"}, "nodes": []})
     assert "_note" not in meta.extra
+
+
+# --- the export CLI finds the graph from a subdirectory ----------------------
+# It defaulted to a RELATIVE `knowledge/code_graph.db` with no parent search,
+# while the MCP server walked up. Every skill instruction that runs the exporter
+# therefore carried an unwritten "from the repo root" precondition.
+def _repo_with_graph(tmp_path: Path) -> Path:
+    db = tmp_path / "knowledge" / "code_graph.db"
+    db.parent.mkdir(parents=True)
+    build(db, Meta(codebase="x", root="src", generated="2026-09-06"),
+          [Node(id="a", kind="K", description="A thing.")])
+    return tmp_path
+
+
+def test_export_walks_up_to_find_the_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    repo = _repo_with_graph(tmp_path)
+    deep = repo / "src" / "ui" / "nested"
+    deep.mkdir(parents=True)
+    monkeypatch.chdir(deep)
+    assert export.main([]) == 0
+    assert json.loads(capsys.readouterr().out)["nodes"][0]["id"] == "a"
+
+
+def test_export_from_the_repo_root_still_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.chdir(_repo_with_graph(tmp_path))
+    assert export.main([]) == 0
+    assert json.loads(capsys.readouterr().out)["nodes"][0]["id"] == "a"
+
+
+def test_export_outside_any_repo_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    monkeypatch.chdir(bare)
+    assert export.main([]) == 1
+    assert "no knowledge/code_graph.db" in capsys.readouterr().err
+
+
+def test_an_explicit_path_is_never_second_guessed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """A named path that does not exist must report that path, not silently
+    export a different graph the walk-up happened to find."""
+    repo = _repo_with_graph(tmp_path)
+    monkeypatch.chdir(repo)
+    assert export.main([str(repo / "nope.db")]) == 1
+    assert "nope.db" in capsys.readouterr().err

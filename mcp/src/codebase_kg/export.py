@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 from . import cli, codec
-from .store import CodeGraph, StoreError
+from .store import CodeGraph, StoreError, discover_graph
 
 DEFAULT_SOURCE = Path("knowledge") / "code_graph.db"
 
@@ -40,7 +40,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--indent", type=int, default=2, help="JSON indent (default: 2)")
     args = ap.parse_args(argv)
 
-    source = Path(args.source) if args.source else DEFAULT_SOURCE
+    # An explicit path is taken as given; otherwise walk up, so the command
+    # works from a subdirectory the way the MCP server already does.
+    if args.source:
+        source = Path(args.source)
+    else:
+        found = discover_graph()
+        if found is None:
+            sys.stderr.write(
+                f"[codebase-kg] no {DEFAULT_SOURCE.as_posix()} in this directory "
+                "or any parent\n"
+            )
+            return 1
+        source = found
     try:
         graph = CodeGraph(source)
     except StoreError as exc:

@@ -2,6 +2,50 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [Unreleased]
+
+### Fixed — `kg_stats.cli` was wrong in the only configuration that ships
+
+`cli_invocations` resolved the package root by looking for a `pyproject.toml`
+beside the package. That is true in a source checkout and false under
+`uvx --from <plugin>/mcp`, where the package lives in a venv — so the field added
+to give skills a runnable command handed them a bare `codebase-kg-build`, which
+is on no skill's PATH. The test only ever exercised the checkout.
+
+`package_root()` now tries three things in order: the repo checkout, the
+directory the distribution records in PEP 610 `direct_url.json` (what `uvx --from`
+leaves behind), and `CLAUDE_PLUGIN_ROOT`. Verified against a real uvx install
+from a copied plugin cache, not just the checkout.
+
+### Fixed — `setup.md` step 7 prescribed an attribute that breaks multi-graph repos
+
+It said to add `*.db binary diff=codegraph`. Git applies the last matching
+pattern, so in a repo that already routes `*_driver_graph.db` or
+`*cartographer_graph*.db` to their own exporters, that line captures them too and
+renders them through the wrong one — an error on every `git show`, not a diff.
+Step 7 now reads `git check-attr` first, leaves correct wiring alone, and adds
+only the specific path when other `.db` files exist.
+
+### Fixed — the export CLI required the repo root as its cwd
+
+`export.py` defaulted to a relative `knowledge/code_graph.db` with no parent
+search while the MCP server had always walked up, so every skill instruction that
+runs the exporter carried an unwritten "from the repo root" precondition. The
+walk-up lives in `store.discover_graph` and is shared rather than copied. An
+explicitly named path is still taken as given.
+
+### Changed — `commands/refresh.md` stops restating the skill
+
+The two write paths were explained in the command, the skill, `skills/README.md`
+and `SCHEMA.md` §7.1. The command now points at the skill, which is what "thin →
+skills" meant.
+
+### Fixed — the last four pyright errors
+
+`test_links.py` called `.links` on `CodeGraph.node`'s `Node | None`. A `node_of`
+helper asserts the node exists, so a missing one fails as a named assertion
+rather than an `AttributeError`.
+
 ## [0.4.0] — 2026-09-06 — the graph gets consulted first, and one command wires the repo
 
 ### Added — a PreToolUse search gate
