@@ -203,13 +203,40 @@ _PATH_FIRST = {"find", "get-childitem", "gci"}
 _SEARCH_WORDS = _PATTERN_FIRST | _PATH_FIRST
 
 
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def strip_heredocs(command: str) -> str:
+    """The command with every heredoc body removed.
+
+    A heredoc body is data, not commands — a commit message that discusses
+    `grep` is not a search. An unterminated one swallows the rest, which errs
+    toward not gating.
+    """
+    lines = command.splitlines()
+    kept: list[str] = []
+    i = 0
+    while i < len(lines):
+        kept.append(lines[i])
+        match = _HEREDOC.search(lines[i])
+        i += 1
+        if match:
+            delim = match.group(2)
+            while i < len(lines) and lines[i].strip() != delim:
+                i += 1
+            i += 1  # the closing delimiter is not a command either
+    return "\n".join(kept)
+
+
 def _split_clauses(command: str) -> list[tuple[str, bool]]:
     """Each clause of a shell command, with whether its stdin is a pipe.
 
     A clause fed by `|` reads the previous command's output, not the tree, so it
     is not a codebase search however much it looks like one.
     """
-    parts = re.split(r"(\|\||&&|\||;|&)", command)
+    # A newline separates commands as surely as `;` does — without it a search
+    # on its own line stays glued to whatever ran above it and is never seen.
+    parts = re.split(r"(\|\||&&|\||;|&|\n)", command)
     out: list[tuple[str, bool]] = []
     piped = False
     for i in range(0, len(parts), 2):
@@ -269,6 +296,7 @@ def shell_search_targets(command: str, proj: Path) -> list[Path] | None:
     An empty list means "a search with no path operand": `grep foo` reads stdin
     and is not a tree search, so the caller treats it as nothing to gate.
     """
+    command = strip_heredocs(command)
     cwd = _effective_cwd(command, proj)
     targets: list[Path] = []
     found_search = False
@@ -346,7 +374,7 @@ def shell_search_is_gated(command: str, proj: Path) -> bool:
 
 
 def is_shell_search(command: str) -> bool:
-    return bool(_SHELL_SEARCH.search(command))
+    return bool(_SHELL_SEARCH.search(strip_heredocs(command)))
 
 
 def searches_mapped_code(

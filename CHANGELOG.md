@@ -21,6 +21,17 @@ searching this pays for.
 nothing reads the answer, and the `PreToolUse` pass already grants the same.
 Four hook entries become three.
 
+### Fixed — a heredoc body is data, not commands
+
+A commit message that discusses `grep` was read as a search, so writing about
+this feature was denied by it. A heredoc is a closed lexical rule rather than
+general shell grammar — `<<WORD` opens one, a line equal to WORD closes it — so
+stripping the bodies before analysis is a dozen lines, not a parser.
+
+Splitting clauses now treats a newline as the separator it is. Without that a
+search on its own line stayed attached to whatever ran above it and was never
+seen, which the heredoc tests caught.
+
 ### Fixed — a shell search is scoped to this repo, and only when it is a search
 
 The gate resolves the repo once, from the session, so it had no way to tell what

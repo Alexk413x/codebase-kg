@@ -663,3 +663,63 @@ def test_a_gated_search_does_spend_credit(
     before = _credit(repo)
     run(monkeypatch, capsys, repo, "Bash", {"command": "grep -rn Known ."})
     assert _credit(repo) == before - 1
+
+
+# --- a heredoc body is data, not commands ------------------------------------
+COMMIT_ABOUT_GREP = """git add -A && git commit -q -F- <<'MSG'
+fix(gate): read the command, not just the word grep
+
+  cd other-repo && grep -rn x .     another repo
+  cat f | grep x                    reads a pipe
+MSG
+git log --oneline -1"""
+
+PR_BODY_ABOUT_GREP = """gh pr create --body "$(cat <<'BODY'
+`grep -rn x .` and `find src -name '*.py'` remain gated.
+BODY
+)" """
+
+
+@pytest.mark.parametrize(
+    ("label", "command"),
+    [
+        ("a commit message about grep", COMMIT_ABOUT_GREP),
+        ("a PR body about grep", PR_BODY_ABOUT_GREP),
+    ],
+)
+def test_writing_about_grep_is_not_searching(
+    label: str, command: str, scoped: Path
+) -> None:
+    """Both of these were denied while this feature was being written, which is
+    how they came to be the test cases."""
+    assert gate.shell_search_is_gated(command, scoped) is False, label
+    assert gate.is_shell_search(command) is False, label
+
+
+def test_a_real_search_survives_the_stripping(scoped: Path) -> None:
+    """The rule must not become a way to hide a search inside a heredoc-looking
+    command."""
+    assert gate.shell_search_is_gated("cd . && grep -rn thing .", scoped) is True
+    assert gate.shell_search_is_gated("cd . &&\ngrep -rn thing .", scoped) is True
+
+
+def test_a_search_after_a_heredoc_still_counts(scoped: Path) -> None:
+    """Only the body is data. The command that follows the closing delimiter is
+    a command again."""
+    command = "cat <<'EOF' > note.txt\njust text\nEOF\ngrep -rn thing ."
+    assert gate.shell_search_is_gated(command, scoped) is True
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("echo hi", "echo hi"),
+        ("cat <<'EOF'\nbody\nEOF", "cat <<'EOF'"),
+        ("cat <<EOF\nbody\nEOF\nafter", "cat <<EOF\nafter"),
+        ("cat <<-EOF\n\tbody\nEOF", "cat <<-EOF"),
+        ("cat <<'EOF'\nnever closed", "cat <<'EOF'"),   # unterminated: err toward not gating
+        ("grep x <<< 'herestring'", "grep x <<< 'herestring'"),  # <<< is not a heredoc
+    ],
+)
+def test_strip_heredocs(command: str, expected: str) -> None:
+    assert gate.strip_heredocs(command) == expected
