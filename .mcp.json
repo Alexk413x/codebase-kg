@@ -1,8 +1,15 @@
 {
   "mcpServers": {
     "codebase-kg": {
-      "command": "uvx",
-      "args": ["--from", "${CLAUDE_PLUGIN_ROOT}/mcp", "codebase-kg"],
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}/mcp",
+        "--frozen",
+        "--no-dev",
+        "codebase-kg"
+      ],
       "env": {
         "CODEBASE_KG_PATH": "${CODEBASE_KG_PATH:-}"
       }
