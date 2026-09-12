@@ -964,6 +964,23 @@ JSON round trip, and migration fidelity against the fixtures.
 - Phase 4 — advisory post-edit freshness hook.
 - Phase 5 — `counterpart` resolution + `kg_parity_gaps`.
 - Phase 6 — dogfood on a real iOS↔Android pair.
+## [0.5.6] - 2026-09-11
+
+### Changed — fastmcp 4
+
+fastmcp 4 splits the transport-heavy pieces out of the default install. For a
+stdio server that never serves HTTP, the saving is most of the package:
+
+| | 3.x | 4.0.3 |
+|---|---|---|
+| venv on disk (`--no-dev`) | 77 MB | 10 MB |
+| `import fastmcp` | 1.01s | 0.65s |
+
+That lands on cold start, which was venv creation almost end to end.
+
+Also picks up the pending dependency updates: `hatchling>=1.32.0`,
+`astral-sh/setup-uv` v10.0.1, `trufflesecurity/trufflehog` v3.97.4.
+
 ## [0.5.5] - 2026-09-11
 
 ### Fixed — MCP servers no longer fail during Claude Code startup
