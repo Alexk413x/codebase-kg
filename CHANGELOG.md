@@ -964,3 +964,20 @@ JSON round trip, and migration fidelity against the fixtures.
 - Phase 4 — advisory post-edit freshness hook.
 - Phase 5 — `counterpart` resolution + `kg_parity_gaps`.
 - Phase 6 — dogfood on a real iOS↔Android pair.
+## [0.5.5] - 2026-09-11
+
+### Fixed — MCP servers no longer fail during Claude Code startup
+
+A plugin install is a fresh clone with no `.venv`. With `uv.lock` gitignored,
+uv re-resolved the whole dependency set on every server launch — roughly 20s
+each, 20.1s wall for seven concurrent — against Claude Code's 30s MCP startup
+budget. Servers were killed mid-handshake and surfaced only as
+`connection closed: initialize response`.
+
+- `uv.lock` is now committed. It is what lets uv skip resolution entirely.
+- The server launches with `uv run --project ... --frozen --no-dev`. The
+  `--no-dev` matters on its own: uv installs the dev dependency group by
+  default, which was pulling pyright and pytest into the runtime venv.
+
+Measured: warm concurrent start 20.1s → 6.5s, cold 46.2s → 34.6s.
+
