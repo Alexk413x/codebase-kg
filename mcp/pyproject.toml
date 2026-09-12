@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 authors = [{ name = "Alexk413x", email = "alexk413x@gmail.com" }]
 license = { text = "LicenseRef-Proprietary" }
 dependencies = [
-    "fastmcp>=3.3,<4",
+    "fastmcp>=4.0.3,<5",
 ]
 
 [project.scripts]
