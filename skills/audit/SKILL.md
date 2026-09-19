@@ -73,8 +73,13 @@ picks the write path that fits the size of the fix.
 ## Workflow
 
 ### 1. Inventory
-Run `kg_stats` for node count and sections. Export the graph. Partition the nodes into ~4 balanced
-groups (by section, so each group is coherent).
+Run `kg_stats` for node count and sections. Read its `staleness` block: `stale_files` and
+`stale_nodes` are the repo-wide count of mapped files whose contents no longer match what the graph
+was built against, and `nodes` names the first of them. Those nodes are known-suspect before anyone
+reads a line — verify them first and say so in the report.
+
+Export the graph. Partition the nodes into ~4 balanced groups (by section, so each group is
+coherent).
 
 ### 2. Verify each group (parallelize)
 Fan out one `Task` sub-agent per group (read-only). Each agent, for every node in its group:

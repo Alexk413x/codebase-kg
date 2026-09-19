@@ -101,10 +101,21 @@ override for anyone who has the package locally.
   anything that reads stdin** — git feeds the pushed refs there and the checker consumes them). If
   it already contains an older blocking KG-freshness check, replace that block with this call:
   ```sh
-  if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
-  "$PY" "$(dirname "$0")/kg_pre_push.py" || true
+  if command -v python3 >/dev/null 2>&1; then PY=python3
+  elif command -v python >/dev/null 2>&1; then PY=python
+  else PY=""; fi
+  if [ -n "$PY" ] && [ -f "$(dirname "$0")/kg_pre_push.py" ]; then
+    "$PY" "$(dirname "$0")/kg_pre_push.py" || exit $?
+  fi
   ```
-  The `|| true` matters: this check is advisory and must not fail a push even if it errors.
+  **Do not append `|| true` here.** The checker returns non-zero for exactly one thing — a staleness
+  backlog this push did not create — and catches its own errors so a bug in it can never fail a push.
+  Swallowing the status leaves the reporting and removes the gate. The interpreter and file guards
+  are what `|| true` used to cover: a `127` from a missing `python` must not block a push in a repo
+  that cannot run the check at all.
+
+  If the user wants the reporting without the gate, keep `|| true` — the repo-wide total still
+  prints. Say so rather than deciding for them.
 
 ### 7. Mark the graph in `.gitattributes`
 **Check what the repo already says before writing anything:**
@@ -237,10 +248,15 @@ Then tell the user what is now live:
   no `core.hooksPath` or no `diff.codegraph.textconv` gets one line naming `sh .githooks/install.sh`.
   It only prints — it never writes git config, because git leaves `.git/config` out of a clone
   precisely so that cloning cannot cause code to run.
-- **Git hooks** (installed here): advisory, never blocking. They answer "does this change move the
-  code away from the map?" — `pre-commit` over what is staged, `pre-push` over what is being
-  pushed. `SKIP_KG=1` silences the commit-time one, and the search gate, when a change
-  deliberately outruns the graph.
+- **Git hooks** (installed here): they answer "does this change move the code away from the map?" —
+  `pre-commit` over what is staged, `pre-push` over what is being pushed. Both also report the
+  repo-wide staleness total, which no change set can see: a file that drifts and is never re-derived
+  is named once and then never again. `pre-commit` is advisory and adds one line for that total.
+  `pre-push` blocks on one thing only — mapped files that have drifted and that this push does not
+  touch. That is zero in a repo kept current; release it with `KG_STALE_ACK=<count>` (the count is
+  in the message and the ack expires when it moves), `SKIP_KG=1`, or `git push --no-verify`.
+  `SKIP_KG=1` silences either hook, and the search gate, when a change deliberately outruns the
+  graph.
 - **One command per clone**: everyone else who clones this repo runs `sh .githooks/install.sh` once.
   It needs plain git, POSIX sh and `uv` — no Claude Code and no plugin install.
 - The fix for drift is `/codebase-kg:refresh`; deeper drift is `/codebase-kg:validate`.

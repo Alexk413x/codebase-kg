@@ -2,6 +2,101 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.6.0] — 2026-09-18 — the total nobody was showing
+
+A staleness backlog went unnoticed for months in a consumer repo. 126 nodes were
+re-read against source; 35 were wrong — mostly missing edges, plus one
+description advertising a check the code has never performed. The tool was not
+wrong. Nothing ever showed the standing total.
+
+Both git hooks scope to a change set. That is right for per-commit noise and
+wrong for a backlog: a file that drifts and is never re-derived is reported once,
+in the commit that touched it, and never again. Miss it once and it is invisible.
+`kg_validate` computed the repo-wide number and nothing routine ran it.
+
+### Added — one staleness helper, and every caller goes through it
+
+`codebase_kg/staleness.py` holds the comparison. `kg_stats`, `kg_validate`, the
+pre-commit hook and the pre-push hook all call it; none of them decides for
+itself what "changed" means any more.
+
+This is not tidiness. The digest carries a rule inside it — `content_sha` folds
+CRLF to LF, because the builder reads the working tree while the hooks read the
+git blob, and on a Windows checkout those differ for every text file — and the
+rule was visible only to whoever opened the hashing helper. A hand-rolled check
+over raw `sha256(read_bytes())` reported 113 stale files where the truth was 47.
+Written back as baselines, those digests would have left every file the fix
+"repaired" reading as drifted forever.
+
+The hook keeps a vendored copy, as it does for `content_sha` and the coverage
+globs, because it must run in repos with no plugin install.
+`tests/test_hook_parity.py` compares the two statement for statement.
+
+### Added — `kg_stats` reports repo-wide staleness
+
+A `staleness` block: `stale_files`, `stale_nodes`, samples of each,
+`unbaselined_files`, `unreadable_files`, and `checked`. `kg_validate` returns the
+identical block from the same helper, so the tool an agent orients with and the
+tool it validates with cannot report different numbers.
+
+`checked: false` when the source tree could not be located. "Nothing drifted" and
+"I could not look" are different answers and a bare zero conflates them into the
+reassuring one.
+
+`changed_since_built` is unchanged, and `ok` still ignores it. Folding drift into
+`ok` would make every graph fail the moment anyone edits a covered file, which is
+the false-alarm mode the date-based gate had.
+
+### Changed — pre-push reports the whole repo, and blocks on the backlog
+
+The hook now compares every anchored file against its baseline, not only the
+pushed range, and prints the standing total with the nodes it puts in doubt.
+
+It **blocks** on one thing: mapped files that have drifted and that this push
+does not touch. Everything scoped to the pushed commits stays advisory.
+
+The split is the design. Drift you are introducing now was already named at
+commit time and you are plainly still working on it; blocking on it would fire on
+every push that touches mapped code, and a gate that fires on every push is one
+people route around permanently. Drift you walked away from is what no change set
+will ever mention again. In a repo kept current the backlog is zero and the hook
+is silent — which is the answer to this file's own standing objection that a hard
+gate gets `--no-verify`'d and then ignored. That objection holds for a gate that
+fires constantly, and is met by narrowing what gates rather than by not gating. A
+commit is provisional; a push is publication.
+
+Three ways past it, all explicit:
+
+| | |
+|---|---|
+| `KG_STALE_ACK=<n>` | accept this exact backlog; `<n>` is the count the message prints, so the ack stops matching the moment the backlog moves |
+| `SKIP_KG=1` | skip the check, as at commit time |
+| `git push --no-verify` | skip every hook |
+
+An unexpected error inside the check is never a block: it reports itself and
+returns 0. The `pre-push` wrapper no longer swallows the status with `|| true` —
+that is what makes the gate a gate — and now guards against a missing interpreter
+or a missing checker instead, which is what `|| true` was really covering.
+
+`/codebase-kg:setup` and `git-hooks/README.md` carry the new wrapper form for
+repos that already have a `pre-push`, and say how to keep the reporting without
+the gate.
+
+### Changed — pre-commit gains one line
+
+The repo-wide total when it is non-zero. One line, and one line only: the staged
+report is correctly scoped and stays that way. Without it the backlog was
+invisible at both hooks.
+
+Commit-time remains advisory. Exit status is always 0.
+
+### Not changed, deliberately
+
+- `changed_since_built` still does not count against `ok`.
+- Nothing re-baselines on its own. `stamp_hashes` keeps the baselines already on
+  record, and `--rebaseline` is still the explicit claim that the descriptions
+  were re-checked.
+
 ## [0.5.4] — 2026-09-06 — the verification that verified the wrong repo
 
 Three fixes to the wiring 0.5.3 introduced. All are the same defect 0.5.3 set

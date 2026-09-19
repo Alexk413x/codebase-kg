@@ -341,7 +341,7 @@ def test_read_graph_returns_root_anchors_and_the_coverage_declaration(tmp_path: 
         Meta(codebase="x", root="src", generated="2026-07-30"),
         [Node(id="a", kind="K", anchors=[Anchor("ui/Known.kt", "Known")])],
     )
-    assert g.read_graph(db) == ("src", {"ui/Known.kt"}, [], [], {})
+    assert g.read_graph(db) == ("src", {"ui/Known.kt"}, [], [], {}, {"ui/Known.kt": ["a"]})
 
 
 def test_read_graph_returns_the_source_baselines(tmp_path: Path) -> None:

@@ -16,8 +16,10 @@ every session*.
 - **Cross-codebase parity.** A node can link directly to its counterpart in *another* repo's graph,
   carrying a parity status + one-line divergence — so "find all feature gaps between the iOS app and
   its Android port" is a query across two graphs, not a hand-maintained file.
-- **Advisory, never blocking.** Drift and validation surface as advice; they never gate a commit,
-  build, or tool.
+- **Advisory, with one gate.** Drift and validation surface as advice; they never gate a build or a
+  tool, and never a commit. The push hook blocks on exactly one thing: mapped files that have
+  drifted and that the push does not touch — a backlog nothing else will report again. Zero in a
+  repo that is kept current, and releasable with an acknowledgement that names the count.
 
 The graph is **descriptive** (a mirror of current code), **source-derived** (never ticket- or
 history-derived), and **point-don't-copy** (references symbols, never pastes code). It is a tool
@@ -81,7 +83,7 @@ Thirteen MCP tools over the graph — nine queries and four targeted writes.
 | `kg_find_by_kind` | every `ViewModel` / `Service` / `@Entity` |
 | `kg_find_by_link` | which code node(s) point at a node in another committed graph |
 | `kg_parity_gaps` | the cross-codebase gap report, as a query |
-| `kg_stats` | cold-start orientation: counts, kinds, sections, isolated nodes |
+| `kg_stats` | cold-start orientation: counts, kinds, sections, isolated nodes, and the repo-wide staleness total — how much of this map is out of date, and which nodes |
 | `kg_validate` | advisory drift check against real source: anchors that no longer resolve, declared coverage gaps, and files edited since the graph was built |
 
 | write | does |
@@ -182,8 +184,11 @@ Two advisory layers, both pointing at the same fix (`/codebase-kg:refresh`):
   graph still anchors on, and mapped files whose contents no longer match the digest recorded when
   the graph was built. That third one is the one that catches ordinary work — a change set is mostly
   modifications, and a check that reads only additions and deletions is silent through most of the
-  drift. They **never block** — there is no `--no-verify` to remember. They're stdlib-only and
-  vendored into the repo, so they run for every clone and CI.
+  drift. Both also report the **repo-wide** total, which no change set can see: a file that drifts
+  and is never re-derived is named once and then never again. Commit-time is one line and never
+  blocks; push-time blocks on the backlog it did not create (`KG_STALE_ACK=<n>`, `SKIP_KG=1` or
+  `--no-verify` to get past it). They're stdlib-only and vendored into the repo, so they run for
+  every clone and CI.
 
 ### One command per clone
 

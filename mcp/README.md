@@ -19,7 +19,7 @@ only** — the whole graph layer is testable without FastMCP installed.
 | `kg_neighborhood(id, depth=1)` | A node + everything within 1–3 hops, following edges either way, with hop counts. |
 | `kg_find_by_kind(kind)` | All nodes whose free-text `kind` matches (substring). |
 | `kg_parity_gaps(status?)` | Nodes flagged `divergent` / `<codebase>-only` — the gap report as a query. |
-| `kg_stats()` | Counts by kind / section / parity, edge and anchor totals, isolated nodes, `generated` date. |
+| `kg_stats()` | Counts by kind / section / parity, edge and anchor totals, isolated nodes, `generated` date, and `staleness` — the repo-wide count of mapped files that no longer match what the graph was built against, with the nodes that describe them. |
 | `kg_find_by_link(target)` | **Reverse lookup across graphs**: which code node(s) point at a node in another committed graph in this repo. |
 | `kg_validate()` | Advisory drift check against real source: ungreppable anchors, uncovered source files, counterpart problems. Never blocks. |
 

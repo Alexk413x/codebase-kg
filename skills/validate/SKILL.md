@@ -64,7 +64,8 @@ that was never at risk:
    `knowledge/code_graph.db` (the only location — no repo-root fallback). Confirm with `kg_stats` —
    note the `generated` date and node count.
 2. **Run `kg_validate`.** It returns `anchor_issues`, `coverage`, `changed_since_built`,
-   `counterpart_issues`, `description_issues`, `external_link_issues`, plus `source_checked`
+   `staleness`, `counterpart_issues`, `description_issues`, `external_link_issues`, plus
+   `source_checked`
    (whether the source tree was reachable), `source_base` (the directory anchors resolved from) and
    `anchors_checked`. Report `external_link_issues` — its `error`-severity entries count against
    `ok`, so skipping them lets you call a graph clean over a payload that says `ok: false`.
@@ -90,7 +91,7 @@ Ungreppable anchors (<n>):
 Coverage: <N covered, N gaps, N exempt, N out of scope>   [declared | NOT DECLARED]
 - <path> — in `covers`, no node anchors it  → run refresh
 
-Changed since built (<n>):
+Changed since built (<n> anchors; <staleness.stale_files> files, <staleness.stale_nodes> nodes):
 - <node-id>: `<path>` — source edited after this description was written  → re-read and confirm
 
 Counterpart issues (<n>):

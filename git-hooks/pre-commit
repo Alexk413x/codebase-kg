@@ -1,8 +1,10 @@
 #!/bin/sh
 # codebase-kg staleness check over the staged change set.
 #
-# ADVISORY: it reports and never blocks, matching the pre-push hook beside it.
-# A gate that stops a commit gets bypassed with --no-verify and then ignored.
+# ADVISORY: it reports and never blocks. A gate that stops a commit gets
+# bypassed with --no-verify and then ignored. The pre-push hook beside it does
+# block, on one thing only: a staleness backlog that this push did not create.
+# A commit is provisional; a push is publication.
 #
 # It does NOT run /codebase-kg:refresh. That is a model workflow -- it maps
 # changed files to nodes and decides what to add, edit or remove -- and a shell
