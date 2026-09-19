@@ -315,3 +315,45 @@ def test_file_sha_folds_crlf_too(tmp_path) -> None:
 
 def test_file_sha_of_an_unreadable_path_is_none(tmp_path) -> None:
     assert writer.file_sha(tmp_path / "nope.txt") is None
+
+
+# --- the staleness comparison ------------------------------------------------
+# `kg_stats`, `kg_validate` and both hooks all report drift. The package copy is
+# `codebase_kg/staleness.py`; the hook carries the same rule because it is
+# vendored into repos with no plugin install. If these disagree, the number an
+# agent reads and the number a push blocks on are different numbers — which is
+# precisely the confusion the one-helper rule was introduced to end.
+def test_classify_has_not_drifted_between_the_copies() -> None:
+    import inspect
+
+    from codebase_kg import staleness
+
+    assert _body(inspect.getsource(staleness.classify)) == _body(
+        inspect.getsource(kg_pre_push.classify)
+    )
+
+
+def test_the_split_carries_the_same_fields_in_the_same_order() -> None:
+    from codebase_kg import staleness
+
+    assert kg_pre_push.Staleness._fields == staleness.Staleness._fields
+
+
+CLASSIFY_CASES = [
+    # (baselines, current, expected stale / unbaselined / unreadable)
+    ({"a.kt": "1" * 64}, {"a.kt": "2" * 64}, (["a.kt"], [], [])),
+    ({"a.kt": "1" * 64}, {"a.kt": "1" * 64}, ([], [], [])),
+    ({}, {"a.kt": "2" * 64}, ([], ["a.kt"], [])),
+    ({"a.kt": "1" * 64}, {}, ([], [], ["a.kt"])),
+    ({}, {}, ([], [], ["a.kt"])),
+]
+
+
+@pytest.mark.parametrize("baselines, current, expected", CLASSIFY_CASES)
+def test_both_copies_split_the_same_way(
+    baselines: dict[str, str], current: dict[str, str], expected: tuple[list[str], ...]
+) -> None:
+    from codebase_kg import staleness
+
+    assert staleness.classify(["a.kt"], baselines, current) == expected
+    assert kg_pre_push.classify(["a.kt"], baselines, current) == expected

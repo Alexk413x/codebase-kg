@@ -25,6 +25,14 @@ the upstream branch, so once you have pushed it reports nothing -- which is
 exactly when someone thinks to look. Staged-against-HEAD is always the right
 comparison, whatever has been pushed.
 
+On top of the staged report it prints ONE line with the repo-wide staleness
+total when that is non-zero. Change-set scoping is correct here and must not
+become noisy, so the standing backlog gets a line and nothing more; the push
+hook is where it is argued with. Without that line the backlog is invisible at
+both hooks, which is how one repo accumulated 47 stale files unnoticed.
+
+It stays advisory. Exit status is always 0.
+
 Skip with `SKIP_KG=1`, or `git commit --no-verify` to skip every hook.
 """
 from __future__ import annotations
@@ -37,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from kg_pre_push import (  # noqa: E402
     _emit, _git, analyze, digests_for, drift_candidates, find_graph_rel,
-    load_config, read_graph,
+    load_config, norm_root, read_graph, repo_staleness, stale_nodes, standing_line,
 )
 
 
@@ -71,26 +79,37 @@ def main() -> int:
     graph = read_graph(repo / graph_rel)
     if graph is None:
         return 0
-    root = (cfg.get("root") or graph.root).replace("\\", "/").strip("/")
+    root = norm_root(cfg.get("root") or graph.root)
 
     changed = staged_files()
-    if not changed:
-        return 0
-    candidates = drift_candidates(
-        changed, root, graph_rel, graph.anchored, graph.covers, graph.exempt
-    )
-    # `""` as the rev means the index: `:path` is the staged blob.
-    current = digests_for(candidates, [""]) if candidates else {}
-    findings = analyze(
-        changed, root, graph_rel, graph.anchored, graph.covers, graph.exempt,
-        graph.baselines, current,
-    )
-    if any(findings):
-        # `_emit` takes the action, so the header names this change set rather
-        # than a push that is not happening. The correcting line that used to be
-        # printed here is gone with the thing it corrected.
-        _emit(findings, graph_rel, action="commit")
-        print("[codebase-kg]   Skip this check with SKIP_KG=1.", file=sys.stderr)
+    if changed:
+        candidates = drift_candidates(
+            changed, root, graph_rel, graph.anchored, graph.covers, graph.exempt
+        )
+        # `""` as the rev means the index: `:path` is the staged blob.
+        current = digests_for(candidates, [""]) if candidates else {}
+        findings = analyze(
+            changed, root, graph_rel, graph.anchored, graph.covers, graph.exempt,
+            graph.baselines, current,
+        )
+        if any(findings):
+            # `_emit` takes the action, so the header names this change set rather
+            # than a push that is not happening. The correcting line that used to be
+            # printed here is gone with the thing it corrected.
+            _emit(findings, graph_rel, action="commit")
+            print("[codebase-kg]   Skip this check with SKIP_KG=1.", file=sys.stderr)
+
+    # One line, whatever the change set held. The staged report above is scoped
+    # and stays scoped -- that is what makes it worth reading. This is the
+    # standing total it cannot see: a file that drifted in some earlier commit
+    # and was never re-derived is in no change set ever again. One line is the
+    # whole budget; the push hook is where the backlog gets argued with.
+    split = repo_staleness(graph, root, [""])
+    if split.stale:
+        print(
+            standing_line(split.stale, stale_nodes(graph, split.stale), graph_rel),
+            file=sys.stderr,
+        )
     return 0  # advisory, always
 
 

@@ -1,15 +1,30 @@
 #!/bin/sh
 # codebase-kg pre-push staleness check — reports when the commits you're pushing
-# add source no node covers, or delete source the graph still anchors on.
+# add source no node covers, or delete source the graph still anchors on, and
+# reports the repo-wide staleness backlog.
 #
-# ADVISORY: it never blocks. There is nothing to override.
+# It blocks on ONE thing: mapped files that have drifted and that this push does
+# not touch — a backlog nothing else will ever report again. Everything scoped
+# to the pushed commits stays advisory, and an error in the checker itself
+# always exits 0. Release a block with KG_STALE_ACK=<count> (the count is in the
+# message), SKIP_KG=1, or git push --no-verify.
+#
+# The exit status is deliberately NOT swallowed with `|| true` — that is what
+# makes the gate a gate. kg_pre_push.py returns non-zero only for an
+# unacknowledged backlog; it catches its own errors and returns 0.
 #
 # Vendored: keep kg_pre_push.py next to this file. If this repo already has a
-# pre-push hook, DON'T overwrite it — add the two lines below to it instead.
+# pre-push hook, DON'T overwrite it — add the lines below to it instead.
 #
 # NOTE: git feeds the pushed refs on this hook's stdin; kg_pre_push.py reads
 # them to check exactly the pushed commits. Keep this call first — before
 # anything else that might consume stdin.
 DIR=$(dirname "$0")
-if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
-"$PY" "$DIR/kg_pre_push.py" || true
+[ -f "$DIR/kg_pre_push.py" ] || exit 0
+# Resolved rather than assumed: with the status no longer swallowed, a missing
+# interpreter would exit 127 and block every push in a repo that cannot run the
+# check at all.
+if command -v python3 >/dev/null 2>&1; then PY=python3
+elif command -v python >/dev/null 2>&1; then PY=python
+else exit 0; fi
+"$PY" "$DIR/kg_pre_push.py"

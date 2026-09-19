@@ -464,6 +464,22 @@ class CodeGraph:
         """
         return {r["path"]: r["sha"] for r in self._q("SELECT path, sha FROM source ORDER BY path")}
 
+    def node_ids_for_paths(self, paths: list[str]) -> list[str]:
+        """Every node anchored on any of `paths`, sorted.
+
+        The second half of a staleness answer: a stale *file* only matters
+        because of the descriptions written against it, and those are what has
+        to be re-read. Indexed on `anchor_path` and chunked, so asking about a
+        whole graph's worth of paths is one bounded set of queries rather than
+        one per file.
+        """
+        if not paths:
+            return []
+        rows = self._in_chunks(
+            "SELECT DISTINCT node_id FROM anchor WHERE path IN ({marks})", list(paths)
+        )
+        return sorted({r["node_id"] for r in rows})
+
     def all_anchors(self) -> list[tuple[str, Anchor]]:
         """Every anchor, **ordered by path** so a caller reading the source can
         finish one file before moving to the next — one read per file, and only

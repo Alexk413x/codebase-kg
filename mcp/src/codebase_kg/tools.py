@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import clean
+from . import clean, staleness
 from .coverage import CoverageReport, classify, declared_roots, resolve_source_base
 from .links import Resolution, resolve
 from .models import Anchor, Node
@@ -366,7 +366,29 @@ def cli_invocations() -> dict[str, str]:
     }
 
 
-def kg_stats(graph: CodeGraph) -> dict[str, Any]:
+def repo_staleness(graph: CodeGraph, repo_root: str | None = None) -> dict[str, Any]:
+    """Repo-wide staleness: every anchored file, not just the ones in a change set.
+
+    The number that was missing. Both git hooks scope to a change set, which is
+    right for per-commit noise and wrong for a backlog — a file that drifts and
+    is never re-derived is reported once, in the commit that touched it, and
+    never again. One consumer repo carried 47 stale files for months with every
+    check passing, because nothing ever asked this question.
+
+    Goes through `staleness.classify` like every other caller, so the count here
+    is the same count the hooks print.
+    """
+    base = _resolve_source_base(graph, repo_root)
+    if base is None:
+        return staleness.unchecked("no source tree found for the graph's anchors")
+    anchored = graph.anchor_paths()
+    split = staleness.classify(
+        anchored, graph.sources(), staleness.digest_tree(anchored, base)
+    )
+    return staleness.report(split, graph.node_ids_for_paths(split.stale))
+
+
+def kg_stats(graph: CodeGraph, repo_root: str | None = None) -> dict[str, Any]:
     meta = graph.meta
     counts = graph.counts()
     isolated = graph.isolated_ids(limit=20)
@@ -388,6 +410,9 @@ def kg_stats(graph: CodeGraph) -> dict[str, Any]:
         "sections": graph.group_counts("section"),
         "parity": {k: v for k, v in graph.group_counts("parity").items() if k != "(none)"},
         "isolated_nodes": {"count": isolated_total, "ids": isolated},
+        # The standing drift total, reported where an agent orients first.
+        # `kg_validate` returns this same block from the same helper.
+        "staleness": repo_staleness(graph, repo_root),
     }
 
 
@@ -438,6 +463,16 @@ class AnchorCheck:
     checked: int = 0  # anchors
     changed: list[dict[str, str]] = field(default_factory=list)
     unhashed: int = 0  # anchored *files* with no recorded baseline
+    split: staleness.Staleness = field(
+        default_factory=lambda: staleness.Staleness([], [], [])
+    )
+    stale_nodes: list[str] = field(default_factory=list)
+
+
+_CHANGED_ISSUE = (
+    "source changed since the graph was built — re-read and "
+    "confirm the description still fits"
+)
 
 
 def _check_anchors(graph: CodeGraph, base: Path) -> AnchorCheck:
@@ -454,20 +489,25 @@ def _check_anchors(graph: CodeGraph, base: Path) -> AnchorCheck:
       `changed_since_built`, because a changed file is a prompt to re-read, not
       proof that anything is wrong.
 
+    The second question is not answered here. This walk collects a digest per
+    file and hands both digest maps to `staleness.classify`, which is the only
+    place in the plugin that decides what "changed" means — see staleness.py for
+    the drift that made that worth enforcing.
+
     `all_anchors()` yields in path order, so each file is stat-ed, read and
     hashed once and only the current file's text is held — rather than caching
     the whole source tree in memory to avoid re-reads.
     """
     out = AnchorCheck()
-    baselines = graph.sources()
-    current: str | None = None
+    anchors = graph.all_anchors()
+    current: dict[str, str] = {}
+    path: str | None = None
     src: str | None = None
-    drifted = False
     exists = False
-    for node_id, anchor in graph.all_anchors():
+    for node_id, anchor in anchors:
         out.checked += 1
-        if anchor.path != current:
-            current, src, drifted = anchor.path, None, False
+        if anchor.path != path:
+            path, src = anchor.path, None
             fp = base / anchor.path
             exists = fp.is_file()
             if exists:
@@ -475,11 +515,9 @@ def _check_anchors(graph: CodeGraph, base: Path) -> AnchorCheck:
                     src = fp.read_text(encoding="utf-8", errors="ignore")
                 except OSError:
                     src = None
-                recorded = baselines.get(anchor.path)
-                if recorded is None:
-                    out.unhashed += 1
-                else:
-                    drifted = file_sha(fp) != recorded
+                sha = file_sha(fp)
+                if sha is not None:
+                    current[anchor.path] = sha
         if not exists:
             out.issues.append({"node": node_id, "anchor": str(anchor), "issue": "file not found"})
             continue
@@ -487,15 +525,16 @@ def _check_anchors(graph: CodeGraph, base: Path) -> AnchorCheck:
             out.issues.append(
                 {"node": node_id, "anchor": str(anchor), "issue": "symbol not found in file"}
             )
-        if drifted:
-            out.changed.append(
-                {
-                    "node": node_id,
-                    "anchor": str(anchor),
-                    "issue": "source changed since the graph was built — re-read and "
-                    "confirm the description still fits",
-                }
-            )
+
+    out.split = staleness.classify(graph.anchor_paths(), graph.sources(), current)
+    out.unhashed = len(out.split.unbaselined)
+    stale = set(out.split.stale)
+    out.changed = [
+        {"node": node_id, "anchor": str(anchor), "issue": _CHANGED_ISSUE}
+        for node_id, anchor in anchors
+        if anchor.path in stale
+    ]
+    out.stale_nodes = graph.node_ids_for_paths(out.split.stale)
     return out
 
 
@@ -601,6 +640,14 @@ def kg_validate(
             "anchors": checks.changed[:50],
             "unhashed": checks.unhashed,
         },
+        # The same block `kg_stats` returns, from the same helper — anchors
+        # counted above, *files* and the nodes that own them counted here. Two
+        # tools that both report drift must not report different numbers.
+        "staleness": (
+            staleness.report(checks.split, checks.stale_nodes)
+            if base is not None
+            else staleness.unchecked("no source tree found for the graph's anchors")
+        ),
         "coverage": cov.to_dict(),
         "counterpart_issues": counterpart_issues,
         "description_issues": description_issues,
@@ -711,6 +758,7 @@ __all__ = [
     "kg_parity_gaps",
     "kg_stats",
     "kg_validate",
+    "repo_staleness",
     "coverage_report",
     "walk_sources",
     "Anchor",

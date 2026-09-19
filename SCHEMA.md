@@ -19,8 +19,9 @@ The graph is a **tool that reflects current code state to reduce search cost. No
   and "what changed" belong to git and the tracker; a node that carries them is carrying a copy that
   will go stale. §5.1 makes this a rule the store enforces.
 - **Point, don't copy.** Reference symbols; never paste code into the graph. Copied code rots.
-- **Advisory, never blocking.** Freshness, drift, and validation surface as advice. They never gate
-  a commit, build, or tool.
+- **Advisory, with one gate.** Freshness, drift, and validation surface as advice. They never gate a
+  build, a tool, or a commit. The push hook gates on exactly one thing: mapped files that have
+  drifted and that the push does not touch (§6.3) — a backlog nothing else will report again.
 - **Machine-first.** The artifact is a database, read by tools. It is not meant to be read raw or
   reviewed in a diff.
 
@@ -225,6 +226,18 @@ Two rules keep the signal honest:
 A graph built with no source tree in reach simply has no rows here, reported as `unhashed` — which
 reads as "no baseline", never as "nothing changed".
 
+**One comparison, one place.** Everything that reports staleness — `kg_stats`, `kg_validate`, and
+both git hooks — goes through `codebase_kg/staleness.py`. The digest carries a rule inside it (the
+hash folds CRLF to LF, because the builder reads the working tree while the hooks read the git blob),
+and a caller that re-derived the comparison for itself got 113 stale files where the truth was 47 —
+then nearly wrote those digests back as baselines, which would have left every file it "fixed"
+reading as drifted forever. The hook keeps a vendored copy because it must run with no plugin
+install; `tests/test_hook_parity.py` asserts the two agree statement for statement.
+
+**The repo-wide question.** A change set can only report the files in it, so a file that drifts and
+is never re-derived is named once and then never again. `kg_stats.staleness` is the standing total —
+stale files and the nodes that describe them — reported where an agent orients first.
+
 ### 6.4 `node_fts` — the search index
 
 An FTS5 table over each node's id, kind, description and anchors. CamelCase identifiers are indexed
@@ -245,9 +258,11 @@ Staleness is answered by comparing the graph to the code:
 - **`kg_validate`** — anchors whose file or symbol no longer exists, files under `root` that
   `covers` says should be mapped and aren't (§3.1), and files whose contents changed since the
   graph was built (§6.3). All three are facts about the source tree.
-- **the staleness hooks** — the same three questions, scoped to what you are committing or pushing.
-  They read the digests out of git (the index, or the pushed tips), report, and exit 0. They never
-  block.
+- **the staleness hooks** — the same three questions, scoped to what you are committing or pushing,
+  plus the repo-wide total those three cannot see. They read the digests out of git (the index, or
+  the pushed tips). `pre-commit` reports and exits 0. `pre-push` exits non-zero for one thing: a
+  backlog of drifted files it did not create, released by `KG_STALE_ACK=<count>`, `SKIP_KG=1` or
+  `--no-verify`.
 - **the post-edit hook** — says so the first time you edit a file no node anchors on.
 
 The rule for an update is unchanged and still matters: **update all affected nodes** — add nodes for

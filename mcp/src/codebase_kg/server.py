@@ -239,8 +239,12 @@ def kg_parity_gaps(status: str | None = None) -> dict[str, Any]:
 @mcp.tool()
 def kg_stats() -> dict[str, Any]:
     """Counts and health for cold start: node/edge/anchor totals, breakdown by
-    kind and section, parity breakdown, isolated nodes, and when the graph was
-    generated."""
+    kind and section, parity breakdown, isolated nodes, when the graph was
+    generated, and `staleness` — the repo-wide count of mapped files whose
+    contents no longer match what the graph was built against, plus the nodes
+    that describe them. Read `staleness.stale_files` before trusting a
+    description: non-zero means part of this map is out of date, and
+    `/codebase-kg:audit` says which part."""
     with _open_graph() as g:
         return _tools.kg_stats(g)
 
