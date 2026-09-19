@@ -135,6 +135,7 @@ codebase-kg/
 ├── README.md
 ├── docs/
 │   ├── DESIGN.md             # locked design decisions, genericity rules, principles
+│   ├── RELEASING.md          # release checklist — the tag is load-bearing, not bookkeeping
 │   └── examples/EXAMPLE_GRAPH.json
 ├── templates/
 │   ├── code_graph.template.json

@@ -2,6 +2,21 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [Unreleased]
+
+### Docs — a release checklist, with the tag step made mechanical
+
+`docs/RELEASING.md`. The tag is not bookkeeping: `install.sh` pins the textconv
+driver to it, and a version whose tag was never pushed leaves every `git show` of
+a committed graph printing `Binary files differ` with nothing explaining why.
+0.5.5 and 0.5.6 both shipped that way.
+
+The checklist calls `claude plugin tag --push`, which builds the tag from
+`plugin.json`, checks it against the marketplace entry, and refuses on a dirty
+tree. It also makes verification a step of its own — a tag listing proves the ref
+exists, not that the pinned URL installs, so the check is a throwaway clone with
+the installer run against it.
+
 ## [0.6.1] — 2026-09-18 — a vendored comment that broke other people's repos
 
 ### Fixed — `git-hooks/install.sh` no longer carries a drive-letter path
