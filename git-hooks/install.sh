@@ -22,7 +22,7 @@ set -eu
 # Pinned to a TAG, never a branch: this command runs on every diff of the graph
 # and must not change under the repo silently. /codebase-kg:setup stamps this
 # line with the plugin version that wrote it; bump it deliberately.
-KG_VERSION="${KG_VERSION:-0.6.0}"
+KG_VERSION="${KG_VERSION:-0.6.1}"
 KG_SOURCE="${KG_SOURCE:-git+https://github.com/Alexk413x/codebase-kg.git@codebase-kg--v${KG_VERSION}#subdirectory=mcp}"
 # --quiet is not cosmetic: without it uv prints resolution lines into the body of
 # every `git diff` of the graph.
@@ -47,7 +47,10 @@ fi
 
 # --show-prefix keeps this on git's own path spelling. Comparing `pwd` against
 # `git rev-parse --show-toplevel` does not work under Git Bash on Windows, where
-# one says /c/Users/... and the other says C:/Users/....
+# one reports a POSIX-style prefix carrying the drive as a leading path segment
+# and the other a native drive letter. Described rather than shown: this file is
+# vendored into other repos, and a repo that greps committed files for
+# machine-specific paths cannot tell an example from the real thing.
 hooks_rel=$(CDPATH= cd -- "$hooks_abs" && git rev-parse --show-prefix)
 hooks_rel=${hooks_rel%/}
 [ -n "$hooks_rel" ] || hooks_rel="."

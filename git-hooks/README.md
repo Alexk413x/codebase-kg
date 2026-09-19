@@ -205,6 +205,22 @@ its own errors and returns 0 — so swallowing the status leaves you with the re
 gate. The interpreter and file guards are there because a `127` from a missing `python` would block
 a push in a repo that cannot run the check at all.
 
+Near the top is necessary but not sufficient. A shell script exits with the status of its **last**
+command, so anything the wrapper runs after this — lint, another quality gate — overwrites a block
+with its own `0` and the push goes through silently. That happened in a real repo. If work follows
+the call, capture the status and re-raise it at the end instead of exiting inline:
+
+```sh
+kg_status=0
+if [ -n "$PY" ] && [ -f "$(dirname "$0")/kg_pre_push.py" ]; then
+  "$PY" "$(dirname "$0")/kg_pre_push.py" || kg_status=$?
+fi
+
+# ... the repo's own gates ...
+
+exit $kg_status
+```
+
 If you want the reporting without the gate, keep `|| true`; the repo-wide total still prints.
 
 ## What counts as source
