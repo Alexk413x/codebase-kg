@@ -2,6 +2,61 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.6.1] — 2026-09-18 — a vendored comment that broke other people's repos
+
+### Fixed — `git-hooks/install.sh` no longer carries a drive-letter path
+
+A comment explained why the installer uses `--show-prefix` by showing the two
+spellings Git Bash produces for the same directory on Windows. One of them was a
+literal `<letter>:/Users/...`.
+
+`install.sh` is vendored: consumer repos commit a copy. Two of them have a guard
+that greps committed files for exactly that shape, and the comment turned a
+branch red in cartographer. The guard is right — it cannot tell an example from a
+real machine path, which is the point of having it. The comment now describes the
+difference instead of showing it.
+
+Fixing it downstream does nothing on its own: the next re-vendor brings it back.
+
+### Added — a test that no vendored file carries a machine path
+
+`tests/test_vendored_portability.py` checks every file under `git-hooks/`, not
+just `install.sh`. All of them get copied into other people's repos, so an
+absolute path naming one computer is a defect by construction. This one reached
+two repos before a downstream guard caught it.
+
+### Fixed — tags `codebase-kg--v0.5.5` and `codebase-kg--v0.5.6` were missing
+
+Both releases existed as commits on `main` and `install.sh` pinned 0.5.6, but
+neither tag was ever pushed. The textconv driver `install.sh` writes is pinned by
+tag:
+
+```
+uvx --from "git+https://github.com/Alexk413x/codebase-kg.git@codebase-kg--v<version>#subdirectory=mcp"
+```
+
+A clone wired while 0.5.6 was current resolved a tag that did not exist. The
+probe failed, `diff.codegraph` was left unset, and every `git show` of a
+committed graph printed `Binary files differ` with nothing explaining why — git
+says nothing when a textconv command cannot resolve, it just falls back.
+
+Both tags are backfilled at the merge commits that carried the version bump:
+0.5.5 at `81f44ae`, 0.5.6 at `84f52d0`.
+
+### Docs — integrating into an existing `pre-push` needs more than placement
+
+`git-hooks/README.md` said to add the call near the top. That is necessary and
+not sufficient: a shell script exits with the status of its **last** command, so
+a wrapper that runs its own gates afterwards overwrites a block with their `0`
+and the push goes through silently. Observed in a repo running android-driver
+quality gates after the staleness check. The README now shows capturing the
+status and re-raising it at the end.
+
+### Housekeeping
+
+The 0.5.5 and 0.5.6 changelog entries had been appended to the bottom of this
+file, below 0.1.0. They are back in release order.
+
 ## [0.6.0] — 2026-09-18 — the total nobody was showing
 
 A staleness backlog went unnoticed for months in a consumer repo. 126 nodes were
@@ -96,6 +151,40 @@ Commit-time remains advisory. Exit status is always 0.
 - Nothing re-baselines on its own. `stamp_hashes` keeps the baselines already on
   record, and `--rebaseline` is still the explicit claim that the descriptions
   were re-checked.
+
+## [0.5.6] - 2026-09-11
+
+### Changed — fastmcp 4
+
+fastmcp 4 splits the transport-heavy pieces out of the default install. For a
+stdio server that never serves HTTP, the saving is most of the package:
+
+| | 3.x | 4.0.3 |
+|---|---|---|
+| venv on disk (`--no-dev`) | 77 MB | 10 MB |
+| `import fastmcp` | 1.01s | 0.65s |
+
+That lands on cold start, which was venv creation almost end to end.
+
+Also picks up the pending dependency updates: `hatchling>=1.32.0`,
+`astral-sh/setup-uv` v10.0.1, `trufflesecurity/trufflehog` v3.97.4.
+
+## [0.5.5] - 2026-09-11
+
+### Fixed — MCP servers no longer fail during Claude Code startup
+
+A plugin install is a fresh clone with no `.venv`. With `uv.lock` gitignored,
+uv re-resolved the whole dependency set on every server launch — roughly 20s
+each, 20.1s wall for seven concurrent — against Claude Code's 30s MCP startup
+budget. Servers were killed mid-handshake and surfaced only as
+`connection closed: initialize response`.
+
+- `uv.lock` is now committed. It is what lets uv skip resolution entirely.
+- The server launches with `uv run --project ... --frozen --no-dev`. The
+  `--no-dev` matters on its own: uv installs the dev dependency group by
+  default, which was pulling pyright and pytest into the runtime venv.
+
+Measured: warm concurrent start 20.1s → 6.5s, cold 46.2s → 34.6s.
 
 ## [0.5.4] — 2026-09-06 — the verification that verified the wrong repo
 
@@ -1059,37 +1148,3 @@ JSON round trip, and migration fidelity against the fixtures.
 - Phase 4 — advisory post-edit freshness hook.
 - Phase 5 — `counterpart` resolution + `kg_parity_gaps`.
 - Phase 6 — dogfood on a real iOS↔Android pair.
-## [0.5.6] - 2026-09-11
-
-### Changed — fastmcp 4
-
-fastmcp 4 splits the transport-heavy pieces out of the default install. For a
-stdio server that never serves HTTP, the saving is most of the package:
-
-| | 3.x | 4.0.3 |
-|---|---|---|
-| venv on disk (`--no-dev`) | 77 MB | 10 MB |
-| `import fastmcp` | 1.01s | 0.65s |
-
-That lands on cold start, which was venv creation almost end to end.
-
-Also picks up the pending dependency updates: `hatchling>=1.32.0`,
-`astral-sh/setup-uv` v10.0.1, `trufflesecurity/trufflehog` v3.97.4.
-
-## [0.5.5] - 2026-09-11
-
-### Fixed — MCP servers no longer fail during Claude Code startup
-
-A plugin install is a fresh clone with no `.venv`. With `uv.lock` gitignored,
-uv re-resolved the whole dependency set on every server launch — roughly 20s
-each, 20.1s wall for seven concurrent — against Claude Code's 30s MCP startup
-budget. Servers were killed mid-handshake and surfaced only as
-`connection closed: initialize response`.
-
-- `uv.lock` is now committed. It is what lets uv skip resolution entirely.
-- The server launches with `uv run --project ... --frozen --no-dev`. The
-  `--no-dev` matters on its own: uv installs the dev dependency group by
-  default, which was pulling pyright and pytest into the runtime venv.
-
-Measured: warm concurrent start 20.1s → 6.5s, cold 46.2s → 34.6s.
-
