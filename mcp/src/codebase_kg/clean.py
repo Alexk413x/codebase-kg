@@ -144,6 +144,19 @@ def node_problems(node: object) -> list[str]:
     except LinkError as exc:
         issues.append(str(exc))
 
+    # A narrowing that names no anchor is refused here rather than left for
+    # `kg_validate`: removing an anchor a reference still narrows to is the
+    # moment that reference starts to rot, and this names the node.
+    anchors = list(getattr(node, "anchors", []))
+    seen: set[object] = set()
+    for ref in getattr(node, "references", []):
+        problem = ref.problem(anchors)
+        if problem:
+            issues.append(problem)
+        if ref in seen:
+            issues.append(f"reference {ref.url} is listed twice with the same narrowing")
+        seen.add(ref)
+
     issues += parity_problems(
         getattr(node, "parity", None),
         getattr(node, "counterpart", None),

@@ -13,6 +13,8 @@ allowed-tools:
   - mcp__codebase-kg__kg_delete_node
   - mcp__codebase-kg__kg_add_link
   - mcp__codebase-kg__kg_remove_link
+  - mcp__codebase-kg__kg_add_reference
+  - mcp__codebase-kg__kg_remove_reference
   - mcp__codebase-kg__kg_neighborhood
   - mcp__plugin_codebase-kg_codebase-kg__kg_validate
   - mcp__plugin_codebase-kg_codebase-kg__kg_stats
@@ -23,6 +25,8 @@ allowed-tools:
   - mcp__plugin_codebase-kg_codebase-kg__kg_delete_node
   - mcp__plugin_codebase-kg_codebase-kg__kg_add_link
   - mcp__plugin_codebase-kg_codebase-kg__kg_remove_link
+  - mcp__plugin_codebase-kg_codebase-kg__kg_add_reference
+  - mcp__plugin_codebase-kg_codebase-kg__kg_remove_reference
   - mcp__plugin_codebase-kg_codebase-kg__kg_neighborhood
   - Read
   - Grep
@@ -61,7 +65,8 @@ Scope the change set (step 1) before picking one.
 ### One or two nodes → the write tools
 
 `kg_upsert_node` for a description, an anchor list or an edge list; `kg_delete_node` for code that
-is gone; `kg_add_link` / `kg_remove_link` for a pointer into another graph.
+is gone; `kg_add_link` / `kg_remove_link` for a pointer into another graph;
+`kg_add_reference` / `kg_remove_reference` for the documentation a node depends on.
 
 ```
 kg_upsert_node(nodes=[{"id": "feed_ranker",
@@ -71,9 +76,10 @@ kg_delete_node(ids=["legacy_sync_worker"])                    # previews what ca
 kg_delete_node(ids=["legacy_sync_worker"], dry_run=False)
 ```
 
-Only the keys you supply change, so omitting `edges` keeps them. `anchors`, `edges` and
-`external_links` **replace** the whole list when present — read the node first if you mean to
-append. Each call is atomic, runs `kg_validate` against the result and refuses anything that
+Only the keys you supply change, so omitting `edges` keeps them. `anchors`, `edges`,
+`external_links` and `references` **replace** the whole list when present — read the node first
+if you mean to append. A reference's `path` / `symbol` must equal one of the node's anchors, so
+when an anchor moves, move the references that narrow to it in the same call. Each call is atomic, runs `kg_validate` against the result and refuses anything that
 introduces a new finding, and hands back every field it changed. A rejected call leaves the
 committed file byte-identical, and there is no scratch file to clean up.
 

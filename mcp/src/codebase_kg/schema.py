@@ -20,6 +20,7 @@ regeneration either lands whole or rolls back — there is no half-written graph
 from __future__ import annotations
 
 import re
+import sqlite3
 
 from .links import EXTERNAL_LINK_DDL
 
@@ -31,7 +32,18 @@ from .links import EXTERNAL_LINK_DDL
 # cross-graph links", the same state as a graph that has none. Bumping would
 # have made every existing committed graph refuse to open in exchange for
 # nothing.
-SCHEMA_VERSION = 3
+#
+# `reference` DID bump it, 3 -> 4, and the difference is what an older server
+# does to the rows. It cannot see them, so its next export -> build writes a
+# graph without them and reports success. The stamp makes that server refuse
+# the file and name the fix instead. `MIN_READABLE_VERSION` is what keeps the
+# bump additive in the other direction: a v3 graph is a v4 graph with no
+# `reference` table, the reader probes for it, and every committed v3 artifact
+# still opens.
+SCHEMA_VERSION = 4
+MIN_READABLE_VERSION = 3
+
+REFERENCE_TABLE = "reference"
 
 # The table a peer graph must query to check that one of our ids exists. Written
 # into `meta` under `links.NODE_TABLE_KEY` because a peer holds no copy of this
@@ -78,6 +90,51 @@ def split_identifier(token: str) -> list[str]:
 
 # Fixed so a rebuild of identical input yields an identical file (see writer.py).
 PAGE_SIZE = 4096
+
+# Where a platform fact a node depends on is documented. Not `external_link`:
+# that targets a node in another graph and is resolved by opening that graph; a
+# URL has no node to resolve to.
+#
+# Keyed `(node_id, ord)` like `anchor`. One node may cite one page for two
+# different symbols, so `url` cannot be part of a unique key, and `path` and
+# `symbol` are nullable, which a WITHOUT ROWID primary key does not allow.
+#
+# No index on `url`: the reverse question is asked by substring ("everything
+# under developer.android.com/reference/android/view"), which an index cannot
+# serve, over a table far smaller than `node`.
+#
+# `path` and `symbol` carry the same CHECKs as `anchor`, because a narrowing
+# must equal one of the node's anchors. That equality is not a foreign key:
+# anchors are replaced wholesale on edit and a NULL symbol never matches under
+# FK rules, so `clean.node_problems` refuses the write and `kg_validate`
+# reports whatever reaches the file another way.
+#
+# Separate from `DDL` so `edits.py` can add it to a v3 graph in place.
+REFERENCE_DDL = """\
+CREATE TABLE reference (
+    node_id TEXT NOT NULL REFERENCES node(id) ON DELETE CASCADE,
+    ord     INTEGER NOT NULL,
+    kind    TEXT NOT NULL DEFAULT '',
+    title   TEXT NOT NULL DEFAULT '',
+    url     TEXT NOT NULL,
+    path    TEXT,
+    symbol  TEXT,
+    PRIMARY KEY (node_id, ord),
+    CHECK (url <> ''),
+    CHECK (path IS NULL OR (path <> '' AND instr(path, char(92)) = 0)),
+    CHECK (symbol IS NULL OR (symbol <> '' AND symbol NOT GLOB '[0-9]*')),
+    CHECK (symbol IS NULL OR path IS NOT NULL)
+) WITHOUT ROWID;
+"""
+
+
+def has_reference_table(conn: sqlite3.Connection) -> bool:
+    """Probed, not assumed: a v3 graph has no such table and still opens."""
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (REFERENCE_TABLE,)
+    ).fetchone()
+    return row is not None
+
 
 DDL = f"""
 CREATE TABLE meta (
@@ -194,6 +251,7 @@ CREATE INDEX edge_dst ON edge(dst);
 -- one column, and a node routinely links out to several places.
 {EXTERNAL_LINK_DDL}
 
+{REFERENCE_DDL}
 -- Full-text search, persisted in the file. This is the reason the index is
 -- affordable now: it is built once at write time and costs nothing on open,
 -- unlike an in-memory index that would have to be rebuilt on every load.

@@ -37,6 +37,7 @@ that kept one would make the next `/codebase-kg:refresh` fail.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import shutil
 import sqlite3
@@ -48,7 +49,8 @@ from typing import Any
 
 from . import clean, links, tools, writer
 from .links import ExternalLink, LinkError
-from .models import Anchor, Node
+from .models import Anchor, Node, Reference, ReferenceFormatError
+from .schema import REFERENCE_DDL, REFERENCE_TABLE, SCHEMA_VERSION, has_reference_table
 from .store import CodeGraph, StoreError
 
 #: Scalar node columns an upsert may set, in the order they appear in the DDL.
@@ -57,7 +59,7 @@ from .store import CodeGraph, StoreError
 SCALAR_FIELDS = ("kind", "description", "section", "parity", "counterpart", "divergence")
 
 #: Fields whose value is a list, replaced wholesale when present.
-LIST_FIELDS = ("anchors", "edges", "external_links")
+LIST_FIELDS = ("anchors", "edges", "external_links", "references")
 
 
 class EditError(ValueError):
@@ -128,6 +130,10 @@ def _blocking(report: Mapping[str, Any]) -> set[str]:
         f"external-link {i['node']} -> {i['target']}: {i['issue']}"
         for i in report["external_link_issues"]
         if i["severity"] == "error"
+    }
+    out |= {
+        f"reference {i['node']} {i['url']} -> {i['narrows_to']}: {i['issue']}"
+        for i in report["reference_issues"]
     }
     out |= {f"coverage gap: {p}" for p in report["coverage"].get("gaps", [])}
     return out
@@ -279,6 +285,17 @@ def _read_node(conn: sqlite3.Connection, node_id: str) -> Node | None:
         for r in conn.execute("SELECT dst FROM edge WHERE src = ? ORDER BY dst", (node_id,))
     ]
     outbound = links.links_for(conn, node_id) if links.has_link_table(conn) else []
+    cited: list[Reference] = []
+    if has_reference_table(conn):
+        cited = [
+            Reference(url=r["url"], kind=r["kind"], title=r["title"],
+                      path=r["path"], symbol=r["symbol"])
+            for r in conn.execute(
+                f"SELECT kind, title, url, path, symbol FROM {REFERENCE_TABLE}"
+                " WHERE node_id = ? ORDER BY ord",
+                (node_id,),
+            )
+        ]
     return Node(
         id=row["id"],
         kind=row["kind"],
@@ -290,7 +307,32 @@ def _read_node(conn: sqlite3.Connection, node_id: str) -> Node | None:
         counterpart=row["counterpart"],
         divergence=row["divergence"],
         links=outbound,
+        references=cited,
     )
+
+
+def _ensure_reference_table(conn: sqlite3.Connection) -> list[Change]:
+    """Create `reference` in a v3 graph, and move its version stamp with it.
+
+    The stamp moves because a v3-era server cannot see the table: its next
+    export -> build would write the graph back without these rows and call that
+    a success. At v4 it refuses the file and names the fix instead (schema.py).
+    """
+    if has_reference_table(conn):
+        return []
+    conn.execute(REFERENCE_DDL)
+    changes = [Change("reference", REFERENCE_TABLE, "created")]
+    row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    found = int(row["value"]) if row else 0
+    if found < SCHEMA_VERSION:
+        conn.execute(
+            "UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),)
+        )
+        changes.append(
+            Change("meta", "schema_version", "updated",
+                   {"schema_version": (str(found), str(SCHEMA_VERSION))})
+        )
+    return changes
 
 
 def _ensure_link_table(conn: sqlite3.Connection) -> list[Change]:
@@ -335,6 +377,15 @@ def _parse_links(raw: object, node_id: str) -> list[ExternalLink]:
         raise EditError(f"node '{node_id}': {exc}") from exc
 
 
+def _parse_references(raw: object, node_id: str) -> list[Reference]:
+    if not isinstance(raw, (list, tuple)):
+        raise EditError(f"node '{node_id}': `references` must be a list")
+    try:
+        return [Reference.parse(item) for item in raw]
+    except ReferenceFormatError as exc:
+        raise EditError(f"node '{node_id}': {exc}") from exc
+
+
 def _merge(current: Node | None, patch: Mapping[str, Any]) -> Node:
     """The node as it will be: `current` with the supplied keys applied.
 
@@ -358,6 +409,7 @@ def _merge(current: Node | None, patch: Mapping[str, Any]) -> Node:
             counterpart=current.counterpart,
             divergence=current.divergence,
             links=list(current.links),
+            references=list(current.references),
         )
     for name in SCALAR_FIELDS:
         if name not in patch:
@@ -378,6 +430,8 @@ def _merge(current: Node | None, patch: Mapping[str, Any]) -> Node:
         merged.edges = sorted({str(e).strip() for e in raw if str(e).strip()})
     if "external_links" in patch:
         merged.links = _parse_links(patch["external_links"] or [], node_id)
+    if "references" in patch:
+        merged.references = _parse_references(patch["references"] or [], node_id)
     return merged
 
 
@@ -431,6 +485,16 @@ def _write_node(conn: sqlite3.Connection, before: Node | None, after: Node) -> l
             links.insert(conn, after.id, link)
         changes.append(
             Change("external_link", after.id, "updated", {"links": (old_links, new_links)})
+        )
+
+    old_refs = [ref.as_dict() for ref in (before.references if before else [])]
+    new_refs = [ref.as_dict() for ref in after.references]
+    if old_refs != new_refs:
+        changes += _ensure_reference_table(conn)
+        conn.execute(f"DELETE FROM {REFERENCE_TABLE} WHERE node_id = ?", (after.id,))
+        writer.insert_references(conn, [after])
+        changes.append(
+            Change("reference", after.id, "updated", {"references": (old_refs, new_refs)})
         )
 
     # The FTS row is not foreign-keyed to anything -- a virtual table cannot be --
@@ -556,6 +620,16 @@ def _impact(conn: sqlite3.Connection, ids: list[str]) -> dict[str, Any]:
                 args,
             )
         ]
+    cited: list[str] = []
+    if has_reference_table(conn):
+        cited = [
+            f"{r['node_id']} -> {r['url']}"
+            for r in conn.execute(
+                f"SELECT node_id, url FROM {REFERENCE_TABLE} WHERE node_id IN ({marks})"
+                " ORDER BY node_id, ord",
+                args,
+            )
+        ]
     counterparts = [
         f"{r['id']} -> {r['counterpart']}"
         for r in conn.execute(
@@ -571,6 +645,7 @@ def _impact(conn: sqlite3.Connection, ids: list[str]) -> dict[str, Any]:
         "outbound_edges": outbound,
         "inbound_edges": inbound,
         "external_links": outgoing_links,
+        "references": cited,
         "counterparts": counterparts,
     }
 
@@ -594,11 +669,13 @@ def _preview(path: Path, ids: list[str]) -> dict[str, Any]:
 
 def _impact_notes(impact: Mapping[str, Any]) -> list[str]:
     notes: list[str] = []
-    if impact["outbound_edges"] or impact["anchors"] or impact["external_links"]:
+    cascading = ("anchors", "outbound_edges", "external_links", "references")
+    if any(impact[k] for k in cascading):
         notes.append(
             f"cascades: {len(impact['anchors'])} anchor(s), "
             f"{len(impact['outbound_edges'])} outbound edge(s), "
-            f"{len(impact['external_links'])} external link(s) go with the node(s)"
+            f"{len(impact['external_links'])} external link(s), "
+            f"{len(impact['references'])} reference(s) go with the node(s)"
         )
     if impact["inbound_edges"]:
         notes.append(
@@ -685,6 +762,7 @@ def delete_node(
                        "anchors": (impact["anchors"], []),
                        "outbound_edges": (impact["outbound_edges"], []),
                        "external_links": (impact["external_links"], []),
+                       "references": (impact["references"], []),
                    })
         )
         return changes
@@ -759,6 +837,77 @@ def remove_link(path: str | Path, node_id: str, target: str) -> dict[str, Any]:
     return apply(path, mutate)
 
 
+# --------------------------------------------------------------------------- #
+# kg_add_reference / kg_remove_reference
+# --------------------------------------------------------------------------- #
+def _rewrite_references(
+    conn: sqlite3.Connection, current: Node, references: list[Reference]
+) -> list[Change]:
+    merged = dataclasses.replace(current, references=references)
+    problems = clean.node_problems(merged)
+    if problems:
+        raise EditError(f"node '{merged.id}': {'; '.join(problems)}")
+    return _write_node(conn, current, merged)
+
+
+def add_reference(
+    path: str | Path,
+    node_id: str,
+    url: str,
+    kind: str = "",
+    title: str = "",
+    ref_path: str | None = None,
+    symbol: str | None = None,
+) -> dict[str, Any]:
+    """Record where a fact this node depends on is documented."""
+    node_id = str(node_id).strip()
+    try:
+        ref = Reference.parse(
+            {"url": url, "kind": kind, "title": title, "path": ref_path, "symbol": symbol}
+        )
+    except ReferenceFormatError as exc:
+        raise EditError(str(exc)) from exc
+
+    def mutate(conn: sqlite3.Connection) -> list[Change]:
+        current = _read_node(conn, node_id)
+        if current is None:
+            raise EditError(f"no node '{node_id}' in this graph")
+        if ref in current.references:
+            return []
+        return _rewrite_references(conn, current, [*current.references, ref])
+
+    return apply(path, mutate)
+
+
+def remove_reference(
+    path: str | Path,
+    node_id: str,
+    url: str,
+    ref_path: str | None = None,
+    symbol: str | None = None,
+) -> dict[str, Any]:
+    """Drop a node's reference(s) to `url`; `ref_path` / `symbol` pick one narrowing."""
+    node_id = str(node_id).strip()
+    wanted = Reference(url=url, path=ref_path, symbol=symbol)
+
+    def mutate(conn: sqlite3.Connection) -> list[Change]:
+        current = _read_node(conn, node_id)
+        if current is None:
+            raise EditError(f"no node '{node_id}' in this graph")
+        narrowed = wanted.path is not None or wanted.symbol is not None
+        kept = [
+            r for r in current.references
+            if r.url != wanted.url
+            or (narrowed and (r.path, r.symbol) != (wanted.path, wanted.symbol))
+        ]
+        if len(kept) == len(current.references):
+            where = f" narrowed to '{wanted.narrowing}'" if narrowed else ""
+            raise EditError(f"'{node_id}' has no reference to {wanted.url!r}{where}")
+        return _rewrite_references(conn, current, kept)
+
+    return apply(path, mutate)
+
+
 __all__ = [
     "EditError",
     "Change",
@@ -767,5 +916,7 @@ __all__ = [
     "delete_node",
     "add_link",
     "remove_link",
+    "add_reference",
+    "remove_reference",
     "StoreError",
 ]

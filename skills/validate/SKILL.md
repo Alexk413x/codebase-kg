@@ -40,6 +40,9 @@ Everything here is a question the file cannot answer about itself — it needs t
   node the peer graph does not contain. Report these: the `error`-severity ones count against `ok`,
   so skipping them lets you report "clean" over a payload that says `ok: false`. The `warning`-
   severity ones (peer absent or unreadable) are unknown, not broken.
+- **Reference problems** (`reference_issues`) — a documentation reference whose `path` or `symbol`
+  is not one of its node's own anchors. It counts against `ok`. The usual cause is an anchor that
+  moved while the reference that narrowed to it did not.
 - **Description violations** — a description carrying a ticket ref, a date, or change narrative.
   Should be empty: the builder rejects these. A hit means the file was written by something else.
 
@@ -64,7 +67,8 @@ that was never at risk:
    `knowledge/code_graph.db` (the only location — no repo-root fallback). Confirm with `kg_stats` —
    note the `generated` date and node count.
 2. **Run `kg_validate`.** It returns `anchor_issues`, `coverage`, `changed_since_built`,
-   `staleness`, `counterpart_issues`, `description_issues`, `external_link_issues`, plus
+   `staleness`, `counterpart_issues`, `description_issues`, `external_link_issues`,
+   `reference_issues`, plus
    `source_checked`
    (whether the source tree was reachable), `source_base` (the directory anchors resolved from) and
    `anchors_checked`. Report `external_link_issues` — its `error`-severity entries count against

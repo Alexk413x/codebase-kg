@@ -29,7 +29,8 @@ from . import clean, links
 from .coverage import COVERS_KEY, EXEMPT_KEY, format_patterns
 from .models import Meta, Node
 from .schema import (
-    APPLICATION_ID, DDL, NODE_TABLE, PAGE_SIZE, SCHEMA_VERSION, split_identifier,
+    APPLICATION_ID, DDL, NODE_TABLE, PAGE_SIZE, REFERENCE_TABLE, SCHEMA_VERSION,
+    split_identifier,
 )
 
 DanglingPolicy = Literal["error", "drop"]
@@ -68,6 +69,7 @@ def fts_text(node: Node) -> str:
         parts.append(a.path)
         if a.symbol:
             parts += split_identifier(a.symbol)
+    parts += [ref.title for ref in node.references]
     return " ".join(p for p in parts if p)
 
 
@@ -250,6 +252,7 @@ def _write(
             for link in links.dedupe(n.links)
         ],
     )
+    insert_references(conn, nodes)
     conn.executemany(
         "INSERT INTO node_fts (node_id, text) VALUES (?, ?)",
         [(n.id, fts_text(n)) for n in nodes],
@@ -258,6 +261,19 @@ def _write(
     report.nodes = len(nodes)
     report.anchors = sum(len(n.anchors) for n in nodes)
     report.edges = sum(len(n.edges) for n in nodes)
+
+
+def insert_references(conn: sqlite3.Connection, nodes: Iterable[Node]) -> None:
+    """Shared with `edits.py`, so a build and an upsert write the same rows."""
+    conn.executemany(
+        f"INSERT INTO {REFERENCE_TABLE} (node_id, ord, kind, title, url, path, symbol)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            (n.id, i, r.kind, r.title, r.url, r.path, r.symbol)
+            for n in nodes
+            for i, r in enumerate(n.references)
+        ],
+    )
 
 
 def build(

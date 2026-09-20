@@ -225,6 +225,20 @@ def kg_find_by_link(target: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def kg_find_by_reference(query: str | None = None, kind: str | None = None) -> dict[str, Any]:
+    """Which node(s) depend on a piece of external documentation. Use when an SDK
+    or spec moves and you need every place the code relies on it.
+
+    - `query`: case-insensitive substring of the reference url or title, e.g.
+      `developer.android.com/reference/android/view`. Omit to list every reference.
+    - `kind`: exact tag filter — `platform-api`, `spec`, `rfc`, `issue`.
+
+    Each hit carries the `path` / `symbol` it narrows to, when it has one."""
+    with _open_graph() as g:
+        return _tools.kg_find_by_reference(g, query, kind)
+
+
+@mcp.tool()
 def kg_parity_gaps(status: str | None = None) -> dict[str, Any]:
     """The cross-codebase gap report, as a query. Lists nodes flagged
     `divergent` or `<codebase>-only`, with their counterpart + divergence line.
@@ -270,13 +284,16 @@ def kg_upsert_node(nodes: list[dict[str, Any]]) -> dict[str, Any]:
 
     Each item needs an `id`; a node that does not exist yet also needs a `kind`.
     **Only the keys you supply change** — omit a field and it keeps its value,
-    pass `null` to clear `parity`/`counterpart`/`divergence`. `anchors`, `edges`
-    and `external_links` replace the whole list when present, so read the node
-    first if you mean to append.
+    pass `null` to clear `parity`/`counterpart`/`divergence`. `anchors`, `edges`,
+    `external_links` and `references` replace the whole list when present, so read
+    the node first if you mean to append.
 
     - `anchors`: `["path/to/File.kt#Symbol", ...]` — symbols, never line numbers.
     - `edges`: outbound node ids. Both endpoints must exist after this call.
     - `external_links`: `[{"target": "cartographer_graph.db#screen", "kind": "presented-by"}]`.
+    - `references`: `[{"url": "https://...", "kind": "platform-api", "title": "TouchDelegate",
+      "path": "path/to/File.kt", "symbol": "Symbol"}]`. `path`/`symbol` are optional
+      and must equal one of this node's anchors.
 
     Atomic: if any node in the batch is rejected, nothing is written and the file
     is byte-identical. Returns every row and field it changed, before and after.
@@ -322,6 +339,37 @@ def kg_remove_link(node_id: str, target: str) -> dict[str, Any]:
     """Remove one cross-graph link from a node. The node, its anchors and its
     edges are untouched — this drops the pointer only."""
     return _write(_edits.remove_link, node_id, target)
+
+
+@mcp.tool()
+def kg_add_reference(
+    node_id: str,
+    url: str,
+    kind: str = "",
+    title: str = "",
+    path: str | None = None,
+    symbol: str | None = None,
+) -> dict[str, Any]:
+    """Record where a fact a code node depends on is documented — a platform API
+    page, a spec, an RFC, an issue. The inverse of `kg_find_by_reference`.
+
+    - `kind`: a short tag — `platform-api`, `spec`, `rfc`, `issue`.
+    - `title`: a human label for the page.
+    - `path` / `symbol`: optional. Narrow the reference to one file or one
+      function. They must equal one of the node's own anchors (`path`, or
+      `path` + `symbol`), or the write is refused — read the node first.
+
+    Not for a link to a node in another graph; that is `kg_add_link`."""
+    return _write(_edits.add_reference, node_id, url, kind, title, path, symbol)
+
+
+@mcp.tool()
+def kg_remove_reference(
+    node_id: str, url: str, path: str | None = None, symbol: str | None = None
+) -> dict[str, Any]:
+    """Remove a node's reference(s) to `url`. With `path` / `symbol`, removes only
+    the reference with that narrowing; without, every reference to the url."""
+    return _write(_edits.remove_reference, node_id, url, path, symbol)
 
 
 def main() -> None:

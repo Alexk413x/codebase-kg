@@ -10,6 +10,7 @@ allowed-tools:
   - mcp__codebase-kg__kg_find_by_path
   - mcp__codebase-kg__kg_find_by_kind
   - mcp__codebase-kg__kg_find_by_link
+  - mcp__codebase-kg__kg_find_by_reference
   - mcp__codebase-kg__kg_stats
   - mcp__plugin_codebase-kg_codebase-kg__kg_search
   - mcp__plugin_codebase-kg_codebase-kg__kg_node
@@ -17,6 +18,7 @@ allowed-tools:
   - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_path
   - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_kind
   - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_link
+  - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_reference
   - mcp__plugin_codebase-kg_codebase-kg__kg_stats
   - Read
   - Grep
@@ -64,6 +66,7 @@ When you already have a more specific handle, go straight to it:
 | a node id | `kg_node` |
 | a category ("every ViewModel", "every migration") | `kg_find_by_kind` |
 | a node in a paired repo's graph | `kg_find_by_link` |
+| a platform API, spec or doc URL that moved | `kg_find_by_reference` |
 | no idea of the shape of the repo | `kg_stats` first — sections and kinds are the table of contents |
 
 ### 2. Expand
