@@ -57,6 +57,94 @@ class Anchor:
         return f"{self.path}#{self.symbol}" if self.symbol else self.path
 
 
+class ReferenceFormatError(ValueError):
+    """A reference that is not `{"url": ...}` plus optional narrowing."""
+
+
+@dataclass(frozen=True)
+class Reference:
+    """Where a fact this node depends on is documented: one row of `reference`.
+
+    `path` and `symbol` narrow the reference to one file or one function, and
+    they are the anchor table's own vocabulary on purpose: a narrowing must name
+    one of the node's anchors exactly (`problem`), and anchors are what
+    `kg_validate` already resolves against source. A narrowing that named
+    anything else would be free text nobody checks.
+    """
+
+    url: str
+    kind: str = ""  # platform-api | spec | rfc | issue — a short tag, free text
+    title: str = ""
+    path: str | None = None
+    symbol: str | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("url", "kind", "title"):
+            object.__setattr__(self, name, str(getattr(self, name) or "").strip())
+        path = (self.path or "").strip().replace("\\", "/") or None
+        object.__setattr__(self, "path", path)
+        object.__setattr__(self, "symbol", (self.symbol or "").strip() or None)
+
+    @classmethod
+    def parse(cls, raw: object) -> Reference:
+        """Accept a bare URL or `{"url", "kind", "title", "path", "symbol"}`."""
+        if isinstance(raw, str):
+            ref = cls(url=raw)
+        elif isinstance(raw, dict):
+            for key in ("url", "kind", "title", "path", "symbol"):
+                if raw.get(key) is not None and not isinstance(raw[key], str):
+                    raise ReferenceFormatError(f"reference {raw!r}: `{key}` must be a string")
+            ref = cls(
+                url=raw.get("url") or "",
+                kind=raw.get("kind") or "",
+                title=raw.get("title") or "",
+                path=raw.get("path"),
+                symbol=raw.get("symbol"),
+            )
+        else:
+            raise ReferenceFormatError(f"reference {raw!r} must be a URL string or an object")
+        if not ref.url:
+            raise ReferenceFormatError(f"reference {raw!r} has no `url`")
+        return ref
+
+    @property
+    def narrowing(self) -> str:
+        """`path#symbol`, `path`, or '' — the same spelling an anchor uses."""
+        if self.path is None:
+            return f"#{self.symbol}" if self.symbol else ""
+        return f"{self.path}#{self.symbol}" if self.symbol else self.path
+
+    def problem(self, anchors: list[Anchor]) -> str | None:
+        """Why this reference cannot sit on a node with `anchors`, or None.
+
+        The one expression of the narrowing rule; the writer, the edit tools and
+        `kg_validate` all ask here so they cannot disagree.
+        """
+        if not self.url:
+            return "a reference has no url"
+        if self.path is None and self.symbol is None:
+            return None
+        if self.path is None:
+            return f"reference {self.url} narrows to symbol '{self.symbol}' without a path"
+        if self.symbol is None:
+            if any(a.path == self.path for a in anchors):
+                return None
+        elif any(a.path == self.path and a.symbol == self.symbol for a in anchors):
+            return None
+        return (
+            f"reference {self.url} narrows to '{self.narrowing}', "
+            "which is not one of this node's anchors"
+        )
+
+    def as_dict(self) -> dict[str, str]:
+        d = {"url": self.url}
+        for name in ("kind", "title", "path", "symbol"):
+            value = getattr(self, name)
+            if value:
+                d[name] = value
+        return d
+
+
 @dataclass
 class Node:
     """One component of the codebase."""
@@ -75,6 +163,9 @@ class Node:
     # cannot express this without giving up the invariant it enforces. See
     # cartographer's docs/GRAPH-LINKS.md; the mechanism is shared by copy.
     links: list[ExternalLink] = field(default_factory=list)
+    # Where the platform facts this node depends on are documented. In author
+    # order, like anchors.
+    references: list[Reference] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
@@ -96,6 +187,8 @@ class Node:
         # noise in a document a human reviews as a diff.
         if self.links:
             d["external_links"] = [link.as_dict() for link in self.links]
+        if self.references:
+            d["references"] = [ref.as_dict() for ref in self.references]
         return d
 
 

@@ -6,9 +6,14 @@
 
 A v2 graph carries no declared coverage and no anchor hashes, so it cannot
 answer either of the questions v3 added — "which files was this supposed to
-cover?" and "has the source moved under this description?". This rebuilds it as
-v3, preserving every node, anchor and edge verbatim, and stamping hashes from
-the working tree if it can find one.
+cover?" and "has the source moved under this description?". A v3 graph has no
+`reference` table. This rebuilds either as the current version, preserving every
+node, anchor, edge, link and reference verbatim, and stamping hashes from the
+working tree if it can find one.
+
+A v3 graph still opens without this (`schema.MIN_READABLE_VERSION`), and the
+first reference written to it upgrades it in place. Running this is how to move
+one deliberately.
 
 It reads the old file with plain sqlite3 rather than through `CodeGraph`. The
 store refuses a schema version it does not speak, and that check is worth
@@ -27,8 +32,8 @@ from pathlib import Path
 from . import cli, links, writer
 from .coverage import COVERS_KEY, EXEMPT_KEY, parse_patterns, resolve_source_base
 from .links import ExternalLink
-from .models import Anchor, Meta, Node
-from .schema import SCHEMA_VERSION
+from .models import Anchor, Meta, Node, Reference
+from .schema import REFERENCE_TABLE, SCHEMA_VERSION
 
 DEFAULT_TARGET = Path("knowledge") / "code_graph.db"
 
@@ -80,6 +85,17 @@ def read_any_version(path: Path) -> tuple[int, Meta, list[Node], dict[str, str]]
             for node_id, link in links.all_links(conn):
                 outbound.setdefault(node_id, []).append(link)
 
+        cited: dict[str, list[Reference]] = {}
+        if REFERENCE_TABLE in tables:
+            for r in conn.execute(
+                f"SELECT node_id, kind, title, url, path, symbol FROM {REFERENCE_TABLE}"
+                " ORDER BY node_id, ord"
+            ):
+                cited.setdefault(r["node_id"], []).append(
+                    Reference(url=r["url"], kind=r["kind"], title=r["title"],
+                              path=r["path"], symbol=r["symbol"])
+                )
+
         nodes = [
             Node(
                 id=r["id"],
@@ -92,6 +108,7 @@ def read_any_version(path: Path) -> tuple[int, Meta, list[Node], dict[str, str]]
                 counterpart=r["counterpart"],
                 divergence=r["divergence"],
                 links=outbound.get(r["id"], []),
+                references=cited.get(r["id"], []),
             )
             for r in conn.execute("SELECT * FROM node ORDER BY id")
         ]

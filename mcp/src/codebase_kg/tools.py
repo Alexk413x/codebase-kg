@@ -256,6 +256,34 @@ def kg_find_by_link(graph: CodeGraph, target: str) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# kg_find_by_reference
+# --------------------------------------------------------------------------- #
+def kg_find_by_reference(
+    graph: CodeGraph, query: str | None = None, kind: str | None = None
+) -> dict[str, Any]:
+    """Which nodes depend on documentation matching `query`.
+
+    The review an SDK move calls for: every node citing anything under one part
+    of the docs, with the file or function each citation narrows to.
+    """
+    found = graph.references(query, kind)
+    nodes = {n.id: n for n in graph.nodes(sorted({i for i, _ in found}), with_edges=False)}
+    return {
+        "query": query,
+        "kind": kind,
+        "count": len(found),
+        "references": [
+            {
+                "node": node_id,
+                "node_kind": nodes[node_id].kind if node_id in nodes else "",
+                **ref.as_dict(),
+            }
+            for node_id, ref in found
+        ],
+    }
+
+
+# --------------------------------------------------------------------------- #
 # kg_parity_gaps
 # --------------------------------------------------------------------------- #
 def kg_parity_gaps(graph: CodeGraph, status: str | None = None) -> dict[str, Any]:
@@ -608,6 +636,7 @@ def kg_validate(
             )
 
     external_link_issues = _check_external_links(graph)
+    reference_issues = _check_references(graph)
 
     base = _resolve_source_base(graph, repo_root)
     checks = AnchorCheck()
@@ -626,11 +655,13 @@ def kg_validate(
     broken_links = [i for i in external_link_issues if i["severity"] == "error"]
     ok = not (
         counterpart_issues or description_issues or checks.issues or cov.gaps or broken_links
+        or reference_issues
     )
     return {
         "ok": ok,
         "advisory": True,
         "external_link_issues": external_link_issues,
+        "reference_issues": reference_issues,
         "source_checked": base is not None,
         "source_base": str(base) if base else None,
         "anchors_checked": checks.checked,
@@ -711,6 +742,33 @@ def _check_external_links(graph: CodeGraph) -> list[dict[str, str]]:
     return issues
 
 
+def _check_references(graph: CodeGraph) -> list[dict[str, str]]:
+    """References whose `path` / `symbol` is not one of their node's own anchors.
+
+    The writer refuses these, so a finding here means the row arrived another
+    way: hand-written SQL, or a tool that replaced a node's anchors without
+    going through `clean.node_problems`. Unchecked, the two columns are free
+    text. Matched against anchors rather than against source because anchors
+    are what `_check_anchors` already resolves; a narrowing that equals an
+    anchor inherits that check.
+    """
+    narrowed = [(i, r) for i, r in graph.references() if r.path or r.symbol]
+    if not narrowed:
+        return []
+    anchors = {
+        n.id: n.anchors
+        for n in graph.nodes(sorted({i for i, _ in narrowed}), with_edges=False)
+    }
+    issues: list[dict[str, str]] = []
+    for node_id, ref in narrowed:
+        problem = ref.problem(anchors.get(node_id, []))
+        if problem:
+            issues.append(
+                {"node": node_id, "url": ref.url, "narrows_to": ref.narrowing, "issue": problem}
+            )
+    return issues
+
+
 def _check_counterpart(
     graph: CodeGraph,
     node_id: str,
@@ -755,6 +813,7 @@ __all__ = [
     "kg_find_by_kind",
     "kg_find_by_path",
     "kg_find_by_link",
+    "kg_find_by_reference",
     "kg_parity_gaps",
     "kg_stats",
     "kg_validate",

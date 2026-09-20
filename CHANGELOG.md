@@ -2,7 +2,52 @@
 
 All notable changes to the `codebase-kg` plugin.
 
-## [Unreleased]
+## [0.7.0] — 2026-09-20 — a node can say where the facts it depends on are documented
+
+### Added — the `reference` table, and schema v4
+
+A code node could not record where a platform fact it relies on is documented.
+One consumer file reads a dozen Android framework APIs and carried no reference
+URL at all, so when the SDK moves there is nothing to review. `external_link`
+cannot hold this: its target is a node in another graph, checked by opening that
+graph, and a URL has no node to resolve to.
+
+```
+reference(node_id, ord, kind, title, url, path, symbol)
+```
+
+`path` and `symbol` are optional and narrow a reference to one file or one
+function. They must equal one of the node's own anchors. Anchors are what
+`kg_validate` already resolves against source, so a narrowing that equals an
+anchor inherits that check; a narrowing that named anything else would be free
+text that nobody verifies. The rule is enforced on write — the builder and the
+write tools refuse the node, including an edit that removes an anchor and leaves
+the reference behind — and `kg_validate` reports `reference_issues` for a row
+that reached the file another way. Both count against `ok`.
+
+Three new tools: `kg_find_by_reference(query, kind)` lists nodes by the
+documentation they cite, and `kg_add_reference` / `kg_remove_reference` write one
+row. `kg_upsert_node` accepts `references`, `kg_node` returns them, a delete
+preview lists them, and reference titles are searchable. See SCHEMA.md §13.
+
+### Changed — `schema_version` is 4, and the store reads v3 to v4
+
+`external_link` did not bump the version and `reference` does. The difference is
+what an older server does to the rows. It cannot see them, so its next
+export → build writes the graph back without them and reports success. At v4 that
+server refuses the file and says to update the plugin.
+
+In the other direction nothing breaks. The store now accepts a range: a v3 graph
+is a v4 graph with no `reference` table, the reader probes for the table, and
+every committed v3 graph opens and behaves as it did. A v3 graph becomes v4 through
+`python -m codebase_kg.upgrade`, through any export → build, or when the first
+reference is written to it, which creates the table and moves the stamp in place.
+An edit that adds no reference leaves a v3 graph at v3.
+
+One consequence to plan for: a repo's vendored textconv driver is pinned to a
+plugin version. Once a graph in that repo is v4, a driver pinned below 0.7.0
+cannot export it, and `git diff` falls back to `Binary files differ` until
+`install.sh` is re-vendored.
 
 ### Docs — a release checklist, with the tag step made mechanical
 

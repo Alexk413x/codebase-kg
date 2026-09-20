@@ -19,8 +19,11 @@ from pathlib import Path
 from . import links
 from .coverage import COVERS_KEY, EXEMPT_KEY, parse_patterns
 from .links import ExternalLink
-from .models import Anchor, Meta, Node
-from .schema import READ_PRAGMAS, SCHEMA_VERSION, split_identifier
+from .models import Anchor, Meta, Node, Reference
+from .schema import (
+    MIN_READABLE_VERSION, READ_PRAGMAS, REFERENCE_TABLE, SCHEMA_VERSION,
+    has_reference_table, split_identifier,
+)
 
 _WORD = re.compile(r"[A-Za-z0-9]+")
 # Shortest token that is worth matching as a prefix (see `search_ids`).
@@ -30,6 +33,15 @@ _MAX_PARAMS = 30000
 
 
 GRAPH_FILENAME = "code_graph.db"
+
+_REFERENCE_SELECT = f"SELECT node_id, kind, title, url, path, symbol FROM {REFERENCE_TABLE}"
+
+
+def _reference(row: sqlite3.Row) -> Reference:
+    return Reference(
+        url=row["url"], kind=row["kind"], title=row["title"],
+        path=row["path"], symbol=row["symbol"],
+    )
 
 
 def discover_graph(start: Path | None = None) -> Path | None:
@@ -90,6 +102,7 @@ class CodeGraph:
         # once per node would put a table lookup in the hot path of every
         # hydration.
         self._has_links = links.has_link_table(self._conn)
+        self._has_references = has_reference_table(self._conn)
 
     # ---------------------------------------------------------------- lifecycle
     def _check_schema(self) -> None:
@@ -101,13 +114,13 @@ class CodeGraph:
                 "Rebuild it with /codebase-kg:build."
             ) from exc
         found = int(row["value"]) if row else 0
-        if found != SCHEMA_VERSION:
+        if not MIN_READABLE_VERSION <= found <= SCHEMA_VERSION:
             # The two directions have opposite remedies, and saying "rebuild"
             # for both sent anyone with a newer graph to regenerate a perfectly
             # good file with an older server — which reproduces the mismatch,
             # discards whatever the newer schema added, and looks like the graph
             # is at fault. Which side is behind decides who moves.
-            if found < SCHEMA_VERSION:
+            if found < MIN_READABLE_VERSION:
                 fix = (
                     f"Upgrade the graph in place, preserving every node and edge:\n"
                     f"    python -m codebase_kg.upgrade \"{self.path}\""
@@ -121,7 +134,7 @@ class CodeGraph:
                 )
             raise StoreError(
                 f"{self.path} is schema v{found}, this server speaks "
-                f"v{SCHEMA_VERSION}. {fix}"
+                f"v{MIN_READABLE_VERSION}-v{SCHEMA_VERSION}. {fix}"
             )
 
     def close(self) -> None:
@@ -217,6 +230,19 @@ class CodeGraph:
                     ExternalLink(target=r["target"], kind=r["kind"])
                 )
 
+        cited: dict[str, list[Reference]] = {i: [] for i in ids}
+        if self._has_references:
+            ref_rows = (
+                self._q(f"{_REFERENCE_SELECT} ORDER BY node_id, ord").fetchall()
+                if whole_graph
+                else self._in_chunks(
+                    _REFERENCE_SELECT + " WHERE node_id IN ({marks}) ORDER BY node_id, ord",
+                    ids,
+                )
+            )
+            for r in ref_rows:
+                cited[r["node_id"]].append(_reference(r))
+
         edges: dict[str, list[str]] = {i: [] for i in ids}
         if with_edges:
             edge_rows = (
@@ -241,6 +267,7 @@ class CodeGraph:
                 counterpart=r["counterpart"],
                 divergence=r["divergence"],
                 links=outbound[r["id"]],
+                references=cited[r["id"]],
             )
             for r in rows
         ]
@@ -404,6 +431,32 @@ class CodeGraph:
             return []
         with self._lock:
             return links.nodes_linking_to(self._conn, target, kind=kind)
+
+    # ------------------------------------------------------------- references
+    def references(
+        self, query: str | None = None, kind: str | None = None
+    ) -> list[tuple[str, Reference]]:
+        """`(node_id, reference)` across the graph, optionally filtered.
+
+        `query` is a case-insensitive substring of the url or title, because the
+        question is "what relies on anything under this part of the docs?" and
+        an exact url rarely is what the caller holds. Empty for a v3 graph.
+        """
+        if not self._has_references:
+            return []
+        where: list[str] = []
+        args: list[object] = []
+        if query:
+            where.append("(instr(lower(url), ?) > 0 OR instr(lower(title), ?) > 0)")
+            args += [query.strip().lower()] * 2
+        if kind is not None:
+            where.append("kind = ?")
+            args.append(kind)
+        sql = _REFERENCE_SELECT + (" WHERE " + " AND ".join(where) if where else "")
+        return [
+            (r["node_id"], _reference(r))
+            for r in self._q(sql + " ORDER BY node_id, ord", tuple(args))
+        ]
 
     def parity_nodes(self) -> list[Node]:
         rows = self._q(

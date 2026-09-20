@@ -17,7 +17,7 @@ import re
 from typing import Any
 
 from .links import ExternalLink, LinkError, dedupe
-from .models import Anchor, Meta, Node
+from .models import Anchor, Meta, Node, Reference, ReferenceFormatError
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -158,6 +158,7 @@ def _node_from_dict(raw: Any, index: int) -> Node:
         counterpart=_opt_str(raw, "counterpart", where),
         divergence=_opt_str(raw, "divergence", where),
         links=_links(raw, where),
+        references=_references(raw, where),
     )
 
 
@@ -178,6 +179,19 @@ def _links(raw: dict[str, Any], where: str) -> list[ExternalLink]:
     try:
         return dedupe(ExternalLink.parse(item) for item in value)
     except LinkError as exc:
+        raise DecodeError(f"{where}: {exc}") from exc
+
+
+def _references(raw: dict[str, Any], where: str) -> list[Reference]:
+    """`references`, each a bare URL or `{"url", "kind", "title", "path", "symbol"}`."""
+    value = raw.get("references") or []
+    if isinstance(value, (str, dict)):
+        value = [value]
+    if not isinstance(value, list):
+        raise DecodeError(f"{where}: `references` must be a list")
+    try:
+        return [Reference.parse(item) for item in value]
+    except ReferenceFormatError as exc:
         raise DecodeError(f"{where}: {exc}") from exc
 
 

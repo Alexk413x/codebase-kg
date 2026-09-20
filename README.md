@@ -72,7 +72,7 @@ rule, names it and writes nothing.
 
 ## The tools
 
-Thirteen MCP tools over the graph — nine queries and four targeted writes.
+Sixteen MCP tools over the graph — ten queries and six targeted writes.
 
 | query | answers |
 |---|---|
@@ -82,6 +82,7 @@ Thirteen MCP tools over the graph — nine queries and four targeted writes.
 | `kg_neighborhood` | everything within N hops, following edges either way |
 | `kg_find_by_kind` | every `ViewModel` / `Service` / `@Entity` |
 | `kg_find_by_link` | which code node(s) point at a node in another committed graph |
+| `kg_find_by_reference` | "this SDK page moved — which code relies on it?" — nodes by the documentation they cite |
 | `kg_parity_gaps` | the cross-codebase gap report, as a query |
 | `kg_stats` | cold-start orientation: counts, kinds, sections, isolated nodes, and the repo-wide staleness total — how much of this map is out of date, and which nodes |
 | `kg_validate` | advisory drift check against real source: anchors that no longer resolve, declared coverage gaps, and files edited since the graph was built |
@@ -92,6 +93,8 @@ Thirteen MCP tools over the graph — nine queries and four targeted writes.
 | `kg_delete_node(ids, dry_run=true, cascade_inbound=false)` | previews the blast radius, then deletes |
 | `kg_add_link(node_id, target, kind)` | points a node at a node in another committed graph |
 | `kg_remove_link(node_id, target)` | drops one such pointer |
+| `kg_add_reference(node_id, url, kind, title, path, symbol)` | records where a fact the node depends on is documented |
+| `kg_remove_reference(node_id, url, path, symbol)` | drops a node's reference(s) to a url |
 
 A write runs against a private copy of the file, inside one transaction, and the copy replaces the
 original only after `kg_validate` confirms it introduced no new finding. So a rejected edit leaves
