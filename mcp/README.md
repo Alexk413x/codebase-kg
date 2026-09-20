@@ -21,6 +21,7 @@ only** — the whole graph layer is testable without FastMCP installed.
 | `kg_parity_gaps(status?)` | Nodes flagged `divergent` / `<codebase>-only` — the gap report as a query. |
 | `kg_stats()` | Counts by kind / section / parity, edge and anchor totals, isolated nodes, `generated` date, and `staleness` — the repo-wide count of mapped files that no longer match what the graph was built against, with the nodes that describe them. |
 | `kg_find_by_link(target)` | **Reverse lookup across graphs**: which code node(s) point at a node in another committed graph in this repo. |
+| `kg_find_by_reference(query?, kind?)` | **Reverse lookup by documentation**: which node(s) cite a URL or title matching `query`, with the `path` / `symbol` each citation narrows to. |
 | `kg_validate()` | Advisory drift check against real source: ungreppable anchors, uncovered source files, counterpart problems. Never blocks. |
 
 ## Writes
@@ -30,10 +31,12 @@ each tool's description says so, because picking the wrong one is how this surfa
 
 | Tool | Does |
 |---|---|
-| `kg_upsert_node(nodes)` | Creates or updates node(s). Only the keys supplied change; `null` clears a parity field; `anchors` / `edges` / `external_links` replace the whole list. |
+| `kg_upsert_node(nodes)` | Creates or updates node(s). Only the keys supplied change; `null` clears a parity field; `anchors` / `edges` / `external_links` / `references` replace the whole list. |
 | `kg_delete_node(ids, dry_run=True, cascade_inbound=False)` | Previews what cascades (anchors, outbound edges, external links) and what blocks (inbound edges, `ON DELETE RESTRICT`), then deletes. |
 | `kg_add_link(node_id, target, kind='')` | Points a node at `<db-file>#<node-id>` in another committed graph. Refused if the peer graph is present and lacks that node. |
 | `kg_remove_link(node_id, target)` | Drops one such pointer; the node is untouched. |
+| `kg_add_reference(node_id, url, kind='', title='', path=None, symbol=None)` | Records where a fact the node depends on is documented. `path` / `symbol` must equal one of the node's anchors, or the write is refused. |
+| `kg_remove_reference(node_id, url, path=None, symbol=None)` | Drops the node's reference(s) to `url`, or only the one with that narrowing. |
 
 Three properties, all in `edits.py`:
 

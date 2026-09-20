@@ -67,7 +67,7 @@ Config and provenance, as key/value rows. The MCP server and the hooks read it.
 
 | key | required | meaning |
 |---|---|---|
-| `schema_version` | ✅ | Set by the writer. A reader that speaks a different version refuses to open the file rather than guessing. |
+| `schema_version` | ✅ | Set by the writer, currently `4`. A reader refuses a version outside the range it speaks rather than guessing. v3 is still readable (§13). |
 | `codebase` | ✅ | Short name — `android`, `ios`, `web`, `backend`. Used in `<codebase>-only` parity flags. |
 | `root` | ✅ | The code root this graph describes, **repo-relative** (e.g. `app/src/main`). Anchor paths are relative to it. |
 | `generated` | ✅ | `YYYY-MM-DD` the artifact was last built. **Provenance, not a contract** — nothing gates on it (§7). |
@@ -276,13 +276,14 @@ An agent cannot edit SQLite, so for a long time every change went through
 restructuring, a whole refresh's change set — where reviewing the diff before applying it is the
 point, and where a rebuild's byte-identical no-op proves the diff is real.
 
-It was never right for "fix one description". For that there are four **write tools**:
+It was never right for "fix one description". For that there are six **write tools**:
 
 | tool | does |
 |---|---|
 | `kg_upsert_node(nodes)` | creates or updates node(s); only the keys supplied change |
 | `kg_delete_node(ids, dry_run, cascade_inbound)` | previews the cascade, then deletes |
 | `kg_add_link` / `kg_remove_link` | one `external_link` row (§12) |
+| `kg_add_reference` / `kg_remove_reference` | one `reference` row (§13) |
 
 They weaken nothing in this document:
 
@@ -296,7 +297,8 @@ They weaken nothing in this document:
 - **Reported.** Every call returns the rows and fields it changed, before and after — the review the
   JSON diff gave for free.
 
-A delete says what it takes **before** it takes it. `anchor`, `edge.src` and `external_link` are
+A delete says what it takes **before** it takes it. `anchor`, `edge.src`, `external_link` and
+`reference` are
 `ON DELETE CASCADE` because those rows are parts of the node; `edge.dst` is `ON DELETE RESTRICT`
 because something else points at it (§6.2), so the delete is *blocked* rather than quietly removing
 the relationship. `dry_run` defaults to true and lists both.
@@ -406,3 +408,67 @@ direction, which is why adopting it did not invalidate a single committed artifa
 
 Tools: `kg_node` returns `external_links`; `kg_find_by_link(target)` is the reverse lookup;
 `kg_validate` reports what did not resolve.
+
+## 13. `reference` — the documentation a node depends on
+
+A node relies on facts it does not own: what a platform API returns, what a spec requires, what an
+upstream issue says is broken. `reference` records where each fact is documented, so that when an
+SDK or a spec moves you can list what the code relies on and re-read it.
+
+It is not `external_link` (§12). That table's target is `<db-file>#<node-id>`, a node in another
+graph, and it is checked by opening that graph. A URL has no node to resolve to.
+
+```
+reference(node_id, ord, kind, title, url, path, symbol)
+```
+
+| column | meaning |
+|---|---|
+| `node_id` | the node that depends on the fact. Rows cascade with their node. |
+| `ord` | author order, as in `anchor`. `(node_id, ord)` is the primary key. |
+| `kind` | a short tag: `platform-api`, `spec`, `rfc`, `issue`. Free text; empty means unspecified. |
+| `title` | a human label for the page. Searchable through `kg_search`. |
+| `url` | required, non-empty. |
+| `path`, `symbol` | optional. Narrow the reference to one file, or to one function in it. |
+
+In the authoring JSON, a node carries `references`, each a bare URL string or an object:
+
+```json
+"references": [
+  {"url": "https://developer.android.com/reference/android/view/TouchDelegate",
+   "kind": "platform-api", "title": "TouchDelegate",
+   "path": "ui/Librarian.java", "symbol": "Librarian.expandTouchTarget"}
+]
+```
+
+**A narrowing must equal one of the node's own anchors.** `path` alone must be the path of one of
+the node's anchors. `path` with `symbol` must be exactly one of its `path#symbol` anchors. `symbol`
+without `path` is not allowed. This rule is the reason the two columns can be trusted: anchors are
+what `kg_validate` already resolves against source (§6.1), so a narrowing that equals an anchor
+inherits that check, and a narrowing that named anything else would be free text nobody verifies.
+To narrow to a method, anchor the method.
+
+The rule is enforced twice:
+
+- **On write.** The builder and the write tools refuse a node whose reference narrows to something
+  that is not one of its anchors. That includes an edit that removes or renames the anchor and
+  leaves the reference behind, which is the moment a reference starts to go stale. Move both in the
+  same call.
+- **On `kg_validate`.** `reference_issues` lists any such row that reached the file another way. It
+  counts against `ok`.
+
+The URL itself is not fetched. Nothing in this plugin makes network calls, and a dead link is not a
+fact about the code.
+
+**Schema v4, and v3 still opens.** This table moved `schema_version` from 3 to 4, which
+`external_link` deliberately did not. The difference is what an older server does to the rows: it
+cannot see them, so its next export → build writes the graph back without them and reports success.
+At v4 that server refuses the file and says to update the plugin instead. In the other direction
+nothing breaks. A v3 graph is a v4 graph with no `reference` table, the reader probes for the table,
+and every committed v3 graph opens and behaves as it did. A v3 graph becomes v4 in one of three ways:
+`python -m codebase_kg.upgrade`, any export → build, or the first reference written with a write
+tool, which creates the table and moves the stamp in place.
+
+Tools: `kg_node` returns `references`; `kg_find_by_reference(query, kind)` is the reverse lookup, by
+URL or title substring; `kg_add_reference` / `kg_remove_reference` write one row;
+`kg_upsert_node` replaces a node's whole list.
