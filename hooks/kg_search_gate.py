@@ -77,6 +77,17 @@ _SHELL_SEARCH = re.compile(
     re.IGNORECASE,
 )
 
+# Shell redirection operators, e.g. `2>/dev/null`, `>>out.log`, `<in.txt`,
+# `&>/dev/null`. None of these name a search path even though they pass the
+# naive "doesn't start with a flag" check — a leftover like `2>/dev/null` read
+# as a target broke the "already named a file" exemption, since that
+# nonexistent path made `all(t.is_file())` false and re-triggered the gate on
+# an otherwise located search.
+_REDIRECT_OP = re.compile(r"^(?:[0-9]*(?:>>|>|<)|&>>?)")
+# `2>&1`, `>&2`, `1>&2` — duplicates a file descriptor, names no path at all,
+# so neither this token nor a following one is an operand.
+_REDIRECT_DUP = re.compile(r"^[0-9]*>&[0-9]*$")
+
 # The plugin's own MCP tools, under either name the host gives the server
 # (`mcp__codebase-kg__*` standalone, `mcp__plugin_codebase-kg_codebase-kg__*`
 # when loaded as a plugin).
@@ -233,18 +244,70 @@ def _split_clauses(command: str) -> list[tuple[str, bool]]:
 
     A clause fed by `|` reads the previous command's output, not the tree, so it
     is not a codebase search however much it looks like one.
+
+    Quote-aware: a `|`, `;`, `&`, or newline inside a quoted string is data, not
+    a separator — `grep "a\\|b"` is one clause, not two. A regex alternation
+    pattern is an ordinary way to call grep, and splitting on the separator
+    hiding inside it manufactured a bogus trailing "clause" (a fragment of the
+    pattern read as a path), which is exactly the false positive this function
+    exists to avoid.
     """
-    # A newline separates commands as surely as `;` does — without it a search
-    # on its own line stays glued to whatever ran above it and is never seen.
-    parts = re.split(r"(\|\||&&|\||;|&|\n)", command)
+    parts: list[str] = []
+    seps: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                buf.append(ch)
+                buf.append(command[i + 1])
+                i += 2
+                continue
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            buf.append(ch)
+            buf.append(command[i + 1])
+            i += 2
+            continue
+        two = command[i:i + 2]
+        # A newline separates commands as surely as `;` does — without it a
+        # search on its own line stays glued to whatever ran above it and is
+        # never seen.
+        if two in ("&&", "||"):
+            parts.append("".join(buf))
+            seps.append(two)
+            buf = []
+            i += 2
+            continue
+        if ch in "|;&\n":
+            parts.append("".join(buf))
+            seps.append(ch)
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    parts.append("".join(buf))
+
     out: list[tuple[str, bool]] = []
     piped = False
-    for i in range(0, len(parts), 2):
-        clause = parts[i].strip()
+    for idx, part in enumerate(parts):
+        clause = part.strip()
         if clause:
             out.append((clause, piped))
-        sep = parts[i + 1] if i + 1 < len(parts) else ""
-        piped = sep == "|"
+        piped = idx < len(seps) and seps[idx] == "|"
     return out
 
 
@@ -280,9 +343,9 @@ def _effective_cwd(command: str, proj: Path) -> Path:
     for clause, _piped in _split_clauses(command):
         toks = _tokens(clause)
         if len(toks) >= 2 and toks[0] == "cd":
-            candidate = Path(toks[1])
+            candidate = Path(toks[1]).expanduser()
             if not candidate.is_absolute():
-                candidate = cwd / toks[1]
+                candidate = cwd / candidate
             try:
                 cwd = candidate.resolve()
             except OSError:
@@ -314,7 +377,18 @@ def shell_search_targets(command: str, proj: Path) -> list[Path] | None:
             continue  # reads the previous command's output, never the tree
         found_search = True
         operands: list[str] = []
+        skip_next = False
         for tok in toks[1:]:
+            if skip_next:
+                skip_next = False
+                continue
+            if _REDIRECT_DUP.match(tok):
+                continue  # e.g. "2>&1" — duplicates a descriptor, names no path
+            redirect = _REDIRECT_OP.match(tok)
+            if redirect:
+                if redirect.end() == len(tok):
+                    skip_next = True  # bare operator; the NEXT token is its target
+                continue  # a redirection operand is never a search path
             if tok.startswith("-"):
                 # `find <path> -name x` puts its predicates after the paths, so
                 # the first flag ends the path list. Collecting past it counted
@@ -328,8 +402,13 @@ def shell_search_targets(command: str, proj: Path) -> list[Path] | None:
         if word in _PATTERN_FIRST and operands:
             operands = operands[1:]  # the first operand is the pattern
         for raw in operands:
-            p = Path(raw)
-            targets.append(p if p.is_absolute() else cwd / raw)
+            # `~`/`~user` only means home when a real shell expands it — but a
+            # search naming one is always aimed outside a project checkout, and
+            # reading it literally instead joined it under `cwd`, turning an
+            # out-of-repo search into a bogus path this project's gate then
+            # claimed as its own.
+            p = Path(raw).expanduser()
+            targets.append(p if p.is_absolute() else cwd / p)
     if not found_search:
         return None
     return targets
@@ -390,9 +469,9 @@ def searches_mapped_code(
     raw = tool_input.get("path") or ""
     if not isinstance(raw, str) or not raw.strip():
         return True  # unscoped → the whole repo → mapped code is in range
-    candidate = Path(raw)
+    candidate = Path(raw).expanduser()
     if not candidate.is_absolute():
-        candidate = proj / raw
+        candidate = proj / candidate
     try:
         rel = candidate.resolve().relative_to(proj)
     except (ValueError, OSError):
@@ -424,9 +503,9 @@ def searches_an_anchored_path(
     raw = tool_input.get("path") or ""
     if not isinstance(raw, str) or not raw.strip():
         return False
-    candidate = Path(raw)
+    candidate = Path(raw).expanduser()
     if not candidate.is_absolute():
-        candidate = proj / raw
+        candidate = proj / candidate
     try:
         rel = candidate.resolve().relative_to(proj).as_posix()
     except (ValueError, OSError):

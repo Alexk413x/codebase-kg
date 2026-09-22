@@ -580,6 +580,40 @@ def test_a_search_of_another_repo_is_not_this_graphs_business(scoped: Path) -> N
     assert gate.shell_search_is_gated(f"grep -rn thing {other}", scoped) is False
 
 
+def test_a_tilde_path_is_still_outside_the_repo(scoped: Path) -> None:
+    """`~` only means home when a shell expands it. Reading it literally joined
+    it under `cwd` instead — `find ~/.claude ...` was then read as a search of
+    `<repo>/~/.claude`, a path nested INSIDE the repo purely as a string, and
+    the gate claimed a search it had no business answering."""
+    assert gate.shell_search_is_gated("find ~/.some-unrelated-dir -name '*.py'", scoped) is False
+    assert gate.shell_search_is_gated("grep -rn thing ~", scoped) is False
+
+
+def test_a_redirection_is_not_a_search_target(scoped: Path) -> None:
+    """`2>/dev/null`, `> out.log`, and `2>&1` are not paths. Read as one, a
+    located search's redirect became a second "target" that did not exist,
+    which flipped `all(t.is_file())` to false and re-gated a search that had
+    already named its file."""
+    known = scoped / "src" / "known.py"
+    assert gate.shell_search_is_gated(f"grep -n thing {known} 2>/dev/null", scoped) is False
+    assert gate.shell_search_is_gated(f"grep -n thing {known} > /dev/null", scoped) is False
+    assert gate.shell_search_is_gated(f"grep -n thing {known} 2>&1", scoped) is False
+    # the tree-search case must still fire — a redirect does not buy an exemption
+    assert gate.shell_search_is_gated("grep -rn thing . 2>/dev/null", scoped) is True
+
+
+def test_a_quoted_pipe_does_not_split_the_command(scoped: Path) -> None:
+    """A regex alternation is an ordinary grep pattern. Splitting on the `|`
+    hiding inside the quotes fabricated a bogus trailing clause — a fragment of
+    the pattern itself, misread as a path operand that does not exist — which
+    re-gated a search that had already named its one file."""
+    known = scoped / "src" / "known.py"
+    assert gate.shell_search_is_gated(f'grep -n "a\\|b" {known}', scoped) is False
+    assert gate.shell_search_is_gated(f"grep -En 'a|b' {known}", scoped) is False
+    # a real pipe between two commands must still split and still gate the tree search
+    assert gate.shell_search_is_gated("grep -rn thing . | wc -l", scoped) is True
+
+
 def test_cd_back_into_the_repo_is_still_gated(scoped: Path) -> None:
     """Following the `cd` has to work in both directions, or it is just a way
     to slip past the gate."""
