@@ -515,3 +515,15 @@ def test_shared_zero_goes_straight_to_a_private_server(tmp_path: Path) -> None:
         log = _finish(proc)
     assert not cache.exists()
     assert "shared server" not in log
+
+
+def test_mcp_json_launches_the_platform_shim():
+    root = Path(__file__).resolve().parents[2]
+    entry = json.loads((root / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["codebase-kg"]
+    assert entry["command"] == "${CLAUDE_PLUGIN_ROOT}/bin/kg-shim"
+    posix = (root / "bin" / "kg-shim").read_text(encoding="utf-8")
+    windows = (root / "bin" / "kg-shim.cmd").read_bytes().decode("utf-8")
+    for launcher in (posix, windows):
+        assert "mcp" in launcher and "shim.py" in launcher
+    assert posix.startswith("#!/bin/sh")
+    assert "py -3" in windows and "\r\n" in windows

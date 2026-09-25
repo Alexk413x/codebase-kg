@@ -1,0 +1,4 @@
+#!/bin/sh
+shim="$(dirname "$0")/../mcp/src/codebase_kg/shim.py"
+if command -v python3 >/dev/null 2>&1; then exec python3 "$shim" "$@"; fi
+exec python "$shim" "$@"

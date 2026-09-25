@@ -11,7 +11,11 @@ copy is four processes: `uv`, the console-script launcher, the venv trampoline
 and the interpreter. Measured on Windows, that is about 140 MB per session for
 the same thirteen tools. Ten open agents held forty processes and about 1.4 GB.
 
-`.mcp.json` now runs `mcp/src/codebase_kg/shim.py` with a bare `python3`. The
+`.mcp.json` now runs `bin/kg-shim`, which starts `mcp/src/codebase_kg/shim.py`
+with the system Python. It is a shell script on macOS and Linux, and
+`kg-shim.cmd` on Windows, which tries the `py` launcher before `python`: a stock
+Windows install ships no `python3.exe`, and both `python3` and `python` can be
+Microsoft Store stubs, so a bare `python3` lost the tools there. The
 shim is stdlib only, about 19 MB, and relays the session to one shared
 `codebase-kg --serve` process per machine and plugin version, which it starts on
 first use. Two sessions measured 8 processes and 284 MB before, and 7 processes

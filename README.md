@@ -143,7 +143,7 @@ codebase-kg/
 ├── templates/
 │   ├── code_graph.template.json
 │   └── codebase-kg.local.md.example
-├── .mcp.json                 # registers the codebase-kg MCP server (python3 mcp/src/codebase_kg/shim.py)
+├── .mcp.json                 # registers the codebase-kg MCP server (bin/kg-shim → mcp/src/codebase_kg/shim.py)
 ├── commands/                 # /codebase-kg:setup (the only command; every other feature is a skill)
 ├── skills/                   # query / build / refresh / audit / link / validate
 ├── mcp/                      # the query server (one shared process per machine) + build/export/migrate CLIs

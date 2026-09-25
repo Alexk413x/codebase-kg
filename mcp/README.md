@@ -66,8 +66,10 @@ rm .kg-export.json                                                # a snapshot, 
 ## How it runs
 
 One server process per machine and plugin version serves every Claude Code session.
-`.mcp.json` launches `shim.py` with a bare `python3` for each session. The shim is stdlib only and
-does three things:
+`.mcp.json` launches `bin/kg-shim` for each session, which runs `shim.py` with the system Python:
+`python3`, else `python`, on macOS and Linux, and `py -3`, else `python`, on Windows (`kg-shim.cmd`),
+where a stock install has no `python3.exe` and both names may be Microsoft Store stubs. The shim is
+stdlib only and does three things:
 
 1. It reads `server-<version>.json` from the user cache directory (`%LOCALAPPDATA%\codebase-kg\` on
    Windows, `~/Library/Caches/codebase-kg/` on macOS, `$XDG_CACHE_HOME/codebase-kg/` or
