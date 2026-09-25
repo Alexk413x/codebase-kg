@@ -2,6 +2,53 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.8.0] — 2026-09-25 — one server process for every session
+
+### Fixed — every session started its own copy of the server
+
+`.mcp.json` ran `uv run ... codebase-kg` once per Claude Code session, and each
+copy is four processes: `uv`, the console-script launcher, the venv trampoline
+and the interpreter. Measured on Windows, that is about 140 MB per session for
+the same thirteen tools. Ten open agents held forty processes and about 1.4 GB.
+
+`.mcp.json` now runs `mcp/src/codebase_kg/shim.py` with a bare `python3`. The
+shim is stdlib only, about 19 MB, and relays the session to one shared
+`codebase-kg --serve` process per machine and plugin version, which it starts on
+first use. Two sessions measured 8 processes and 284 MB before, and 7 processes
+and 187 MB after. Each further session adds one shim instead of another server.
+
+The shared server listens on 127.0.0.1 only, writes its port and a random token
+to a user-only state file in the user cache directory, and refuses a handshake
+with the wrong token or version. It exits after 10 minutes with no connections
+(`CODEBASE_KG_IDLE_TIMEOUT`). If it cannot be reached within 10 seconds
+(`CODEBASE_KG_SHARED_TIMEOUT`), the shim runs a private stdio server for that
+session, so a session never loses its tools. `CODEBASE_KG_SHARED=0` always does.
+
+One server serving many repos must never answer from the wrong graph. Each
+connection's handshake carries the session's cwd and explicit graph path, and
+every tool call resolves from those, including the
+`.claude/codebase-kg.local.md` override walked up from that cwd. The server
+never reads its own cwd, environment or argv in serve mode. A tool call with no
+connection context raises rather than fall back to them. Tests start the server
+inside a repo that has a graph, point its `CODEBASE_KG_PATH` at that graph, and
+prove no connection sees it.
+
+Plain `codebase-kg`, with no `--serve`, is the same stdio server as before.
+
+### Fixed — the search gate no longer denies searches it documents as free
+
+This fix reached main in c820cd6 without a version bump, so no install has it
+until this release. Three bugs in the shell-command analysis broke the gate's
+own exemptions:
+
+- A grep alternation such as `grep -n "a\|b" file` was split on the `|` inside
+  the quotes, which fabricated a clause and defeated the "already names an
+  anchored file" exemption.
+- Redirections (`2>/dev/null`, `> out.log`, `2>&1`) were read as path operands.
+  They do not exist as files, so an already-located search was gated again.
+- `~` was never expanded, so `find ~/.claude ...` resolved under the repo and
+  defeated the "aimed outside the repo" exemption.
+
 ## [0.7.0] — 2026-09-20 — a node can say where the facts it depends on are documented
 
 ### Added — the `reference` table, and schema v4

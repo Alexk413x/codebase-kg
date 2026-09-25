@@ -1,8 +1,8 @@
 """The process `.mcp.json` launches for each session: a pipe to one shared server.
 
 A server per session costs four processes — `uv`, the console-script launcher,
-the venv trampoline and the interpreter, about 30 MB each — for every open
-session. The shim is one small process instead. It connects to one
+the venv trampoline and the interpreter, about 140 MB together on Windows — for
+every open session. The shim is one small process instead. It connects to one
 `codebase-kg --serve` process per machine and plugin version, starting it on
 first use, and relays newline-delimited JSON-RPC between the session's stdio and
 that server's socket without parsing it.
