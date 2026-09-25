@@ -1,0 +1,472 @@
+"""Shared-server mode: one `--serve` process, many sessions, no crossed graphs.
+
+The server that used to run once per session now runs once per machine, so its
+own cwd, environment and argv belong to whichever session started it. The
+contamination tests start it from inside a repo that has a graph, with
+`CODEBASE_KG_PATH` pointing at that graph, and prove no connection ever sees it.
+
+The end-to-end tests launch `shim.py` the way `.mcp.json` does and need `uv` on
+PATH; they skip without it.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import queue
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import IO, Any, Iterator
+
+import pytest
+
+from codebase_kg import server, shim
+from codebase_kg.models import Anchor, Meta, Node
+from codebase_kg.store import CodeGraph
+from codebase_kg.writer import build
+
+SRC = Path(__file__).resolve().parent.parent / "src"
+SHIM = SRC / "codebase_kg" / "shim.py"
+VERSION = shim.package_version()
+TIMEOUT = 30.0
+
+needs_uv = pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
+
+
+def _sha(p: Path) -> str:
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def _repo(root: Path, name: str) -> Path:
+    """A repo whose graph holds one node, `<name>_widget`, and nothing else."""
+    src = root / "src"
+    src.mkdir(parents=True)
+    (src / f"{name}.kt").write_text(f"class {name.title()}\n", encoding="utf-8")
+    build(
+        root / "knowledge" / "code_graph.db",
+        Meta(codebase=name, root="src", generated="2026-09-25",
+             covers=["**/*.kt"], exempt=["**/*.kt"]),
+        [Node(id=f"{name}_widget", kind="Widget", description=f"The {name} widget.",
+              anchors=[Anchor(f"{name}.kt", name.title())])],
+        source_root=src,
+    )
+    return root
+
+
+def _graph(repo: Path) -> Path:
+    return repo / "knowledge" / "code_graph.db"
+
+
+class Client:
+    """Newline-delimited JSON-RPC over any pair of byte streams, with timeouts."""
+
+    def __init__(self, write: IO[bytes], read: IO[bytes]) -> None:
+        self._write = write
+        self._lines: queue.Queue[bytes] = queue.Queue()
+        self._next_id = 0
+        threading.Thread(target=self._pump, args=(read,), daemon=True).start()
+
+    def _pump(self, read: IO[bytes]) -> None:
+        try:
+            for line in iter(read.readline, b""):
+                self._lines.put(line)
+        except (OSError, ValueError):
+            pass
+        self._lines.put(b"")
+
+    def send(self, obj: dict[str, Any]) -> None:
+        self._write.write(json.dumps(obj).encode("utf-8") + b"\n")
+        self._write.flush()
+
+    def recv(self) -> dict[str, Any]:
+        line = self._lines.get(timeout=TIMEOUT)
+        assert line, "stream closed"
+        return json.loads(line)
+
+    def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        self._next_id += 1
+        self.send({"jsonrpc": "2.0", "id": self._next_id, "method": method, "params": params})
+        while True:
+            msg = self.recv()
+            if msg.get("id") == self._next_id:
+                return msg
+
+    def initialize(self) -> dict[str, Any]:
+        out = self.request("initialize", {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "pytest", "version": "0"},
+        })
+        self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        return out
+
+    def call(self, name: str, **arguments: Any) -> dict[str, Any]:
+        return self.request("tools/call", {"name": name, "arguments": arguments})["result"]
+
+    def data(self, name: str, **arguments: Any) -> dict[str, Any]:
+        result = self.call(name, **arguments)
+        assert not result.get("isError"), result
+        return result["structuredContent"]
+
+
+def _error_text(result: dict[str, Any]) -> str:
+    assert result.get("isError") is True, result
+    return " ".join(c.get("text", "") for c in result["content"])
+
+
+def _node_ids(client: Client) -> set[str]:
+    return {n["id"] for n in client.data("kg_find_by_kind", kind="")["nodes"]}
+
+
+# --- a daemon started from inside a repo it must never serve ------------------
+def _start_daemon(cache: Path, cwd: Path, env_extra: dict[str, str]) -> subprocess.Popen[bytes]:
+    env = {**os.environ, "CODEBASE_KG_CACHE_DIR": str(cache), **env_extra}
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(SRC), env.get("PYTHONPATH")]))
+    return subprocess.Popen(
+        [sys.executable, "-m", "codebase_kg.server", "--serve"],
+        cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def _wait_for_state(cache: Path) -> dict[str, Any]:
+    deadline = time.monotonic() + TIMEOUT
+    state_file = cache / f"server-{VERSION}.json"
+    while time.monotonic() < deadline:
+        try:
+            return json.loads(state_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.05)
+    raise AssertionError(f"no state file at {state_file}")
+
+
+def _stop(proc: subprocess.Popen[bytes]) -> None:
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait(timeout=TIMEOUT)
+
+
+@pytest.fixture(scope="module")
+def daemon(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Any]]:
+    root = tmp_path_factory.mktemp("shared")
+    decoy = _repo(root / "decoy", "decoy")
+    cache = root / "cache"
+    proc = _start_daemon(cache, decoy, {
+        "CODEBASE_KG_PATH": str(_graph(decoy)), "CODEBASE_KG_IDLE_TIMEOUT": "120",
+    })
+    try:
+        state = _wait_for_state(cache)
+        yield {**state, "root": root, "cache": cache}
+    finally:
+        _stop(proc)
+
+
+def _raw(state: dict[str, Any], hello: dict[str, Any]) -> tuple[socket.socket, Any, dict[str, Any]]:
+    sock = socket.create_connection(("127.0.0.1", state["port"]), timeout=TIMEOUT)
+    f = sock.makefile("rwb")
+    f.write(json.dumps(hello).encode("utf-8") + b"\n")
+    f.flush()
+    reply = json.loads(f.readline())
+    sock.settimeout(None)
+    return sock, f, reply
+
+
+def _hang_up(sock: socket.socket) -> None:
+    """Close for real: `close()` alone waits on the makefile() wrapper still open."""
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    sock.close()
+
+
+@pytest.fixture
+def connect(daemon: dict[str, Any]) -> Iterator[Any]:
+    opened: list[socket.socket] = []
+
+    def _connect(cwd: Path, graph_path: Path | None = None) -> Client:
+        sock, f, reply = _raw(daemon, {
+            "token": daemon["token"], "version": VERSION, "cwd": str(cwd),
+            "graph_path": str(graph_path) if graph_path else None,
+        })
+        assert reply["ok"] is True, reply
+        opened.append(sock)
+        client = Client(f, f)
+        client.initialize()
+        return client
+
+    yield _connect
+    for sock in opened:
+        _hang_up(sock)
+
+
+@pytest.fixture
+def two_repos(tmp_path: Path) -> tuple[Path, Path]:
+    return _repo(tmp_path / "alpha", "alpha"), _repo(tmp_path / "beta", "beta")
+
+
+def test_two_connections_see_only_their_own_graph(connect: Any, two_repos: tuple[Path, Path]) -> None:
+    alpha, beta = two_repos
+    (alpha / "src" / "deep").mkdir()
+    a = connect(alpha / "src" / "deep")
+    b = connect(beta)
+    results: dict[str, list[set[str]]] = {"a": [], "b": []}
+
+    def hammer(name: str, client: Client) -> None:
+        for _ in range(15):
+            results[name].append(_node_ids(client))
+
+    threads = [threading.Thread(target=hammer, args=("a", a)),
+               threading.Thread(target=hammer, args=("b", b))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(TIMEOUT)
+    assert results["a"] == [{"alpha_widget"}] * 15
+    assert results["b"] == [{"beta_widget"}] * 15
+    assert a.data("kg_stats")["codebase"] == "alpha"
+    assert b.data("kg_stats")["codebase"] == "beta"
+
+
+def test_a_write_changes_only_the_writing_connections_graph(
+    connect: Any, two_repos: tuple[Path, Path]
+) -> None:
+    alpha, beta = two_repos
+    a, b = connect(alpha), connect(beta)
+    before_a, before_b = _sha(_graph(alpha)), _sha(_graph(beta))
+    out = a.data("kg_upsert_node", nodes=[{"id": "alpha_widget", "description": "Rewritten."}])
+    assert out["ok"] is True and out["written"] is True, out
+    assert _sha(_graph(alpha)) != before_a
+    assert _sha(_graph(beta)) == before_b
+    assert b.data("kg_node", id="beta_widget")["description"] == "The beta widget."
+    g = CodeGraph(_graph(alpha))
+    try:
+        node = g.node("alpha_widget")
+        assert node is not None and node.description == "Rewritten."
+    finally:
+        g.close()
+
+
+def test_a_connection_without_a_graph_gets_the_stdio_error(
+    connect: Any, two_repos: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alpha, _ = two_repos
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr("sys.argv", ["codebase-kg"])
+    monkeypatch.delenv("CODEBASE_KG_PATH", raising=False)
+    monkeypatch.chdir(empty)
+    monkeypatch.setattr(server, "_graph_path", None)
+    expected = str(server._missing_graph_error())
+
+    a = connect(alpha)
+    assert _node_ids(a) == {"alpha_widget"}
+    lost = connect(empty)
+    assert expected in _error_text(lost.call("kg_stats"))
+    assert expected in _error_text(lost.call("kg_search", query="widget"))
+    assert _node_ids(a) == {"alpha_widget"}
+
+
+def test_the_handshake_graph_path_wins_over_the_cwd(
+    connect: Any, two_repos: tuple[Path, Path]
+) -> None:
+    alpha, beta = two_repos
+    client = connect(beta, graph_path=_graph(alpha))
+    assert _node_ids(client) == {"alpha_widget"}
+
+
+def test_the_local_override_is_read_from_the_connections_cwd(
+    connect: Any, tmp_path: Path
+) -> None:
+    other = _repo(tmp_path / "other", "other")
+    repo = tmp_path / "custom"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "codebase-kg.local.md").write_text(
+        f"---\ngraph_path: {_graph(other).as_posix()}\n---\n", encoding="utf-8"
+    )
+    (repo / "sub").mkdir()
+    assert _node_ids(connect(repo / "sub")) == {"other_widget"}
+
+
+def test_a_bad_token_is_rejected(daemon: dict[str, Any], tmp_path: Path) -> None:
+    sock, f, reply = _raw(daemon, {
+        "token": "0" * 64, "version": VERSION, "cwd": str(tmp_path), "graph_path": None,
+    })
+    try:
+        assert reply == {"ok": False, "error": "bad token"}
+        assert f.readline() == b""
+    finally:
+        _hang_up(sock)
+
+
+def test_a_version_mismatch_is_rejected(daemon: dict[str, Any], tmp_path: Path) -> None:
+    sock, f, reply = _raw(daemon, {
+        "token": daemon["token"], "version": "0.0.0", "cwd": str(tmp_path), "graph_path": None,
+    })
+    try:
+        assert reply["ok"] is False and "version mismatch" in reply["error"]
+        assert f.readline() == b""
+    finally:
+        _hang_up(sock)
+
+
+def test_the_shim_refuses_a_rejected_server(daemon: dict[str, Any], tmp_path: Path) -> None:
+    with pytest.raises(shim.Rejected, match="version mismatch"):
+        shim.handshake(daemon, {"version": "0.0.0", "cwd": str(tmp_path), "graph_path": None})
+
+
+def test_serve_mode_never_falls_back_to_process_state(
+    monkeypatch: pytest.MonkeyPatch, two_repos: tuple[Path, Path]
+) -> None:
+    monkeypatch.chdir(two_repos[0])
+    monkeypatch.setattr(server, "_serving", True)
+    with pytest.raises(RuntimeError, match="connection context"):
+        server._graph_file()
+
+
+# --- idle exit ----------------------------------------------------------------
+def test_idle_exit_removes_the_state_file(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    proc = _start_daemon(cache, tmp_path, {"CODEBASE_KG_IDLE_TIMEOUT": "1.5"})
+    try:
+        state = _wait_for_state(cache)
+        repo = _repo(tmp_path / "alpha", "alpha")
+        sock, f, reply = _raw(state, {
+            "token": state["token"], "version": VERSION, "cwd": str(repo), "graph_path": None,
+        })
+        assert reply["ok"] is True
+        client = Client(f, f)
+        client.initialize()
+        time.sleep(3)
+        assert proc.poll() is None, "exited with a connection still open"
+        assert _node_ids(client) == {"alpha_widget"}
+        _hang_up(sock)
+        proc.wait(timeout=TIMEOUT)
+        assert not (cache / f"server-{VERSION}.json").exists()
+    finally:
+        _stop(proc)
+
+
+# --- the shim, launched as .mcp.json launches it ------------------------------
+def _shim(cwd: Path, cache: Path, **env: str) -> subprocess.Popen[bytes]:
+    full = {k: v for k, v in os.environ.items()
+            if k not in {"CODEBASE_KG_PATH", "CODEBASE_KG_SHARED", "VIRTUAL_ENV"}}
+    full.update({"CODEBASE_KG_CACHE_DIR": str(cache), "CODEBASE_KG_IDLE_TIMEOUT": "60", **env})
+    return subprocess.Popen(
+        [shutil.which("python3") or sys.executable, str(SHIM)], cwd=cwd, env=full,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+
+
+def _client(proc: subprocess.Popen[bytes]) -> Client:
+    assert proc.stdin is not None and proc.stdout is not None
+    return Client(proc.stdin, proc.stdout)
+
+
+def _finish(proc: subprocess.Popen[bytes]) -> str:
+    """Close the session the way the host does, and return the shim's stderr."""
+    assert proc.stdin is not None and proc.stderr is not None
+    proc.stdin.close()
+    try:
+        proc.wait(timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    return proc.stderr.read().decode("utf-8", "replace")
+
+
+def _kill_daemon(cache: Path) -> None:
+    try:
+        pid = json.loads((cache / f"server-{VERSION}.json").read_text(encoding="utf-8"))["pid"]
+    except (OSError, ValueError, KeyError):
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+@pytest.fixture
+def shim_cache(tmp_path: Path) -> Iterator[Path]:
+    cache = tmp_path / "cache"
+    yield cache
+    _kill_daemon(cache)
+
+
+@needs_uv
+def test_two_shims_share_one_daemon_end_to_end(
+    two_repos: tuple[Path, Path], shim_cache: Path
+) -> None:
+    alpha, beta = two_repos
+    procs = [_shim(alpha, shim_cache), _shim(beta, shim_cache)]
+    try:
+        clients = [_client(p) for p in procs]
+        for c in clients:
+            assert c.initialize()["result"]["serverInfo"]["name"] == "codebase-kg"
+        assert _node_ids(clients[0]) == {"alpha_widget"}
+        assert _node_ids(clients[1]) == {"beta_widget"}
+        state = _wait_for_state(shim_cache)
+    finally:
+        logs = [_finish(p) for p in procs]
+    pids = {line.rsplit("pid ", 1)[1].rstrip(")") for log in logs
+            for line in log.splitlines() if "connected to the shared server" in line}
+    assert pids == {str(state["pid"])}, logs
+    assert shim.pid_alive(state["pid"]), "the daemon died with the sessions that started it"
+
+
+@needs_uv
+def test_shims_started_at_once_spawn_exactly_one_daemon(
+    tmp_path: Path, shim_cache: Path
+) -> None:
+    repo = _repo(tmp_path / "alpha", "alpha")
+    procs = [_shim(repo, shim_cache) for _ in range(4)]
+    try:
+        clients = [_client(p) for p in procs]
+        for c in clients:
+            c.initialize()
+            assert _node_ids(c) == {"alpha_widget"}
+        state = _wait_for_state(shim_cache)
+    finally:
+        logs = [_finish(p) for p in procs]
+    connected = [line for log in logs for line in log.splitlines()
+                 if "connected to the shared server" in line]
+    assert connected == [f"codebase-kg: connected to the shared server (pid {state['pid']})"] * 4, logs
+    assert (shim_cache / f"server-{VERSION}.log").read_text(
+        encoding="utf-8", errors="replace").count("serving codebase-kg") == 1
+
+
+@needs_uv
+def test_the_shim_falls_back_to_a_private_server(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "alpha", "alpha")
+    unusable = tmp_path / "not-a-dir"
+    unusable.write_text("a file where the cache directory should be", encoding="utf-8")
+    proc = _shim(repo, unusable, CODEBASE_KG_SHARED_TIMEOUT="2")
+    try:
+        client = _client(proc)
+        client.initialize()
+        assert _node_ids(client) == {"alpha_widget"}
+    finally:
+        log = _finish(proc)
+    assert "running a private one" in log
+
+
+@needs_uv
+def test_shared_zero_goes_straight_to_a_private_server(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "alpha", "alpha")
+    cache = tmp_path / "cache"
+    proc = _shim(repo, cache, CODEBASE_KG_SHARED="0")
+    try:
+        client = _client(proc)
+        client.initialize()
+        assert _node_ids(client) == {"alpha_widget"}
+    finally:
+        log = _finish(proc)
+    assert not cache.exists()
+    assert "shared server" not in log

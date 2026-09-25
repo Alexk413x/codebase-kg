@@ -17,6 +17,13 @@ an optional `graph_path` in `.claude/codebase-kg.local.md`, else
 `knowledge/code_graph.db` (no repo-root fallback). While unresolved, the path is
 re-resolved on every tool call so a freshly built graph is picked up.
 
+Under `--serve` (see `daemon.py`) one process serves every session on the
+machine, so its own argv, environment and cwd describe none of them. Each
+connection's handshake carries the session's cwd and explicit graph path, and
+`bind_connection` puts them in a context variable that every tool call in that
+connection resolves from, in the same order. The resolved path is cached per
+connection, never process-wide.
+
 **The graph is opened per tool call and closed again.** That is affordable
 precisely because opening a store is constant-time (~1 ms) rather than a parse
 whose cost grows with the graph — there is nothing to amortize. It also matters
@@ -32,6 +39,8 @@ import os
 import re
 import sys
 from contextlib import contextmanager
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -49,6 +58,37 @@ mcp: FastMCP[Any] = FastMCP("codebase-kg")
 
 # Only the resolved *path* is remembered between calls — never an open handle.
 _graph_path: Path | None = None
+
+
+@dataclass
+class Connection:
+    """One shared-server session: where it runs, and the graph it resolved."""
+
+    cwd: Path
+    explicit: Path | None = None
+    resolved: Path | None = None
+
+
+_connection: ContextVar[Connection | None] = ContextVar("codebase_kg_connection", default=None)
+_serving = False
+
+
+def enter_serve_mode() -> None:
+    global _serving
+    _serving = True
+
+
+def bind_connection(conn: Connection) -> Token[Connection | None]:
+    return _connection.set(conn)
+
+
+def _current() -> Connection | None:
+    conn = _connection.get()
+    if conn is None and _serving:
+        # Never fall back to Path.cwd(), argv or the environment in serve mode:
+        # they belong to whichever session happened to start the server.
+        raise RuntimeError("tool call outside a connection context in serve mode")
+    return conn
 
 
 def _local_graph_path(base: Path) -> Path | None:
@@ -86,13 +126,21 @@ def _local_graph_path(base: Path) -> Path | None:
     return p if p.is_absolute() else base / p
 
 
+def _search_start() -> Path:
+    conn = _current()
+    return conn.cwd if conn is not None else Path.cwd()
+
+
 def _resolve_graph_path() -> Path | None:
-    if len(sys.argv) > 1 and sys.argv[1].strip():
+    conn = _current()
+    if conn is not None:
+        if conn.explicit is not None:
+            return conn.explicit.resolve()
+    elif len(sys.argv) > 1 and sys.argv[1].strip():
         return Path(sys.argv[1]).resolve()
-    env = os.environ.get("CODEBASE_KG_PATH")
-    if env:
-        return Path(env).resolve()
-    cwd = Path.cwd()
+    elif os.environ.get("CODEBASE_KG_PATH"):
+        return Path(os.environ["CODEBASE_KG_PATH"]).resolve()
+    cwd = _search_start()
     for base in (cwd, *cwd.parents):
         override = _local_graph_path(base)
         if override is not None and override.is_file():
@@ -105,7 +153,7 @@ def _resolve_graph_path() -> Path | None:
 
 
 def _find_legacy() -> Path | None:
-    cwd = Path.cwd()
+    cwd = _search_start()
     for base in (cwd, *cwd.parents):
         cand = base / "knowledge" / LEGACY_FILENAME
         if cand.is_file():
@@ -130,13 +178,19 @@ def _missing_graph_error() -> FileNotFoundError:
 
 def _graph_file() -> Path:
     global _graph_path
-    if _graph_path is None or not _graph_path.is_file():
+    conn = _current()
+    path = conn.resolved if conn is not None else _graph_path
+    if path is None or not path.is_file():
         # Re-resolve while unresolved (or if the file went away) — the graph may
         # have been created after the server started (e.g. /codebase-kg:build).
-        _graph_path = _resolve_graph_path()
-    if _graph_path is None or not _graph_path.is_file():
+        path = _resolve_graph_path()
+        if conn is not None:
+            conn.resolved = path
+        else:
+            _graph_path = path
+    if path is None or not path.is_file():
         raise _missing_graph_error()
-    return _graph_path
+    return path
 
 
 @contextmanager
@@ -373,11 +427,14 @@ def kg_remove_reference(
 
 
 def main() -> None:
-    # The path resolves on the first tool call (see `_graph_file`); doing it
-    # here as well changed nothing. The graph opens lazily — so the server still starts
-    # cleanly in a repo that has no graph yet (e.g. before /codebase-kg:build).
-    # A missing graph surfaces as an actionable error on first use, not as a
-    # server that refuses to start.
+    # Resolve nothing here: the server must start cleanly in a repo that has no
+    # graph yet (e.g. before /codebase-kg:build). A missing graph surfaces as an
+    # actionable error on first use, not as a server that refuses to start.
+    if sys.argv[1:2] == ["--serve"]:
+        from .daemon import serve
+
+        serve()
+        return
     mcp.run()
 
 
