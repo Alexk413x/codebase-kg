@@ -1,14 +1,9 @@
 {
   "mcpServers": {
     "codebase-kg": {
-      "command": "uv",
+      "command": "python3",
       "args": [
-        "run",
-        "--project",
-        "${CLAUDE_PLUGIN_ROOT}/mcp",
-        "--frozen",
-        "--no-dev",
-        "codebase-kg"
+        "${CLAUDE_PLUGIN_ROOT}/mcp/src/codebase_kg/shim.py"
       ],
       "env": {
         "CODEBASE_KG_PATH": "${CODEBASE_KG_PATH:-}"

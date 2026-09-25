@@ -10,10 +10,12 @@ A single SQLite file is the source of truth (see ../../SCHEMA.md):
 - `store`    — read-only query facade (`CodeGraph`)
 - `tools`    — the read-only queries the MCP tools wrap
 - `server`   — FastMCP entry point
+- `daemon`   — `--serve`: one server process shared by every session
+- `shim`     — what `.mcp.json` launches: relays a session to the shared server
 - `markdown` / `migrate` — one-time conversion from the pre-0.2 `KNOWLEDGE_GRAPH.md`
 
-Everything except `server` depends only on the standard library, so the graph
-logic is testable without FastMCP installed.
+Everything except `server` and `daemon` depends only on the standard library,
+so the graph logic is testable without FastMCP installed.
 """
 
 __version__ = "0.2.0"
