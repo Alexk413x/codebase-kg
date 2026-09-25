@@ -1,13 +1,13 @@
 # codebase-kg MCP server
 
-A local **stdio** MCP server over one repo's committed `knowledge/code_graph.db` (see
+A local MCP server over one repo's committed `knowledge/code_graph.db` (see
 [`../SCHEMA.md`](../SCHEMA.md)), exposing **nine typed queries and four targeted writes** — so an
 agent answers "where does X live / what depends on it / what diverges from the peer" in one tool
 call instead of re-grepping every session, and fixes one wrong description without regenerating the
 whole artifact.
 
-Mirrors the author's `a11y-kg` server (FastMCP, `uvx`-run). Everything except `server` is **stdlib
-only** — the whole graph layer is testable without FastMCP installed.
+Mirrors the author's `a11y-kg` server (FastMCP, `uv`-run). Everything except `server` and `daemon` is
+**stdlib only** — the whole graph layer is testable without FastMCP installed.
 
 ## Queries
 
@@ -63,6 +63,39 @@ rm .kg-export.json                                                # a snapshot, 
 
 `export` → `build` with no edits is byte-identical, so a no-op refresh leaves the git diff empty.
 
+## How it runs
+
+One server process per machine and plugin version serves every Claude Code session.
+`.mcp.json` launches `bin/kg-shim` for each session, which runs `shim.py` with the system Python:
+`python3`, else `python`, on macOS and Linux, and `py -3`, else `python`, on Windows (`kg-shim.cmd`),
+where a stock install has no `python3.exe` and both names may be Microsoft Store stubs. The shim is
+stdlib only and does three things:
+
+1. It reads `server-<version>.json` from the user cache directory (`%LOCALAPPDATA%\codebase-kg\` on
+   Windows, `~/Library/Caches/codebase-kg/` on macOS, `$XDG_CACHE_HOME/codebase-kg/` or
+   `~/.cache/codebase-kg/` elsewhere). The file names the port, pid and token of the running server.
+2. If no live server answers, it takes a lock file and starts one, detached:
+   `uv run --project <plugin>/mcp --frozen --no-dev codebase-kg --serve`. The server's log is
+   `server-<version>.log` in the same directory.
+3. It connects to `127.0.0.1:<port>`, sends a one-line handshake (the token, the version, the session's
+   cwd and its explicit graph path), and then relays JSON-RPC unchanged in both directions.
+
+The server listens on loopback only, on a port the OS picks, and refuses a handshake with the wrong
+token or version. The state file is readable only by the user. Each connection is its own MCP
+session. The server exits after 10 minutes with no connections and removes its state file.
+
+A session never loses its tools. If the shared server cannot be reached within 10 seconds, the shim
+runs a private stdio server for that session instead.
+
+| Variable | Effect |
+|---|---|
+| `CODEBASE_KG_SHARED=0` | Skip the shared server; run a private stdio server for this session. |
+| `CODEBASE_KG_SHARED_TIMEOUT` | Seconds the shim waits for the shared server before it falls back. Default 10. |
+| `CODEBASE_KG_IDLE_TIMEOUT` | Seconds the shared server stays up with no connections. Default 600. |
+| `CODEBASE_KG_CACHE_DIR` | Where the state, lock and log files live. |
+
+Run `codebase-kg` with no `--serve` to get the stdio server directly.
+
 ## How it finds the graph
 
 Path resolution order:
@@ -72,6 +105,10 @@ Path resolution order:
 3. Walk up from the current working directory, honoring an optional `graph_path` override in
    `.claude/codebase-kg.local.md` (SCHEMA.md §8 — same file the hooks read; the older `kg_path` key
    is still accepted), else `knowledge/code_graph.db`. **No repo-root fallback.**
+
+The shared server applies the same order to each connection, using the session's CLI arg,
+`$CODEBASE_KG_PATH` and cwd from the handshake. It never reads its own cwd, environment or argv, so
+two sessions in two repos each see only their own graph.
 
 While unresolved, the path is re-resolved on every tool call, so a graph created after the server
 started (e.g. by `/codebase-kg:build`) is picked up without a restart. If the repo still has a
@@ -93,6 +130,9 @@ server was running.
 | `clean.py` | The `description` contract (no ticket refs, dates or change narrative) and its scrubber. |
 | `writer.py` | Transactional, deterministic build. Validates first; writes to a temp file and renames. |
 | `store.py` | `CodeGraph` — read-only query facade over one connection. |
+| `server.py` | The FastMCP tool registrations and graph path resolution, per process or per connection. |
+| `daemon.py` | `--serve`: the shared server — loopback listener, handshake, one MCP session per connection, idle exit. |
+| `shim.py` | What `.mcp.json` launches: finds or starts the shared server and relays the session to it. Stdlib only. |
 | `tools.py` | The read-only queries the MCP tools wrap. |
 | `edits.py` | Targeted writes: copy, mutate in one transaction, validate, swap in — or discard, leaving the committed file byte-identical. |
 | `codec.py` | The JSON interchange shape shared by `build` and `export`. |
