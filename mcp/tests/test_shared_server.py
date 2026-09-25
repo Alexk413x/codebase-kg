@@ -393,6 +393,51 @@ def _kill_daemon(cache: Path) -> None:
         pass
 
 
+def test_the_shim_forwards_server_pushes_without_waiting_for_a_request(tmp_path: Path) -> None:
+    listener = socket.create_server(("127.0.0.1", 0))
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / f"server-{VERSION}.json").write_text(json.dumps({
+        "version": VERSION, "port": listener.getsockname()[1], "pid": os.getpid(), "token": "t",
+    }), encoding="utf-8")
+    hello: dict[str, Any] = {}
+    push = {"jsonrpc": "2.0", "method": "notifications/message", "params": {"data": "yours"}}
+    later = {**push, "params": {"data": "still yours"}}
+
+    def fake_server() -> None:
+        conn, _ = listener.accept()
+        f = conn.makefile("rwb")
+        hello.update(json.loads(f.readline()))
+        f.write(b'{"ok": true, "pid": 1}\n' + json.dumps(push).encode("utf-8") + b"\n")
+        f.flush()
+        time.sleep(0.3)
+        f.write(json.dumps(later).encode("utf-8") + b"\n")
+        f.flush()
+        f.write(f.readline())
+        f.flush()
+        f.close()
+        conn.close()
+
+    server_thread = threading.Thread(target=fake_server, daemon=True)
+    server_thread.start()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    proc = _shim(repo, cache, CODEBASE_KG_PATH="knowledge/custom.db")
+    try:
+        client = _client(proc)
+        assert client.recv() == push
+        assert client.recv() == later
+        echo = {"jsonrpc": "2.0", "id": 7, "method": "ping"}
+        client.send(echo)
+        assert client.recv() == echo
+    finally:
+        _finish(proc)
+        listener.close()
+    assert hello["token"] == "t"
+    assert Path(hello["cwd"]).resolve() == repo.resolve()
+    assert Path(hello["graph_path"]) == (repo / "knowledge" / "custom.db").resolve()
+
+
 @pytest.fixture
 def shim_cache(tmp_path: Path) -> Iterator[Path]:
     cache = tmp_path / "cache"
