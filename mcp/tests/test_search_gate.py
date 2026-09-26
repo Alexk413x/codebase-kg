@@ -757,3 +757,146 @@ def test_a_search_after_a_heredoc_still_counts(scoped: Path) -> None:
 )
 def test_strip_heredocs(command: str, expected: str) -> None:
     assert gate.strip_heredocs(command) == expected
+
+
+# --- the gate must not make an agent circle ----------------------------------
+# Every command below was denied, verbatim or nearly, in real sessions on an iOS
+# repo. One session drew fourteen denials; the agent reworded each retry, never
+# repeated one byte for byte, and so never reached the escape hatch.
+@pytest.mark.parametrize(
+    ("command", "why"),
+    [
+        ('grep -n "#Preview" -A 20 src/known.py', "`20` is -A's value, not a path"),
+        ('grep -n thing -B2 -A 8 src/known.py 2>&1', "same, mixed attached and separate"),
+        ("grep -nA 3 thing src/known.py", "a value flag at the end of a short cluster"),
+        ("grep -m 5 thing src/known.py", "-m takes a value"),
+        ("grep --include '*.py' -n thing src/known.py", "a long flag with a separate value"),
+        ("rg -g '*.py' -C 2 thing src/known.py", "rg's own value flags"),
+        ("grep -e thing src/known.py", "with -e the first operand is a path, not the pattern"),
+        ("S=/tmp/x; grep -E 'error:' $S/test.log", "a shell variable is not a missing path"),
+        ('f=$(git ls-files | grep "Known.py$"); grep -n "func " $f', "nor is a substitution"),
+    ],
+)
+def test_a_located_search_with_flag_values_or_variables_is_not_gated(
+    command: str, why: str, scoped: Path
+) -> None:
+    assert gate.shell_search_is_gated(command, scoped) is False, why
+
+
+@pytest.mark.parametrize(
+    ("command", "why"),
+    [
+        ("find . -name 'GoogleService-Info.plist'", "a plist is never anchored"),
+        ("find . -name 'GoogleService-Info.plist' -maxdepth 4", "flags after it change nothing"),
+        ('find . -type f \\( -name "*.png" -o -name "*.svg" \\)', "every alternative is an asset"),
+        ('find . -name "*.xcscheme" -path "*/xcshareddata/*"', "AND-ed: one non-source filter suffices"),
+        ('grep -rn URL --include="*.xcscheme" --include="*.plist" .', "quoted --include values"),
+        ("rg -g '*.{json,plist}' thing .", "a brace alternation of non-source"),
+        ("find . -iname '*.xcodeproj' -o -iname '*.xcworkspace'", "Xcode bundles"),
+        ("find App.xcodeproj -name project.pbxproj", "a search inside a project bundle"),
+    ],
+)
+def test_a_search_that_can_only_find_non_source_files_is_not_gated(
+    command: str, why: str, scoped: Path
+) -> None:
+    """The graph anchors code. Sending an agent to it for a plist or an icon
+    offered it nothing, so it came back and tried again, reworded."""
+    assert gate.shell_search_is_gated(command, scoped) is False, why
+
+
+@pytest.mark.parametrize(
+    ("command", "why"),
+    [
+        ("grep -rn thing --include='*.py' .", "source files, still a tree hunt"),
+        ("grep -rln x --include='*.swift' --include='*.plist' .", "one alternative is source"),
+        ("find . -name '*.png' -o -name '*.py'", "one alternative is source"),
+        ("find . -name 'Known*'", "no extension pins it to non-source"),
+        ("grep -A 20 thing src", "a flag value does not hide a directory target"),
+        ("S=/tmp; grep -rn thing $S src", "a variable does not hide a real directory"),
+        ("find src -name '*.xcscheme' -o -name '*.py'", "OR with source still reaches code"),
+    ],
+)
+def test_the_exemptions_do_not_swallow_real_tree_searches(
+    command: str, why: str, scoped: Path
+) -> None:
+    assert gate.shell_search_is_gated(command, scoped) is True, why
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("Glob", {"pattern": "**/GoogleService-Info.plist"}),
+        ("Glob", {"pattern": "**/*.{png,svg}"}),
+        ("Grep", {"pattern": "URL", "glob": "*.xcconfig"}),
+        ("Grep", {"pattern": "LaunchAction", "path": "App.xcodeproj"}),
+    ],
+)
+def test_grep_and_glob_for_non_source_files_are_not_gated(
+    tool: str, tool_input: dict[str, Any], repo: Path,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert run(monkeypatch, capsys, repo, tool, tool_input) is None
+
+
+def test_rewording_the_same_search_counts_as_insisting(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The loop, reproduced: the same hunt, reworded each time. Only the first
+    attempt may be denied."""
+    attempts = [
+        "find app -name 'FeedStore.kt'",
+        "find . -name 'FeedStore.kt' -maxdepth 4",
+        "find . -maxdepth 5 -name 'FeedStore.kt' 2>/dev/null",
+        "find app/src -name 'FeedStore.kt'",
+    ]
+    first, *rest = attempts
+    assert decision(run(monkeypatch, capsys, repo, "Bash", {"command": first})) == "deny"
+    for command in rest:
+        assert run(monkeypatch, capsys, repo, "Bash", {"command": command}) is None, command
+
+
+def test_the_same_grep_pattern_through_another_tool_counts_as_insisting(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "rankFeed"})) == "deny"
+    assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "rankFeed", "path": "app"}) is None
+
+
+def test_insisting_keeps_working_for_the_rest_of_the_session(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A one-shot hatch alternated deny/allow/deny on every retry, which reads to
+    an agent as the gate changing its mind."""
+    run(monkeypatch, capsys, repo, "Grep", {"pattern": "x"})
+    for _ in range(3):
+        assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "x"}) is None
+
+
+def test_two_denials_in_a_row_do_not_evict_each_other(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Parallel tool calls deny two searches back to back. One slot kept only the
+    second, so retrying the first was denied again — and recorded over the
+    second, and so on."""
+    assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "a"})) == "deny"
+    assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "b"})) == "deny"
+    assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "a"}) is None
+    assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "b"}) is None
+
+
+def test_a_session_from_before_the_upgrade_keeps_its_escape_hatch(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Older versions stored one key as a string."""
+    key = gate.search_key("Grep", {"pattern": "x"})
+    gate._state_path(repo, "s1").write_text(json.dumps({"denied": key}), encoding="utf-8")
+    assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "x"}) is None
+
+
+def test_the_denial_memory_is_bounded(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for i in range(gate._DENIED_MEMORY * 2):
+        run(monkeypatch, capsys, repo, "Grep", {"pattern": f"p{i}"})
+    state = json.loads(gate._state_path(repo, "s1").read_text(encoding="utf-8"))
+    assert len(state["denied"]) <= gate._DENIED_MEMORY
