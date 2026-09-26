@@ -29,10 +29,17 @@ Three ways through, each inferred from what the agent actually did:
 |---|---|
 | **A query buys credit** | A codebase-kg MCP call clears the next `gate_credit` searches. The allowance is for what the answer did NOT name — a partial answer leaves a remainder only searching will find. The files it did name are located searches, which cost nothing. |
 | **A located search** | A search scoped to a file the graph already anchors is never gated and spends no credit. The agent has evidently found it; gating that buys nothing. A *directory* is still gated — that is where you look when you do not yet know the file. |
-| **Repeat to insist** | The identical search, immediately after a denial, is always allowed. This is the escape hatch for code the graph has not mapped yet, and it is what makes the gate unable to strand anyone. |
+| **Repeat to insist** | A search for the same thing as one already denied is allowed for the rest of the session: the same call, or the same pattern (a grep pattern, a `find -name` value, a Glob pattern) however the command around it is reworded. The last 16 denials are remembered, so searches denied in parallel do not evict each other. This is the escape hatch for code the graph has not mapped yet, and it is what makes the gate unable to strand anyone. |
 
 - **No-ops** when the repo has no graph, when `SKIP_KG` is set, when `search_gate` is `off`, and when
   the search is scoped outside the graph's `root` or into an ignored dir (`node_modules`, `build`, …).
+- **Leaves non-source searches alone.** A search whose file-name filters can only match files no graph
+  anchors — `find -name Info.plist`, `--include='*.xcconfig'`, `Glob **/*.png`, anything scoped
+  inside an `.xcodeproj` or `.xcassets` — is not a question for the graph. The list is
+  `NON_SOURCE_EXT` in `kg_search_gate.py` plus the repo's `exclude_ext`.
+- **Reads shell commands the way the shell does.** A flag's value (`-A 20`, `--include x`) is not a
+  path, and an unexpanded `$VAR` or `$(…)` is no evidence either way, so neither can turn a grep of one
+  known file into a "still hunting" denial.
 - **Fails open.** A malformed payload or an unreadable graph lets the search through. An unwritable
   state file degrades the deny to a **warn**, because the escape hatch lives in that file: a denial
   that cannot be recorded is one a repeat could not be recognised against.

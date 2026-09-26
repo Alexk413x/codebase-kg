@@ -49,6 +49,32 @@ Cartographer lost its shim this way to a `selectors.py` that broke `socket`. The
 shim now drops that folder from `sys.path` before any other import, and a test
 fails if a module in the package shares a stdlib name.
 
+### Fixed — the gate denied searches it should have let through, and the retry rarely worked
+
+Sessions on an iOS repo drew up to fourteen gate denials each. Replaying all 131
+distinct denied shell commands found four causes. With them fixed, 62 of the 131
+now pass, and the rest are real tree hunts, which the escape hatch now releases.
+
+- **A flag's value read as a path.** In `grep -A 20 x File.swift`, the `20` was a
+  "target" that did not exist, and a missing path reads as "still hunting". So a
+  grep of one known file was denied. Value-taking flags are now known per tool
+  (grep, rg, ag, ack, fd), including short clusters (`-nA 3`) and `-e`/`-f`,
+  after which the first operand is a path, not the pattern.
+- **Shell variables read as paths.** `grep x $S/test.log` and `grep x $f` named
+  literal `$S/…` paths. An unexpanded operand is now no evidence either way.
+- **The escape hatch needed a byte-identical repeat.** Agents reword: they add
+  `-maxdepth 4`, widen the path, drop an `|| echo`. Each variant drew a new
+  denial. A repeat now matches on what is searched for (grep pattern,
+  `find -name` value, Glob pattern). The hatch also stays open for the rest of
+  the session instead of alternating deny/allow. The one-slot `denied` record is
+  now a bounded list, so two searches denied in parallel no longer evict each
+  other. A state file written by an older version is still read.
+- **Non-source lookups were gated.** A search that can only find a `.plist`,
+  `.xcscheme`, image, or other file no graph anchors, or that is scoped inside an
+  `.xcodeproj`/`.xcassets`, is no longer gated. `find` filters AND unless joined
+  by `-o`, and `--include`/`-g` filters are alternatives. The gate message now
+  says a rephrased retry works.
+
 ## [0.8.0] — 2026-09-25 — one server process for every session
 
 ### Fixed — every session started its own copy of the server
