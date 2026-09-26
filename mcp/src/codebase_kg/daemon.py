@@ -2,10 +2,12 @@
 
 `shim.py` starts this on first use and relays each session to it over a
 loopback TCP connection. The server binds 127.0.0.1 on a port the OS picks and
-publishes `{version, port, pid, token}` in a per-version state file readable
-only by the user. A connection opens with one JSON handshake line — the token,
-the version, and the session's cwd and explicit graph path — and the server
-answers with one line before any MCP traffic flows.
+publishes `{version, port, pid, token}` in a per-build state file readable
+only by the user, where `version` is `shim.server_build()`: the package version
+plus a digest of the source files. A connection opens with one JSON handshake
+line — the token, the build, and the session's cwd and explicit graph path — and
+the server answers with one line before any MCP traffic flows. It refuses a
+handshake from any other build.
 
 Each accepted connection runs its own MCP session over the socket, with the
 same tool registrations the stdio server uses, bound to that connection's
@@ -218,5 +220,5 @@ def serve() -> None:
         format="%(asctime)s %(process)d %(levelname)s %(name)s: %(message)s",
     )
     server.enter_serve_mode()
-    daemon = Daemon(shim.package_version(), secrets.token_hex(32), idle_timeout())
+    daemon = Daemon(shim.server_build(), secrets.token_hex(32), idle_timeout())
     anyio.run(_serve, daemon)

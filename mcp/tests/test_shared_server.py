@@ -34,7 +34,7 @@ from codebase_kg.writer import build
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 SHIM = SRC / "codebase_kg" / "shim.py"
-VERSION = shim.package_version()
+BUILD = shim.server_build()
 TIMEOUT = 30.0
 
 needs_uv = pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
@@ -137,7 +137,7 @@ def _start_daemon(cache: Path, cwd: Path, env_extra: dict[str, str]) -> subproce
 
 def _wait_for_state(cache: Path) -> dict[str, Any]:
     deadline = time.monotonic() + TIMEOUT
-    state_file = cache / f"server-{VERSION}.json"
+    state_file = cache / f"server-{BUILD}.json"
     while time.monotonic() < deadline:
         try:
             return json.loads(state_file.read_text(encoding="utf-8"))
@@ -193,7 +193,7 @@ def connect(daemon: dict[str, Any]) -> Iterator[Any]:
 
     def _connect(cwd: Path, graph_path: Path | None = None) -> Client:
         sock, f, reply = _raw(daemon, {
-            "token": daemon["token"], "version": VERSION, "cwd": str(cwd),
+            "token": daemon["token"], "version": BUILD, "cwd": str(cwd),
             "graph_path": str(graph_path) if graph_path else None,
         })
         assert reply["ok"] is True, reply
@@ -297,7 +297,7 @@ def test_the_local_override_is_read_from_the_connections_cwd(
 
 def test_a_bad_token_is_rejected(daemon: dict[str, Any], tmp_path: Path) -> None:
     sock, f, reply = _raw(daemon, {
-        "token": "0" * 64, "version": VERSION, "cwd": str(tmp_path), "graph_path": None,
+        "token": "0" * 64, "version": BUILD, "cwd": str(tmp_path), "graph_path": None,
     })
     try:
         assert reply == {"ok": False, "error": "bad token"}
@@ -339,7 +339,7 @@ def test_idle_exit_removes_the_state_file(tmp_path: Path) -> None:
         state = _wait_for_state(cache)
         repo = _repo(tmp_path / "alpha", "alpha")
         sock, f, reply = _raw(state, {
-            "token": state["token"], "version": VERSION, "cwd": str(repo), "graph_path": None,
+            "token": state["token"], "version": BUILD, "cwd": str(repo), "graph_path": None,
         })
         assert reply["ok"] is True
         client = Client(f, f)
@@ -349,7 +349,7 @@ def test_idle_exit_removes_the_state_file(tmp_path: Path) -> None:
         assert _node_ids(client) == {"alpha_widget"}
         _hang_up(sock)
         proc.wait(timeout=TIMEOUT)
-        assert not (cache / f"server-{VERSION}.json").exists()
+        assert not (cache / f"server-{BUILD}.json").exists()
     finally:
         _stop(proc)
 
@@ -384,7 +384,7 @@ def _finish(proc: subprocess.Popen[bytes]) -> str:
 
 def _kill_daemon(cache: Path) -> None:
     try:
-        pid = json.loads((cache / f"server-{VERSION}.json").read_text(encoding="utf-8"))["pid"]
+        pid = json.loads((cache / f"server-{BUILD}.json").read_text(encoding="utf-8"))["pid"]
     except (OSError, ValueError, KeyError):
         return
     try:
@@ -397,8 +397,8 @@ def test_the_shim_forwards_server_pushes_without_waiting_for_a_request(tmp_path:
     listener = socket.create_server(("127.0.0.1", 0))
     cache = tmp_path / "cache"
     cache.mkdir()
-    (cache / f"server-{VERSION}.json").write_text(json.dumps({
-        "version": VERSION, "port": listener.getsockname()[1], "pid": os.getpid(), "token": "t",
+    (cache / f"server-{BUILD}.json").write_text(json.dumps({
+        "version": BUILD, "port": listener.getsockname()[1], "pid": os.getpid(), "token": "t",
     }), encoding="utf-8")
     hello: dict[str, Any] = {}
     push = {"jsonrpc": "2.0", "method": "notifications/message", "params": {"data": "yours"}}
@@ -483,7 +483,7 @@ def test_shims_started_at_once_spawn_exactly_one_daemon(
     connected = [line for log in logs for line in log.splitlines()
                  if "connected to the shared server" in line]
     assert connected == [f"codebase-kg: connected to the shared server (pid {state['pid']})"] * 4, logs
-    assert (shim_cache / f"server-{VERSION}.log").read_text(
+    assert (shim_cache / f"server-{BUILD}.log").read_text(
         encoding="utf-8", errors="replace").count("serving codebase-kg") == 1
 
 
@@ -548,3 +548,48 @@ def test_the_shim_run_as_a_file_skips_its_own_folder_on_sys_path(tmp_path: Path)
         env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=TIMEOUT,
     )
     assert b"shadowed the stdlib" not in done.stderr, done.stderr.decode("utf-8", "replace")
+
+
+# --- a build is the version plus the code --------------------------------------
+def test_the_build_changes_when_a_source_file_changes(tmp_path: Path) -> None:
+    package = tmp_path / "codebase_kg"
+    shutil.copytree(SHIM.parent, package, ignore=shutil.ignore_patterns("__pycache__"))
+    before = shim.server_build(package)
+    assert before.startswith(f"{shim.package_version()}+")
+    assert shim.server_build(package) == before
+    source = package / "tools.py"
+    stat = source.stat()
+    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    touched = shim.server_build(package)
+    assert touched != before
+    source.write_bytes(source.read_bytes() + b"\n")
+    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert shim.server_build(package) not in {before, touched}
+
+
+def test_a_shim_of_another_build_does_not_reuse_a_running_daemon(
+    daemon: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = f"{shim.package_version()}+{'0' * 12}"
+    assert other != BUILD
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(daemon["cache"]))
+    planted = shim.state_path(other)
+    planted.write_text(json.dumps({**{k: daemon[k] for k in ("port", "pid", "token")},
+                                   "version": other}), encoding="utf-8")
+    spawned: list[str] = []
+
+    class Exited:
+        def poll(self) -> int:
+            return 1
+
+    def spawn(build: str) -> Exited:
+        spawned.append(build)
+        return Exited()
+
+    monkeypatch.setattr(shim, "spawn_server", spawn)
+    hello = {"version": other, "cwd": str(tmp_path), "graph_path": None}
+    try:
+        assert shim.shared_connection(other, hello, budget=5) is None
+    finally:
+        planted.unlink()
+    assert spawned == [other]
