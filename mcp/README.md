@@ -65,27 +65,42 @@ rm .kg-export.json                                                # a snapshot, 
 
 ## How it runs
 
-One server process per machine and plugin version serves every Claude Code session.
+One server process per machine and server build serves every Claude Code session. A build is the
+plugin version plus a short digest of the path, size and mtime of every `*.py` in the server package,
+so a dev checkout and an installed copy at the same version never share a server.
 `.mcp.json` launches `bin/kg-shim` for each session, which runs `shim.py` with the system Python:
 `python3`, else `python`, on macOS and Linux, and `py -3`, else `python`, on Windows (`kg-shim.cmd`),
 where a stock install has no `python3.exe` and both names may be Microsoft Store stubs. The shim is
 stdlib only and does three things:
 
-1. It reads `server-<version>.json` from the user cache directory (`%LOCALAPPDATA%\codebase-kg\` on
+1. It reads `server-<build>.json` from the user cache directory (`%LOCALAPPDATA%\codebase-kg\` on
    Windows, `~/Library/Caches/codebase-kg/` on macOS, `$XDG_CACHE_HOME/codebase-kg/` or
    `~/.cache/codebase-kg/` elsewhere). The file names the port, pid and token of the running server.
 2. If no live server answers, it takes a lock file and starts one, detached:
    `uv run --project <plugin>/mcp --frozen --no-dev codebase-kg --serve`. The server's log is
-   `server-<version>.log` in the same directory.
-3. It connects to `127.0.0.1:<port>`, sends a one-line handshake (the token, the version, the session's
+   `server-<build>.log` in the same directory.
+3. It connects to `127.0.0.1:<port>`, sends a one-line handshake (the token, the build, the session's
    cwd and its explicit graph path), and then relays JSON-RPC unchanged in both directions.
 
 The server listens on loopback only, on a port the OS picks, and refuses a handshake with the wrong
-token or version. The state file is readable only by the user. Each connection is its own MCP
+token or build. The state file is readable only by the user. Each connection is its own MCP
 session. The server exits after 10 minutes with no connections and removes its state file.
 
 A session never loses its tools. If the shared server cannot be reached within 10 seconds, the shim
 runs a private stdio server for that session instead.
+
+A session also survives a crashed shared server. The shim records the session's `initialize` request
+and `notifications/initialized`, and tracks which requests await a response. If the server hangs up
+while the session is open, the shim:
+
+1. Answers each request in flight with a JSON-RPC error that says to retry the call.
+2. Reconnects the way it first connected, starting a new server if none answers.
+3. Replays `initialize` and `notifications/initialized`, and drops the new server's `initialize`
+   result, so the session sees only one.
+4. Sends whatever the session wrote while it reconnected.
+
+If no shared server comes back, the rest of the session runs on a private server with the same replay.
+When the session closes its stdin, the shim exits and does not reconnect.
 
 | Variable | Effect |
 |---|---|
