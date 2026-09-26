@@ -22,7 +22,7 @@ set -eu
 # Pinned to a TAG, never a branch: this command runs on every diff of the graph
 # and must not change under the repo silently. /codebase-kg:setup stamps this
 # line with the plugin version that wrote it; bump it deliberately.
-KG_VERSION="${KG_VERSION:-0.8.1}"
+KG_VERSION="${KG_VERSION:-0.8.2}"
 KG_SOURCE="${KG_SOURCE:-git+https://github.com/Alexk413x/codebase-kg.git@codebase-kg--v${KG_VERSION}#subdirectory=mcp}"
 # --quiet is not cosmetic: without it uv prints resolution lines into the body of
 # every `git diff` of the graph.
