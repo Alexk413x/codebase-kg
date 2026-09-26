@@ -23,13 +23,22 @@ below, so the two sides cannot disagree about where the state file lives.
 
 from __future__ import annotations
 
-import json
 import os
+import sys
+
+if __name__ == "__main__":
+    # Run as a file, this package's folder leads sys.path, so a module here that shares
+    # a stdlib name (a selectors.py, say) would shadow the stdlib one that socket imports.
+    _HERE = os.path.normcase(os.path.realpath(os.path.dirname(os.path.abspath(__file__))))
+    sys.path[:] = [
+        p for p in sys.path if os.path.normcase(os.path.realpath(p or os.curdir)) != _HERE
+    ]
+
+import json
 import re
 import shutil
 import socket
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path

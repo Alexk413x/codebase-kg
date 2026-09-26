@@ -527,3 +527,24 @@ def test_mcp_json_launches_the_platform_shim():
         assert "mcp" in launcher and "shim.py" in launcher
     assert posix.startswith("#!/bin/sh")
     assert "py -3" in windows and "\r\n" in windows
+
+
+# --- run as a file, the shim's own folder must not shadow the stdlib ----------
+def test_no_module_in_the_package_folder_shares_a_stdlib_name() -> None:
+    clashes = [p.name for p in SHIM.parent.glob("*.py") if p.stem in sys.stdlib_module_names]
+    assert clashes == []
+
+
+def test_the_shim_run_as_a_file_skips_its_own_folder_on_sys_path(tmp_path: Path) -> None:
+    folder = tmp_path / "mcp" / "src" / "codebase_kg"
+    folder.mkdir(parents=True)
+    shutil.copy(SHIM, folder / "shim.py")
+    (folder / "selectors.py").write_text('raise ImportError("shadowed the stdlib")\n',
+                                         encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    env["CODEBASE_KG_SHARED"] = "0"
+    done = subprocess.run(
+        [shutil.which("python3") or sys.executable, str(folder / "shim.py")], cwd=tmp_path,
+        env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=TIMEOUT,
+    )
+    assert b"shadowed the stdlib" not in done.stderr, done.stderr.decode("utf-8", "replace")
