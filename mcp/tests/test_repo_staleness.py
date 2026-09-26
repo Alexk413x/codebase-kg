@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from codebase_kg import staleness, tools
+from codebase_kg import edits, staleness, tools
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.store import CodeGraph
 from codebase_kg.writer import build, content_sha
@@ -320,6 +320,24 @@ def test_the_acknowledgement_has_to_name_the_count(
     assert g.main() == 1
     monkeypatch.setenv("KG_STALE_ACK", "1")
     assert g.main() == 0
+
+
+def test_a_rebaseline_upsert_releases_the_backlog(
+    hook_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    ranker = hook_repo / "src" / RANKER
+    ranker.write_text("class Ranker { fun rewritten() {} }", encoding="utf-8")
+    monkeypatch.setattr(g, "_git", _fake_git(hook_repo, "M\tsrc/ui/Known.kt"))
+    monkeypatch.setattr(g, "blob_digests", _fake_blobs(_tree_digests(hook_repo / "src")))
+    assert g.main() == 1
+
+    edits.upsert_node(
+        hook_repo / "knowledge" / "code_graph.db",
+        [{"id": "ranker", "description": "Ranks by the rewritten rule.", "rebaseline": True}],
+    )
+    capsys.readouterr()
+    assert g.main() == 0
+    assert "PUSH BLOCKED" not in capsys.readouterr().err
 
 
 def test_skip_kg_silences_the_push_check(

@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from . import clean, links, tools, writer
+from .coverage import resolve_source_base
 from .links import ExternalLink, LinkError
 from .models import Anchor, Node, Reference, ReferenceFormatError
 from .schema import REFERENCE_DDL, REFERENCE_TABLE, SCHEMA_VERSION, has_reference_table
@@ -349,6 +350,59 @@ def _ensure_link_table(conn: sqlite3.Connection) -> list[Change]:
     return [Change("external_link", links.TABLE, "created")]
 
 
+def _prune_sources(conn: sqlite3.Connection) -> list[Change]:
+    orphans = conn.execute(
+        "SELECT path, sha FROM source WHERE path NOT IN (SELECT path FROM anchor)"
+        " ORDER BY path"
+    ).fetchall()
+    conn.executemany("DELETE FROM source WHERE path = ?", [(r["path"],) for r in orphans])
+    return [Change("source", r["path"], "deleted", {"sha": (r["sha"], None)}) for r in orphans]
+
+
+def _stamp_sources(
+    conn: sqlite3.Connection, graph_dir: Path, nodes: list[Node], rehash: set[str]
+) -> list[Change]:
+    """Hash through `writer.stamp_hashes`, never directly: an upsert and a build
+    must record the same digest for the same file, or the hooks read it as drift."""
+    recorded = {r["path"]: r["sha"] for r in conn.execute("SELECT path, sha FROM source")}
+    # Never overwrite an existing baseline without `rebaseline`: that re-blesses
+    # drift nobody checked.
+    kept = {p: s for p, s in recorded.items() if p not in rehash}
+    wanted = {a.path for n in nodes for a in n.anchors}
+    if wanted <= kept.keys():
+        return []
+
+    row = conn.execute("SELECT value FROM meta WHERE key = 'root'").fetchone()
+    anchored = [
+        r["path"] for r in conn.execute("SELECT DISTINCT path FROM anchor ORDER BY path")
+    ]
+    base = resolve_source_base(graph_dir, row["value"] if row else "", anchored)
+    report = writer.BuildReport()
+    fresh = writer.stamp_hashes(nodes, base, report, kept) if base is not None else kept
+
+    unread = sorted(p for p in rehash if p not in fresh)
+    if unread:
+        where = f"under {base.as_posix()}" if base is not None else "(no source tree found)"
+        raise EditError(
+            f"cannot re-baseline {', '.join(unread)}: the file cannot be read {where}. "
+            f"A baseline records what the file holds now, so there is nothing to record."
+        )
+
+    changes: list[Change] = []
+    for path in sorted(wanted & fresh.keys()):
+        before, after = recorded.get(path), fresh[path]
+        if before == after:
+            continue
+        conn.execute(
+            "INSERT INTO source (path, sha) VALUES (?, ?)"
+            " ON CONFLICT (path) DO UPDATE SET sha = excluded.sha",
+            (path, after),
+        )
+        action = "created" if before is None else "updated"
+        changes.append(Change("source", path, action, {"sha": (before, after)}))
+    return changes
+
+
 # --------------------------------------------------------------------------- #
 # kg_upsert_node
 # --------------------------------------------------------------------------- #
@@ -384,6 +438,13 @@ def _parse_references(raw: object, node_id: str) -> list[Reference]:
         return [Reference.parse(item) for item in raw]
     except ReferenceFormatError as exc:
         raise EditError(f"node '{node_id}': {exc}") from exc
+
+
+def _rebaseline_flag(patch: Mapping[str, Any], node_id: str) -> bool:
+    value = patch.get("rebaseline", False)
+    if not isinstance(value, bool):
+        raise EditError(f"node '{node_id}': `rebaseline` must be true or false, not {value!r}")
+    return value
 
 
 def _merge(current: Node | None, patch: Mapping[str, Any]) -> Node:
@@ -538,6 +599,8 @@ def upsert_node(path: str | Path, nodes: Iterable[Mapping[str, Any]]) -> dict[st
             f"the same node appears twice in one call: {', '.join(duplicated)}. "
             f"Merge them -- the second would silently win."
         )
+    rebaseline = {node_id: _rebaseline_flag(p, node_id) for node_id, p in zip(ids, patches)}
+    graph_dir = Path(path).resolve().parent
 
     def mutate(conn: sqlite3.Connection) -> list[Change]:
         changes: list[Change] = []
@@ -566,6 +629,10 @@ def upsert_node(path: str | Path, nodes: Iterable[Mapping[str, Any]]) -> dict[st
                 if dst == merged.id:
                     raise EditError(f"node '{merged.id}' cannot have an edge to itself")
             changes += _write_edges(conn, current, merged)
+        written = [merged for _, merged in staged]
+        rehash = {a.path for n in written if rebaseline[n.id] for a in n.anchors}
+        changes += _prune_sources(conn)
+        changes += _stamp_sources(conn, graph_dir, written, rehash)
         return changes
 
     return apply(path, mutate)
@@ -630,6 +697,14 @@ def _impact(conn: sqlite3.Connection, ids: list[str]) -> dict[str, Any]:
                 args,
             )
         ]
+    baselines = [
+        r["path"]
+        for r in conn.execute(
+            "SELECT path FROM source WHERE path NOT IN"
+            f" (SELECT path FROM anchor WHERE node_id NOT IN ({marks})) ORDER BY path",
+            args,
+        )
+    ]
     counterparts = [
         f"{r['id']} -> {r['counterpart']}"
         for r in conn.execute(
@@ -646,6 +721,7 @@ def _impact(conn: sqlite3.Connection, ids: list[str]) -> dict[str, Any]:
         "inbound_edges": inbound,
         "external_links": outgoing_links,
         "references": cited,
+        "baselines": baselines,
         "counterparts": counterparts,
     }
 
@@ -669,13 +745,14 @@ def _preview(path: Path, ids: list[str]) -> dict[str, Any]:
 
 def _impact_notes(impact: Mapping[str, Any]) -> list[str]:
     notes: list[str] = []
-    cascading = ("anchors", "outbound_edges", "external_links", "references")
+    cascading = ("anchors", "outbound_edges", "external_links", "references", "baselines")
     if any(impact[k] for k in cascading):
         notes.append(
             f"cascades: {len(impact['anchors'])} anchor(s), "
             f"{len(impact['outbound_edges'])} outbound edge(s), "
             f"{len(impact['external_links'])} external link(s), "
-            f"{len(impact['references'])} reference(s) go with the node(s)"
+            f"{len(impact['references'])} reference(s), "
+            f"{len(impact['baselines'])} file baseline(s) go with the node(s)"
         )
     if impact["inbound_edges"]:
         notes.append(
@@ -765,6 +842,7 @@ def delete_node(
                        "references": (impact["references"], []),
                    })
         )
+        changes += _prune_sources(conn)
         return changes
 
     out = apply(path, mutate)
