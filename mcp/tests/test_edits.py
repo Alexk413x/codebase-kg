@@ -15,11 +15,11 @@ from pathlib import Path
 
 import pytest
 
-from codebase_kg import edits
+from codebase_kg import edits, tools
 from codebase_kg.links import ExternalLink
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.store import CodeGraph
-from codebase_kg.writer import build
+from codebase_kg.writer import build, file_sha
 
 
 def _sha(p: Path) -> str:
@@ -351,6 +351,123 @@ def test_a_link_can_be_added_to_a_graph_written_before_the_table_existed(
     assert edits.add_link(db, "a", "peer.db#x", "implements")["written"] is True
     a = _node(db, "a")
     assert a is not None and a.links == [ExternalLink(target="peer.db#x", kind="implements")]
+
+
+# --- source baselines ----------------------------------------------------------
+def _sources(db: Path) -> dict[str, str]:
+    g = CodeGraph(db)
+    try:
+        return g.sources()
+    finally:
+        g.close()
+
+
+def _changed_nodes(db: Path) -> set[str]:
+    g = CodeGraph(db)
+    try:
+        report = tools.kg_validate(g)
+    finally:
+        g.close()
+    return {c["node"] for c in report["changed_since_built"]["anchors"]}
+
+
+def _drift(db: Path, name: str) -> None:
+    src = db.parent.parent / "src" / name
+    src.write_text(src.read_text(encoding="utf-8") + "// rewritten\n", encoding="utf-8")
+
+
+def _source_changes(result: dict[str, object]) -> dict[str, str]:
+    changes = result["changes"]
+    assert isinstance(changes, list)
+    return {c["key"]: c["action"] for c in changes if c["table"] == "source"}
+
+
+def test_an_upsert_without_rebaseline_leaves_a_drifted_baseline_alone(graph: Path) -> None:
+    before = _sources(graph)
+    _drift(graph, "A.kt")
+    result = edits.upsert_node(graph, [{"id": "a", "description": "Does the A thing, revised."}])
+    assert result["written"] is True
+    assert _source_changes(result) == {}
+    assert _sources(graph)["A.kt"] == before["A.kt"]
+    assert _changed_nodes(graph) == {"a"}
+
+
+def test_rebaseline_clears_changed_since_built(graph: Path) -> None:
+    _drift(graph, "A.kt")
+    result = edits.upsert_node(
+        graph, [{"id": "a", "description": "Does the A thing, rechecked.", "rebaseline": True}]
+    )
+    assert _source_changes(result) == {"A.kt": "updated"}
+    assert _sources(graph)["A.kt"] == file_sha(graph.parent.parent / "src" / "A.kt")
+    assert _changed_nodes(graph) == set()
+
+
+def test_rebaseline_alone_is_enough_to_write(graph: Path) -> None:
+    _drift(graph, "A.kt")
+    result = edits.upsert_node(graph, [{"id": "a", "rebaseline": True}])
+    assert result["written"] is True
+    assert _changed_nodes(graph) == set()
+
+
+def test_rebaseline_on_an_unchanged_file_writes_nothing(graph: Path) -> None:
+    before = _sha(graph)
+    result = edits.upsert_node(graph, [{"id": "a", "rebaseline": True}])
+    assert result["written"] is False
+    assert _sha(graph) == before
+
+
+def test_rebaselining_a_shared_file_clears_it_for_every_node_on_it(graph: Path) -> None:
+    edits.upsert_node(graph, [{"id": "c", "kind": "K", "description": "C.", "anchors": ["A.kt#A"]}])
+    _drift(graph, "A.kt")
+    assert _changed_nodes(graph) == {"a", "c"}
+    edits.upsert_node(graph, [{"id": "a", "rebaseline": True}])
+    assert _changed_nodes(graph) == set()
+
+
+def test_a_new_anchor_path_gets_a_baseline(graph: Path) -> None:
+    c_kt = graph.parent.parent / "src" / "C.kt"
+    c_kt.write_text("class C\n", encoding="utf-8")
+    result = edits.upsert_node(graph, [{"id": "a", "anchors": ["A.kt#A", "C.kt#C"]}])
+    assert _source_changes(result) == {"C.kt": "created"}
+    assert _sources(graph)["C.kt"] == file_sha(c_kt)
+
+
+def test_a_path_nothing_anchors_any_more_loses_its_baseline(graph: Path) -> None:
+    result = edits.upsert_node(graph, [{"id": "b", "anchors": ["A.kt#A"]}])
+    assert _source_changes(result) == {"B.kt": "deleted"}
+    assert "B.kt" not in _sources(graph)
+
+
+def test_a_path_another_node_still_anchors_keeps_its_baseline(graph: Path) -> None:
+    edits.upsert_node(graph, [{"id": "c", "kind": "K", "description": "C.", "anchors": ["B.kt#B"]}])
+    before = _sources(graph)["B.kt"]
+    result = edits.upsert_node(graph, [{"id": "b", "anchors": ["A.kt#A"]}])
+    assert _source_changes(result) == {}
+    assert _sources(graph)["B.kt"] == before
+
+
+def test_a_delete_drops_the_baseline_of_a_file_it_orphans(graph: Path) -> None:
+    preview = edits.delete_node(graph, ["b"])
+    assert preview["would_delete"]["baselines"] == ["B.kt"]
+    result = edits.delete_node(graph, ["b"], dry_run=False, cascade_inbound=True)
+    assert _source_changes(result) == {"B.kt": "deleted"}
+    assert _sources(graph) == {"A.kt": file_sha(graph.parent.parent / "src" / "A.kt")}
+
+
+@pytest.mark.parametrize("value", ["true", 1, None, "yes"])
+def test_a_rebaseline_that_is_not_a_boolean_is_refused(graph: Path, value: object) -> None:
+    before = _sha(graph)
+    with pytest.raises(edits.EditError, match="`rebaseline` must be true or false"):
+        edits.upsert_node(graph, [{"id": "a", "description": "Revised.", "rebaseline": value}])
+    assert _sha(graph) == before
+
+
+def test_rebaselining_a_file_that_cannot_be_read_is_refused(graph: Path) -> None:
+    (graph.parent.parent / "src" / "A.kt").unlink()
+    before = _sha(graph)
+    with pytest.raises(edits.EditError, match="cannot re-baseline A.kt"):
+        edits.upsert_node(graph, [{"id": "a", "rebaseline": True}])
+    assert _sha(graph) == before
 
 
 # --- the report --------------------------------------------------------------

@@ -211,8 +211,8 @@ CREATE TABLE anchor (
 -- Keyed by path rather than carried on `anchor`, because the digest is a fact
 -- about the *file*: on the RPN calculator 142 anchors span 91 files, so storing
 -- it per anchor would repeat 64 bytes 51 times for nothing. Not authored by
--- hand either — `build.py` computes it from source, since a typed hash would be
--- worse than no hash at all.
+-- hand either — `build.py` and a `rebaseline` upsert compute it from source,
+-- since a typed hash would be worse than no hash at all.
 CREATE TABLE source (
     path TEXT PRIMARY KEY,
     sha  TEXT NOT NULL,

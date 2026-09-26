@@ -2,6 +2,40 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.8.2] — 2026-09-26 — an upsert can clear verified drift
+
+### Fixed — `kg_upsert_node` could not clear staleness (#25)
+
+`kg_upsert_node` wrote the `node` and `anchor` tables but never `source`, which
+holds each anchored file's baseline SHA-256. Only a build wrote it. An agent
+that re-read a drifted node and upserted it left the file in
+`changed_since_built` and in the pre-push backlog. In one repo an agent verified
+10 drifted nodes and upserted them, and still could not push. The only exits
+were an export, edit and build round trip with those paths deleted from
+`sources`, or skipping the gate with `KG_STALE_ACK`. A new anchor path added by
+an upsert also got no baseline, where a build gives it one.
+
+An upsert now keeps `source` in step with the anchors, in the same transaction
+as the node:
+
+- Each file an upserted node anchors that has no baseline gets one, hashed the
+  way a build hashes it. A file that cannot be read gets no row.
+- A node with `"rebaseline": true` has every file it anchors re-hashed. That is
+  the per-node form of `build --rebaseline`: it states you checked the node
+  against its source. Without it, a recorded baseline never changes, so a
+  description edit alone cannot hide drift. The flag must be a boolean, and a
+  re-baseline of a file that cannot be read is refused.
+- The baseline belongs to the file, so re-baselining a file clears it for every
+  node anchored there. The tool description says so: set the flag only after
+  checking every node on those files.
+- A file no node anchors any more loses its baseline, after an upsert and after
+  `kg_delete_node`. The delete preview lists these under `baselines`.
+
+The result lists each `source` row it created, re-hashed or dropped. The refresh
+skill now tells an agent to upsert each verified node with `"rebaseline": true`
+instead of a round trip or `KG_STALE_ACK`, and keeps the warning that
+re-baselining without reading is dishonest.
+
 ## [0.8.1] — 2026-09-25 — a session survives a crashed shared server
 
 ### Fixed — a crashed shared server took codebase-kg away from every session

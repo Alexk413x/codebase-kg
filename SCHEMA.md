@@ -212,7 +212,10 @@ Keyed by path rather than carried on `anchor`, because the digest is a fact abou
 RPN calculator 142 anchors span 91 files, so per-anchor storage would repeat 64 bytes 51 times for
 nothing.
 
-Never authored by hand — `build.py` computes it from source. A typed hash would be worse than none.
+Never authored by hand — `build.py` and `kg_upsert_node` compute it from source, through the same
+helper. A typed hash would be worse than none. A build gives a baseline to every anchored file
+that has none, and an upsert does the same for the files its nodes anchor. Both drop the row of a
+file no node anchors any more, and so does `kg_delete_node`.
 
 Two rules keep the signal honest:
 
@@ -220,8 +223,11 @@ Two rules keep the signal honest:
   true. Folding it into `ok` would fail every graph the moment anyone edited a covered file — the
   same false-alarm problem as the date-based gate this replaced.
 - **A rebuild does not re-bless what nobody re-read.** Baselines already on record survive
-  export → edit → build, so a node the author never looked at keeps flagging. Re-baselining is
-  `--rebaseline`, an explicit claim that the descriptions were re-checked.
+  export → edit → build, and an upsert leaves them alone, so a node the author never looked at
+  keeps flagging. Re-baselining is an explicit claim that the descriptions were re-checked:
+  `--rebaseline` for the whole graph, or `"rebaseline": true` on one node in `kg_upsert_node`,
+  which re-hashes the files that node anchors. The row belongs to the file, so either one clears
+  the file for every node anchored to it.
 
 A graph built with no source tree in reach simply has no rows here, reported as `unhashed` — which
 reads as "no baseline", never as "nothing changed".

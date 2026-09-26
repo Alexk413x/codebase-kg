@@ -348,9 +348,20 @@ def kg_upsert_node(nodes: list[dict[str, Any]]) -> dict[str, Any]:
     - `references`: `[{"url": "https://...", "kind": "platform-api", "title": "TouchDelegate",
       "path": "path/to/File.kt", "symbol": "Symbol"}]`. `path`/`symbol` are optional
       and must equal one of this node's anchors.
+    - `rebaseline`: `true` records that you checked this node against its source
+      now. It re-hashes every file the node anchors, so those files leave
+      `changed_since_built` and the pre-push backlog. The baseline belongs to the
+      file, not the node: it clears every node anchored to that file, the same as
+      `build --rebaseline`. Set it only after you have checked every node that
+      anchors those files. Without it, a recorded baseline never changes, so a
+      description edit alone cannot hide drift.
+
+    Baselines follow the anchors as a build's do: a file this node anchors that
+    has no baseline gets one, and a file no node anchors any more loses its own.
 
     Atomic: if any node in the batch is rejected, nothing is written and the file
-    is byte-identical. Returns every row and field it changed, before and after.
+    is byte-identical. Returns every row and field it changed, before and after,
+    including each `source` row (file baseline) it created, re-hashed or dropped.
     """
     return _write(_edits.upsert_node, nodes)
 
@@ -360,7 +371,8 @@ def kg_delete_node(ids: list[str], dry_run: bool = True, cascade_inbound: bool =
     """Delete node(s). **Previews by default** — call with `dry_run=false` to apply.
 
     A node does not leave alone: its anchors, its outbound edges and its external
-    links cascade away with it. Edges pointing *at* it do not — `ON DELETE
+    links cascade away with it, and so does the baseline of any file no remaining
+    node anchors. Edges pointing *at* it do not — `ON DELETE
     RESTRICT` blocks the delete instead, so a relationship is never dropped by
     accident. Pass `cascade_inbound=true` to remove those edges as part of the
     same atomic call, having seen them in the dry run.

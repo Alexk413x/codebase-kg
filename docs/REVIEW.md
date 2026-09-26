@@ -90,8 +90,8 @@ Expect to see, in review:
 - `anchors` / `edges` changes — structure moved
 - `sources` entries changing — the file behind a node was re-read and
   re-baselined. A `sources` change *without* a description change means someone
-  ran `--rebaseline`, which asserts "I checked these" — worth a question if the
-  diff shows nothing else.
+  ran `--rebaseline`, or upserted a node with `"rebaseline": true`. Both assert
+  "I checked these" — worth a question if the diff shows nothing else.
 - `generated` — always changes on a real refresh
 
 ### A diff from a write tool
