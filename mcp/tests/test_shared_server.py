@@ -34,7 +34,7 @@ from codebase_kg.writer import build
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 SHIM = SRC / "codebase_kg" / "shim.py"
-VERSION = shim.package_version()
+BUILD = shim.server_build()
 TIMEOUT = 30.0
 
 needs_uv = pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
@@ -71,6 +71,7 @@ class Client:
         self._write = write
         self._lines: queue.Queue[bytes] = queue.Queue()
         self._next_id = 0
+        self.seen: list[dict[str, Any]] = []
         threading.Thread(target=self._pump, args=(read,), daemon=True).start()
 
     def _pump(self, read: IO[bytes]) -> None:
@@ -88,7 +89,8 @@ class Client:
     def recv(self) -> dict[str, Any]:
         line = self._lines.get(timeout=TIMEOUT)
         assert line, "stream closed"
-        return json.loads(line)
+        self.seen.append(json.loads(line))
+        return self.seen[-1]
 
     def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         self._next_id += 1
@@ -137,7 +139,7 @@ def _start_daemon(cache: Path, cwd: Path, env_extra: dict[str, str]) -> subproce
 
 def _wait_for_state(cache: Path) -> dict[str, Any]:
     deadline = time.monotonic() + TIMEOUT
-    state_file = cache / f"server-{VERSION}.json"
+    state_file = cache / f"server-{BUILD}.json"
     while time.monotonic() < deadline:
         try:
             return json.loads(state_file.read_text(encoding="utf-8"))
@@ -193,7 +195,7 @@ def connect(daemon: dict[str, Any]) -> Iterator[Any]:
 
     def _connect(cwd: Path, graph_path: Path | None = None) -> Client:
         sock, f, reply = _raw(daemon, {
-            "token": daemon["token"], "version": VERSION, "cwd": str(cwd),
+            "token": daemon["token"], "version": BUILD, "cwd": str(cwd),
             "graph_path": str(graph_path) if graph_path else None,
         })
         assert reply["ok"] is True, reply
@@ -297,7 +299,7 @@ def test_the_local_override_is_read_from_the_connections_cwd(
 
 def test_a_bad_token_is_rejected(daemon: dict[str, Any], tmp_path: Path) -> None:
     sock, f, reply = _raw(daemon, {
-        "token": "0" * 64, "version": VERSION, "cwd": str(tmp_path), "graph_path": None,
+        "token": "0" * 64, "version": BUILD, "cwd": str(tmp_path), "graph_path": None,
     })
     try:
         assert reply == {"ok": False, "error": "bad token"}
@@ -339,7 +341,7 @@ def test_idle_exit_removes_the_state_file(tmp_path: Path) -> None:
         state = _wait_for_state(cache)
         repo = _repo(tmp_path / "alpha", "alpha")
         sock, f, reply = _raw(state, {
-            "token": state["token"], "version": VERSION, "cwd": str(repo), "graph_path": None,
+            "token": state["token"], "version": BUILD, "cwd": str(repo), "graph_path": None,
         })
         assert reply["ok"] is True
         client = Client(f, f)
@@ -349,7 +351,7 @@ def test_idle_exit_removes_the_state_file(tmp_path: Path) -> None:
         assert _node_ids(client) == {"alpha_widget"}
         _hang_up(sock)
         proc.wait(timeout=TIMEOUT)
-        assert not (cache / f"server-{VERSION}.json").exists()
+        assert not (cache / f"server-{BUILD}.json").exists()
     finally:
         _stop(proc)
 
@@ -370,21 +372,29 @@ def _client(proc: subprocess.Popen[bytes]) -> Client:
     return Client(proc.stdin, proc.stdout)
 
 
-def _finish(proc: subprocess.Popen[bytes]) -> str:
-    """Close the session the way the host does, and return the shim's stderr."""
-    assert proc.stdin is not None and proc.stderr is not None
+def _close(proc: subprocess.Popen[bytes]) -> int:
+    assert proc.stdin is not None
     proc.stdin.close()
     try:
-        proc.wait(timeout=TIMEOUT)
+        return proc.wait(timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+        raise
+
+
+def _finish(proc: subprocess.Popen[bytes]) -> str:
+    assert proc.stderr is not None
+    try:
+        _close(proc)
+    except subprocess.TimeoutExpired:
+        pass
     return proc.stderr.read().decode("utf-8", "replace")
 
 
 def _kill_daemon(cache: Path) -> None:
     try:
-        pid = json.loads((cache / f"server-{VERSION}.json").read_text(encoding="utf-8"))["pid"]
+        pid = json.loads((cache / f"server-{BUILD}.json").read_text(encoding="utf-8"))["pid"]
     except (OSError, ValueError, KeyError):
         return
     try:
@@ -397,8 +407,8 @@ def test_the_shim_forwards_server_pushes_without_waiting_for_a_request(tmp_path:
     listener = socket.create_server(("127.0.0.1", 0))
     cache = tmp_path / "cache"
     cache.mkdir()
-    (cache / f"server-{VERSION}.json").write_text(json.dumps({
-        "version": VERSION, "port": listener.getsockname()[1], "pid": os.getpid(), "token": "t",
+    (cache / f"server-{BUILD}.json").write_text(json.dumps({
+        "version": BUILD, "port": listener.getsockname()[1], "pid": os.getpid(), "token": "t",
     }), encoding="utf-8")
     hello: dict[str, Any] = {}
     push = {"jsonrpc": "2.0", "method": "notifications/message", "params": {"data": "yours"}}
@@ -483,7 +493,7 @@ def test_shims_started_at_once_spawn_exactly_one_daemon(
     connected = [line for log in logs for line in log.splitlines()
                  if "connected to the shared server" in line]
     assert connected == [f"codebase-kg: connected to the shared server (pid {state['pid']})"] * 4, logs
-    assert (shim_cache / f"server-{VERSION}.log").read_text(
+    assert (shim_cache / f"server-{BUILD}.log").read_text(
         encoding="utf-8", errors="replace").count("serving codebase-kg") == 1
 
 
@@ -527,3 +537,296 @@ def test_mcp_json_launches_the_platform_shim():
         assert "mcp" in launcher and "shim.py" in launcher
     assert posix.startswith("#!/bin/sh")
     assert "py -3" in windows and "\r\n" in windows
+
+
+# --- run as a file, the shim's own folder must not shadow the stdlib ----------
+def test_no_module_in_the_package_folder_shares_a_stdlib_name() -> None:
+    clashes = [p.name for p in SHIM.parent.glob("*.py") if p.stem in sys.stdlib_module_names]
+    assert clashes == []
+
+
+def test_the_shim_run_as_a_file_skips_its_own_folder_on_sys_path(tmp_path: Path) -> None:
+    folder = tmp_path / "mcp" / "src" / "codebase_kg"
+    folder.mkdir(parents=True)
+    shutil.copy(SHIM, folder / "shim.py")
+    (folder / "selectors.py").write_text('raise ImportError("shadowed the stdlib")\n',
+                                         encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    env["CODEBASE_KG_SHARED"] = "0"
+    done = subprocess.run(
+        [shutil.which("python3") or sys.executable, str(folder / "shim.py")], cwd=tmp_path,
+        env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=TIMEOUT,
+    )
+    assert b"shadowed the stdlib" not in done.stderr, done.stderr.decode("utf-8", "replace")
+
+
+# --- a build is the version plus the code --------------------------------------
+def test_the_build_changes_when_a_source_file_changes(tmp_path: Path) -> None:
+    package = tmp_path / "codebase_kg"
+    shutil.copytree(SHIM.parent, package, ignore=shutil.ignore_patterns("__pycache__"))
+    before = shim.server_build(package)
+    assert before.startswith(f"{shim.package_version()}+")
+    assert shim.server_build(package) == before
+    source = package / "tools.py"
+    stat = source.stat()
+    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    touched = shim.server_build(package)
+    assert touched != before
+    source.write_bytes(source.read_bytes() + b"\n")
+    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert shim.server_build(package) not in {before, touched}
+
+
+def test_a_shim_of_another_build_does_not_reuse_a_running_daemon(
+    daemon: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = f"{shim.package_version()}+{'0' * 12}"
+    assert other != BUILD
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(daemon["cache"]))
+    planted = shim.state_path(other)
+    planted.write_text(json.dumps({**{k: daemon[k] for k in ("port", "pid", "token")},
+                                   "version": other}), encoding="utf-8")
+    spawned: list[str] = []
+
+    class Exited:
+        def poll(self) -> int:
+            return 1
+
+    def spawn(build: str) -> Exited:
+        spawned.append(build)
+        return Exited()
+
+    monkeypatch.setattr(shim, "spawn_server", spawn)
+    hello = {"version": other, "cwd": str(tmp_path), "graph_path": None}
+    try:
+        assert shim.shared_connection(other, hello, budget=5) is None
+    finally:
+        planted.unlink()
+    assert spawned == [other]
+
+
+
+# --- the session survives a lost server ---------------------------------------
+INITIALIZE = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+    "protocolVersion": "2025-06-18", "capabilities": {},
+    "clientInfo": {"name": "pytest", "version": "0"},
+}}
+INITIALIZED = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+
+
+def _call(request_id: int) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "method": "tools/call",
+            "params": {"name": "kg_stats", "arguments": {}}}
+
+
+def _result(request_id: int, **result: Any) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
+def _initialize_results(client: Client) -> list[dict[str, Any]]:
+    return [m for m in client.seen if "serverInfo" in (m.get("result") or {})]
+
+
+class _Stderr:
+    def __init__(self, proc: subprocess.Popen[bytes]) -> None:
+        assert proc.stderr is not None
+        self._lines: list[str] = []
+        self._cond = threading.Condition()
+        threading.Thread(target=self._pump, args=(proc.stderr,), daemon=True).start()
+
+    def _pump(self, stream: IO[bytes]) -> None:
+        for raw in iter(stream.readline, b""):
+            with self._cond:
+                self._lines.append(raw.decode("utf-8", "replace"))
+                self._cond.notify_all()
+
+    def wait_for(self, text: str) -> None:
+        with self._cond:
+            found = self._cond.wait_for(lambda: any(text in s for s in self._lines), TIMEOUT)
+        assert found, f"never saw {text!r} in:\n{self.text()}"
+
+    def text(self) -> str:
+        with self._cond:
+            return "".join(self._lines)
+
+
+class _FakeServer:
+    def __init__(self, cache: Path) -> None:
+        self.listener = socket.create_server(("127.0.0.1", 0))
+        self.listener.settimeout(TIMEOUT)
+        cache.mkdir(parents=True, exist_ok=True)
+        (cache / f"server-{BUILD}.json").write_text(json.dumps({
+            "version": BUILD, "port": self.listener.getsockname()[1], "pid": os.getpid(),
+            "token": "t",
+        }), encoding="utf-8")
+        self.opened: list[socket.socket] = []
+
+    def accept(self) -> tuple[socket.socket, Any]:
+        conn, _ = self.listener.accept()
+        conn.settimeout(TIMEOUT)
+        self.opened.append(conn)
+        f = conn.makefile("rwb")
+        assert json.loads(f.readline())["token"] == "t"
+        return conn, f
+
+    def close(self) -> None:
+        for conn in self.opened:
+            _hang_up(conn)
+        self.listener.close()
+
+    def end(self, proc: subprocess.Popen[bytes]) -> None:
+        assert proc.stdin is not None
+        # Stdin closes first: a hang-up while stdin is open would make the shim reconnect.
+        proc.stdin.close()
+        self.close()
+        assert proc.wait(timeout=TIMEOUT) == 0
+
+
+def _put(f: Any, obj: dict[str, Any]) -> None:
+    f.write(json.dumps(obj).encode("utf-8") + b"\n")
+    f.flush()
+
+
+def _get(f: Any) -> dict[str, Any]:
+    line = f.readline()
+    assert line, "the shim closed the connection"
+    return json.loads(line)
+
+
+def _set_up(fake: _FakeServer, client: Client) -> tuple[socket.socket, Any]:
+    conn, f = fake.accept()
+    _put(f, {"ok": True, "pid": 1})
+    client.send(INITIALIZE)
+    assert _get(f) == INITIALIZE
+    _put(f, _result(1, serverInfo={"name": "fake", "version": "0"}))
+    assert client.recv()["id"] == 1
+    client.send(INITIALIZED)
+    assert _get(f) == INITIALIZED
+    return conn, f
+
+
+def test_a_request_in_flight_when_the_server_dies_gets_an_error(tmp_path: Path) -> None:
+    fake = _FakeServer(tmp_path / "cache")
+    proc = _shim(tmp_path, tmp_path / "cache")
+    try:
+        client = _client(proc)
+        conn, f = _set_up(fake, client)
+        client.send(_call(2))
+        assert _get(f)["id"] == 2
+        _hang_up(conn)
+        error = client.recv()
+        assert error["id"] == 2
+        assert "restarted" in error["error"]["message"] and "retry" in error["error"]["message"]
+
+        _, f2 = fake.accept()
+        _put(f2, {"ok": True, "pid": 2})
+        assert _get(f2) == INITIALIZE
+        _put(f2, _result(1, serverInfo={"name": "fake", "version": "1"}))
+        assert _get(f2) == INITIALIZED
+        client.send(_call(3))
+        assert _get(f2)["id"] == 3
+        _put(f2, _result(3, content=[]))
+        assert client.recv() == _result(3, content=[])
+        assert len(_initialize_results(client)) == 1
+    finally:
+        fake.end(proc)
+
+
+def test_messages_sent_while_reconnecting_arrive_after_the_replay(tmp_path: Path) -> None:
+    fake = _FakeServer(tmp_path / "cache")
+    proc = _shim(tmp_path, tmp_path / "cache")
+    try:
+        client = _client(proc)
+        conn, _ = _set_up(fake, client)
+        _hang_up(conn)
+        _, f2 = fake.accept()
+        client.send(_call(2))
+        client.send({"jsonrpc": "2.0", "method": "notifications/roots/list_changed"})
+        client.send(_call(3))
+        # Give the shim time to read these while it waits on the handshake, so they queue.
+        time.sleep(0.5)
+        _put(f2, {"ok": True, "pid": 2})
+        assert _get(f2) == INITIALIZE
+        _put(f2, _result(1, serverInfo={"name": "fake", "version": "1"}))
+        assert [_get(f2) for _ in range(4)] == [
+            INITIALIZED, _call(2), {"jsonrpc": "2.0", "method": "notifications/roots/list_changed"},
+            _call(3),
+        ]
+        _put(f2, _result(2, content=[]))
+        _put(f2, _result(3, content=[]))
+        assert [client.recv(), client.recv()] == [_result(2, content=[]), _result(3, content=[])]
+        assert len(_initialize_results(client)) == 1
+    finally:
+        fake.end(proc)
+
+
+def test_stdin_eof_ends_the_shim_without_reconnecting(tmp_path: Path) -> None:
+    fake = _FakeServer(tmp_path / "cache")
+    proc = _shim(tmp_path, tmp_path / "cache")
+    stderr = _Stderr(proc)
+    try:
+        client = _client(proc)
+        conn, f = _set_up(fake, client)
+        client.send(_call(2))
+        assert _get(f)["id"] == 2
+        assert proc.stdin is not None
+        proc.stdin.close()
+        assert f.readline() == b""
+        _hang_up(conn)
+        assert proc.wait(timeout=TIMEOUT) == 0
+        fake.listener.settimeout(1.0)
+        with pytest.raises(TimeoutError):
+            fake.listener.accept()
+        assert "reconnecting" not in stderr.text()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        fake.close()
+
+
+@needs_uv
+def test_the_session_survives_a_daemon_crash(tmp_path: Path, shim_cache: Path) -> None:
+    repo = _repo(tmp_path / "alpha", "alpha")
+    proc = _shim(repo, shim_cache)
+    stderr = _Stderr(proc)
+    try:
+        client = _client(proc)
+        client.initialize()
+        assert _node_ids(client) == {"alpha_widget"}
+        old = _wait_for_state(shim_cache)["pid"]
+        os.kill(old, signal.SIGTERM)
+        stderr.wait_for("reconnecting")
+        assert _node_ids(client) == {"alpha_widget"}
+        new = _wait_for_state(shim_cache)["pid"]
+        assert new != old and shim.pid_alive(new)
+        stderr.wait_for(f"reconnected to the shared server (pid {new})")
+        assert len(_initialize_results(client)) == 1
+    finally:
+        _close(proc)
+
+
+@needs_uv
+def test_the_session_moves_to_a_private_server_when_no_daemon_comes_back(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path / "alpha", "alpha")
+    cache = tmp_path / "cache"
+    server_proc = _start_daemon(cache, tmp_path, {"CODEBASE_KG_IDLE_TIMEOUT": "60"})
+    try:
+        _wait_for_state(cache)
+        proc = _shim(repo, cache)
+        stderr = _Stderr(proc)
+        try:
+            client = _client(proc)
+            client.initialize()
+            assert _node_ids(client) == {"alpha_widget"}
+            cache.rename(tmp_path / "cache-gone")
+            cache.write_text("a file where the cache directory should be", encoding="utf-8")
+            _stop(server_proc)
+            stderr.wait_for("running a private one")
+            assert _node_ids(client) == {"alpha_widget"}
+            assert len(_initialize_results(client)) == 1
+        finally:
+            _close(proc)
+    finally:
+        _stop(server_proc)

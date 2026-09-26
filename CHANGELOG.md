@@ -2,7 +2,52 @@
 
 All notable changes to the `codebase-kg` plugin.
 
-## [Unreleased] — the search gate no longer makes an agent circle
+## [0.8.1] — 2026-09-25 — a session survives a crashed shared server
+
+### Fixed — a crashed shared server took codebase-kg away from every session
+
+The shim relayed bytes until the shared server's socket closed, and then it
+exited. One crash of the shared server therefore cost every connected Claude
+Code session its codebase-kg tools, and each session got them back only after a
+manual `/mcp` reconnect or a restart.
+
+The shim now carries the session across a lost server. It parses the JSON-RPC
+it relays, only to track state, and still passes each line through unchanged.
+It records the session's `initialize` request and `notifications/initialized`,
+and which requests still await a response. When the server hangs up while the
+session is still open, the shim:
+
+- answers each request in flight with a JSON-RPC error that carries its id and
+  says to retry the call, so no call hangs;
+- reconnects the way it first connected, starting a new server if none answers,
+  with three attempts and a backoff;
+- replays `initialize` and `notifications/initialized` to the new server, and
+  drops the new server's `initialize` result, so the session never sees a second
+  one;
+- sends whatever the session wrote during the reconnect, then resumes.
+
+If no shared server comes back, the rest of the session runs on a private
+server, with the same replay. When the session closes its stdin, the shim exits
+as before and never reconnects. The server log now appends, so a respawned
+server keeps the log of the one that crashed.
+
+### Fixed — a dev checkout and an installed copy shared one server
+
+The state file and the handshake keyed on the plugin version alone. A dev
+checkout loaded with `--plugin-dir` and an installed copy at the same version,
+or a working tree edited without a version bump, shared one server, which ran
+whichever copy's code started first. The server identity is now the version plus
+a short digest of the path, size and mtime of every `*.py` in the server
+package. It names the state, lock and log files, and the server refuses a
+handshake from any other build, so different code never shares a server.
+
+### Fixed — a module could shadow the standard library under the shim
+
+Run as a file, the shim put its own package folder first on `sys.path`, so a
+module there that shared a stdlib name would have replaced the stdlib module.
+Cartographer lost its shim this way to a `selectors.py` that broke `socket`. The
+shim now drops that folder from `sys.path` before any other import, and a test
+fails if a module in the package shares a stdlib name.
 
 ### Fixed — the gate denied searches it should have let through, and the retry rarely worked
 
