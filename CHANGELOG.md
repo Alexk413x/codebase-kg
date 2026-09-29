@@ -2,6 +2,26 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.10.0] — 2026-09-28 — retire the kg_stats CLI field
+
+### Removed
+
+- `kg_stats` no longer returns `cli`, and the helpers behind it are gone. The
+  skills run the CLIs through `mcp/launch/kg_cli.py` since 0.9.0, and each
+  plugin build runs its own server, so no shipped skill reads the field. The
+  `codebase-kg-build`, `-export` and `-migrate` console scripts stay: every
+  consumer repo's textconv driver runs `codebase-kg-export`.
+- The search gate no longer reads the one-key `denied` state that versions
+  before 0.8.1 wrote. A session that began before 0.8.1 and is resumed now can
+  be denied once more for a search it had already repeated.
+
+### Changed
+
+- The eval suite's mocked tools carry the server's real `tools/list`
+  (`evals/mocks/codebase-kg/_tools.json`), and the no-graph case answers with
+  the server's real missing-graph error. A test keeps the saved list equal to
+  the server's.
+
 ## [0.9.0] — 2026-09-28 — tooling for current Claude Code, and no top-level bin/
 
 ### Changed — the MCP launchers moved to `mcp/launch/`

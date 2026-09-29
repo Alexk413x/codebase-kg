@@ -916,15 +916,6 @@ def test_two_denials_in_a_row_do_not_evict_each_other(
     assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "b"}) is None
 
 
-def test_a_session_from_before_the_upgrade_keeps_its_escape_hatch(
-    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Older versions stored one key as a string."""
-    key = gate.search_key("Grep", {"pattern": "x"})
-    gate._state_path(repo, "s1").write_text(json.dumps({"denied": key}), encoding="utf-8")
-    assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "x"}) is None
-
-
 def test_the_denial_memory_is_bounded(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

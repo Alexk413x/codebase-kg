@@ -12,12 +12,8 @@ so cost tracks the size of the answer rather than the size of the graph.
 
 from __future__ import annotations
 
-import json
 import os
 import re
-from importlib import metadata
-from urllib.parse import urlparse
-from urllib.request import url2pathname
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -363,78 +359,6 @@ def kg_parity_gaps(
 # --------------------------------------------------------------------------- #
 # kg_stats
 # --------------------------------------------------------------------------- #
-def _installed_from() -> Path | None:
-    """The directory this package was installed from, per its own dist metadata.
-
-    A local install records its source in `direct_url.json` (PEP 610), which is
-    what `uvx --from <plugin>/mcp` produces. Nothing else survives that install:
-    the package lands in a venv's site-packages, so walking up from `__file__`
-    finds a lib directory, not the plugin.
-    """
-    try:
-        raw = metadata.distribution("codebase-kg").read_text("direct_url.json")
-        url = json.loads(raw or "").get("url", "")
-    except (metadata.PackageNotFoundError, OSError, ValueError, AttributeError):
-        return None
-    if not url.startswith("file:"):
-        return None  # installed from an index or a VCS — no local path to hand back
-    path = Path(url2pathname(urlparse(url).path))
-    return path if (path / "pyproject.toml").is_file() else None
-
-
-def _checkout_root() -> Path | None:
-    """The repo this package is being developed in, if that is where it lives."""
-    checkout = Path(__file__).resolve().parents[2]
-    return checkout if (checkout / "pyproject.toml").is_file() else None
-
-
-def package_root() -> Path | None:
-    """Where the CLIs can be run from, or None if only the console scripts can.
-
-    Three ways this package is reached, in order of how directly they answer:
-    the repo checkout it is being developed in, the directory it was installed
-    from, and the plugin root the host exported.
-    """
-    checkout = _checkout_root()
-    if checkout is not None:
-        return checkout
-    installed = _installed_from()
-    if installed is not None:
-        return installed
-    env = os.environ.get("CLAUDE_PLUGIN_ROOT")
-    if env:
-        candidate = Path(env) / "mcp"
-        if (candidate / "pyproject.toml").is_file():
-            return candidate
-    return None
-
-
-def cli_invocations() -> dict[str, str]:
-    """Ready-to-run commands for the build / export / migrate CLIs.
-
-    The skills used to instruct `python -m codebase_kg.build`, which works only
-    where the package is importable — not in a target repo that has the plugin
-    but no install, where it is a bare `ModuleNotFoundError`. A skill cannot
-    assemble the `uvx --from` form for itself either: `CLAUDE_PLUGIN_ROOT` is not
-    set in the shell a skill's Bash runs in, and the console scripts are not on
-    its PATH. The server knows where it was loaded from, so it answers rather
-    than the caller guessing.
-
-    Resolving only against the source checkout was the first attempt and was
-    wrong in the one configuration that ships: under `uvx --from`, `__file__` is
-    inside a venv, so it fell through to the bare console script — a command the
-    caller cannot run. `package_root` covers the installed case too.
-    """
-    root = package_root()
-    prefix = f'uvx --from "{root}" ' if root is not None else ""
-    return {
-        "package_root": str(root) if root is not None else "",
-        "build": f"{prefix}codebase-kg-build",
-        "export": f"{prefix}codebase-kg-export",
-        "migrate": f"{prefix}codebase-kg-migrate",
-    }
-
-
 def repo_staleness(graph: CodeGraph, repo_root: str | None = None) -> dict[str, Any]:
     """Repo-wide staleness: every anchored file, not just the ones in a change set.
 
@@ -463,9 +387,6 @@ def kg_stats(graph: CodeGraph, repo_root: str | None = None) -> dict[str, Any]:
     isolated = graph.isolated_ids(limit=20)
     isolated_total = graph.isolated_count()
     return {
-        # How to run the CLIs from THIS repo. Skills read this instead of
-        # hardcoding an invocation that only works inside the plugin's checkout.
-        "cli": cli_invocations(),
         "codebase": meta.codebase,
         "root": meta.root,
         "language": meta.language,

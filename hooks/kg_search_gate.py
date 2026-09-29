@@ -223,11 +223,7 @@ _DENIED_MEMORY = 16  # recent denials remembered, so parallel searches cannot ev
 
 
 def _denied_list(state: dict[str, object]) -> list[str]:
-    """Recently denied search keys. Reads the one-slot shape older versions
-    wrote, so a session that spans an upgrade keeps its escape hatch."""
     raw = state.get("denied")
-    if isinstance(raw, str):
-        return [raw]
     if isinstance(raw, list):
         return [k for k in raw if isinstance(k, str)]
     return []
