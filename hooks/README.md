@@ -101,7 +101,9 @@ Silent unless **all** of these hold:
 - inside a git work tree;
 - the graph (`graph_path`) exists;
 - a hooks dir with both vendored checkers exists (`core.hooksPath` if set, otherwise `.githooks/`);
-- `core.hooksPath` is unset, **or** `diff.codegraph.textconv` is unset.
+- `core.hooksPath` is unset, **or** `diff.codegraph.textconv` is unset, **or** the textconv pins a
+  codebase-kg release older than the installed plugin, **or** it names a codebase-kg folder that no
+  longer exists. The last two name `/codebase-kg:setup`, which restamps the pin.
 
 And never when `core.hooksPath` already points somewhere other than that dir — that repo made a
 deliberate choice, and nagging it toward clobbering its own config is worse than saying nothing.

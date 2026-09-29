@@ -17,7 +17,9 @@ Silent unless every one of these holds:
   - inside a git work tree
   - the graph (`graph_path`, default `knowledge/code_graph.db`) exists
   - a hooks dir with the vendored checkers exists
-  - `core.hooksPath` is unset, OR `diff.codegraph.textconv` is unset
+  - `core.hooksPath` is unset, OR `diff.codegraph.textconv` is unset, OR the
+    textconv pins a codebase-kg release older than this plugin, OR it names a
+    codebase-kg path that no longer exists
 and never when `core.hooksPath` already points somewhere else — that repo made a
 deliberate choice and does not need nagging toward clobbering its own config.
 """
@@ -26,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -35,6 +38,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _config import find_graph, load_config, project_dir  # noqa: E402
 
 DEFAULT_HOOKS_DIR = ".githooks"
+PLUGIN_MANIFEST = Path(__file__).resolve().parents[1] / ".claude-plugin" / "plugin.json"
+_PINNED_TAG = re.compile(r"codebase-kg--v(\d+(?:\.\d+)*)")
+_PLUGIN_PATH = re.compile(r"(?:[A-Za-z]:)?[/\\][^'\"\s;,)]*codebase-kg[^'\"\s;,)]*")
 # Both must be present: kg_pre_commit.py imports the coverage rules from
 # kg_pre_push.py beside it, so one without the other is not a wired repo.
 VENDORED = ("kg_pre_push.py", "kg_pre_commit.py")
@@ -78,6 +84,40 @@ def _hooks_dir(proj: Path, configured: str) -> Path | None:
     return cand if all((cand / name).is_file() for name in VENDORED) else None
 
 
+def _version(text: str) -> tuple[int, ...]:
+    return tuple(int(p) for p in re.findall(r"\d+", text)[:3])
+
+
+def plugin_version() -> str:
+    try:
+        return str(json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8")).get("version") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def _as_local_path(raw: str) -> Path:
+    """`/c/Users/...` is how Git Bash writes `C:/Users/...`."""
+    m = re.match(r"^/([A-Za-z])/(.*)$", raw)
+    if sys.platform == "win32" and m:
+        return Path(f"{m.group(1)}:/{m.group(2)}")
+    return Path(raw)
+
+
+def stale_pin(textconv: str, running: str) -> str | None:
+    """Why this textconv is out of date, or None when it is current or not ours."""
+    if "codebase-kg" not in textconv:
+        return None
+    tag = _PINNED_TAG.search(textconv)
+    if tag:
+        if running and _version(tag.group(1)) < _version(running):
+            return f"pins codebase-kg {tag.group(1)}, older than the installed {running}"
+        return None
+    for raw in _PLUGIN_PATH.findall(textconv):
+        if not _as_local_path(raw).exists():
+            return f"names {raw}, which no longer exists"
+    return None
+
+
 def advice(proj: Path) -> str | None:
     """The one line to print, or None to stay silent."""
     cfg = load_config(proj)
@@ -96,7 +136,13 @@ def advice(proj: Path) -> str | None:
 
     textconv = _git(proj, "config", "--get", "diff.codegraph.textconv")
     if configured and textconv:
-        return None  # already wired
+        why = stale_pin(textconv, plugin_version())
+        if why is None:
+            return None  # wired, and the driver is current
+        return (
+            f"codebase-kg: this clone's graph diff driver {why}, so git diff on "
+            f"{graph.name} may fail or show an old format. Run /codebase-kg:setup to update it."
+        )
 
     try:
         where = hooks.relative_to(proj).as_posix()

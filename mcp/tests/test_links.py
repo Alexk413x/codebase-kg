@@ -1,6 +1,6 @@
 """Cross-graph links — the portable mechanism, and this graph's use of it.
 
-`links.py` is a **copy**, byte-identical to cartographer's. The specification is
+`links.py` is a **copy** of cartographer's mechanism, not of its text. The specification is
 `docs/GRAPH-LINKS.md` in that repo. These tests are the local half of keeping the
 copies honest: the DDL below is quoted from the spec, so an edit to this repo's
 copy fails here rather than in whatever graph reads the file next.

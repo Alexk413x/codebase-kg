@@ -1,7 +1,9 @@
 """Cross-graph links -- one table and a handful of functions, copied not imported.
 
-**This file is a copy.** The same text lives in `cartographer` and in
-`android-driver`, and any future graph adopts the mechanism the same way: copy
+**This file is a copy of the mechanism, not of the text.** `cartographer` and
+`android-driver` keep their own copies, which differ. The shared contract is
+`EXTERNAL_LINK_DDL` and the `<db-file>#<node-id>` target format. Any future
+graph adopts the mechanism the same way: copy
 this module, splice `EXTERNAL_LINK_DDL` into that graph's DDL with the foreign
 key pointed at that graph's own entity table, done. The specification is
 `docs/GRAPH-LINKS.md` in the cartographer repo.

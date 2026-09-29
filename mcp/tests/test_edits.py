@@ -62,6 +62,23 @@ def _node(db: Path, node_id: str) -> Node | None:
         g.close()
 
 
+
+def test_a_write_reads_the_source_tree_once_for_both_validations(
+    graph: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The source does not change between the before and after checks, so the
+    walk and each anchored file's read and digest happen once per write."""
+    reads: list[Path] = []
+    walks: list[Path] = []
+    read, walk = tools._read_source, tools.walk_sources
+    monkeypatch.setattr(tools, "_read_source", lambda fp: (reads.append(fp), read(fp))[1])
+    monkeypatch.setattr(
+        tools, "walk_sources", lambda base, keep=(): (walks.append(base), walk(base, keep))[1]
+    )
+    result = edits.upsert_node(graph, [{"id": "a", "description": "Does the A thing, revised."}])
+    assert result["written"] is True
+    assert sorted(p.name for p in reads) == ["A.kt", "B.kt"]
+    assert len(walks) == 1
 # --- upsert ------------------------------------------------------------------
 def test_an_upsert_changes_only_the_fields_it_names(graph: Path) -> None:
     edits.upsert_node(graph, [{"id": "a", "description": "Does the A thing, revised."}])

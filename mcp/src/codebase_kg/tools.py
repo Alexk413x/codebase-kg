@@ -544,7 +544,42 @@ _CHANGED_ISSUE = (
 )
 
 
-def _check_anchors(graph: CodeGraph, base: Path) -> AnchorCheck:
+class SourceCache:
+    """The source tree as one write's validation runs read it.
+
+    `edits.apply` validates the graph before and after a mutation, and the
+    source does not change in between, so both runs walk the tree and read and
+    hash each anchored file through this cache once.
+    """
+
+    def __init__(self) -> None:
+        self._walks: dict[tuple[str, tuple[str, ...]], list[str]] = {}
+        self._files: dict[Path, tuple[bool, str | None, str | None]] = {}
+
+    def walk(self, base: Path, keep: Iterable[str]) -> list[str]:
+        key = (str(base), tuple(sorted(keep)))
+        if key not in self._walks:
+            self._walks[key] = walk_sources(base, keep=keep)
+        return self._walks[key]
+
+    def read(self, fp: Path) -> tuple[bool, str | None, str | None]:
+        if fp not in self._files:
+            self._files[fp] = _read_source(fp)
+        return self._files[fp]
+
+
+def _read_source(fp: Path) -> tuple[bool, str | None, str | None]:
+    """Whether the file exists, its text, and its digest."""
+    if not fp.is_file():
+        return False, None, None
+    try:
+        src: str | None = fp.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        src = None
+    return True, src, file_sha(fp)
+
+
+def _check_anchors(graph: CodeGraph, base: Path, cache: SourceCache | None = None) -> AnchorCheck:
     """Every anchor against real source. The strongest staleness signal there is.
 
     Two different questions, and the difference is the point:
@@ -576,17 +611,11 @@ def _check_anchors(graph: CodeGraph, base: Path) -> AnchorCheck:
     for node_id, anchor in anchors:
         out.checked += 1
         if anchor.path != path:
-            path, src = anchor.path, None
+            path = anchor.path
             fp = base / anchor.path
-            exists = fp.is_file()
-            if exists:
-                try:
-                    src = fp.read_text(encoding="utf-8", errors="ignore")
-                except OSError:
-                    src = None
-                sha = file_sha(fp)
-                if sha is not None:
-                    current[anchor.path] = sha
+            exists, src, sha = cache.read(fp) if cache else _read_source(fp)
+            if sha is not None:
+                current[anchor.path] = sha
         if not exists:
             out.issues.append({"node": node_id, "anchor": str(anchor), "issue": "file not found"})
             continue
@@ -635,7 +664,9 @@ def walk_sources(base: Path, keep: Iterable[str] = ()) -> list[str]:
     return out
 
 
-def coverage_report(graph: CodeGraph, base: Path, limit: int = 50) -> CoverageReport:
+def coverage_report(
+    graph: CodeGraph, base: Path, limit: int = 50, cache: SourceCache | None = None
+) -> CoverageReport:
     """Which files the graph was supposed to cover, and which it missed.
 
     The declaration lives in the graph (`meta.covers` / `meta.exempt`), so this
@@ -645,12 +676,16 @@ def coverage_report(graph: CodeGraph, base: Path, limit: int = 50) -> CoverageRe
     """
     meta = graph.meta
     anchored = set(graph.anchor_paths())  # already posix-normalized by the store
-    files = walk_sources(base, keep=declared_roots(meta.covers))
+    keep = declared_roots(meta.covers)
+    files = cache.walk(base, keep) if cache else walk_sources(base, keep=keep)
     return classify(files, anchored, meta.covers, meta.exempt, limit)
 
 
 def kg_validate(
-    graph: CodeGraph, peer: CodeGraph | None = None, repo_root: str | None = None
+    graph: CodeGraph,
+    peer: CodeGraph | None = None,
+    repo_root: str | None = None,
+    cache: SourceCache | None = None,
 ) -> dict[str, Any]:
     """Advisory drift check against real source. Never blocks anything.
 
@@ -683,8 +718,8 @@ def kg_validate(
     checks = AnchorCheck()
     cov = CoverageReport()
     if base is not None:
-        checks = _check_anchors(graph, base)
-        cov = coverage_report(graph, base)
+        checks = _check_anchors(graph, base, cache)
+        cov = coverage_report(graph, base, cache=cache)
 
     # `changed_since_built` is deliberately *not* part of `ok`: it means "go
     # look", not "something is broken". Folding it in would make `ok` false for
