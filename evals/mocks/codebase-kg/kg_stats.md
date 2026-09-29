@@ -1,10 +1,4 @@
 {
-  "cli": {
-    "package_root": "/opt/codebase-kg/mcp",
-    "build": "uvx --from \"/opt/codebase-kg/mcp\" codebase-kg-build",
-    "export": "uvx --from \"/opt/codebase-kg/mcp\" codebase-kg-export",
-    "migrate": "uvx --from \"/opt/codebase-kg/mcp\" codebase-kg-migrate"
-  },
   "codebase": "acmeapp",
   "root": "src",
   "language": "kotlin",
