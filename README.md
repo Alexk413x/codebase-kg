@@ -55,12 +55,14 @@ another graph. Each call is atomic, is validated against the whole graph before 
 reports every field it changed, before and after.
 
 **Bulk work — the round trip.** A parity sweep, a restructuring, anything where reading the diff
-before applying it is the point. The artifact is a database, so it is authored through JSON:
+before applying it is the point. The artifact is a database, so it is authored through JSON. The
+CLIs run through a stdlib runner beside the MCP launcher, from any repo; `<plugin>` is the plugin
+folder, which skills name as `${CLAUDE_PLUGIN_ROOT}`:
 
 ```sh
-python -m codebase_kg.export -o .kg-export.json      # existing graph → JSON
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" export -o .kg-export.json      # existing graph → JSON
 #   … edit …
-python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" build .kg-export.json -o knowledge/code_graph.db
 rm .kg-export.json                                   # a snapshot, not a source
 ```
 
@@ -105,7 +107,7 @@ the committed graph **byte-identical** — not rolled back, never opened for wri
 Once per repo:
 
 ```sh
-python -m codebase_kg.migrate knowledge/KNOWLEDGE_GRAPH.md
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" migrate knowledge/KNOWLEDGE_GRAPH.md
 ```
 
 It **converts, not regenerates** — ids, kinds, anchors, edges and parity survive verbatim. It
@@ -122,7 +124,7 @@ A graph built before schema v3 has no declared coverage and no source baselines,
 a file type it never mapped or a description whose code moved underneath it. Upgrade in place:
 
 ```sh
-python -m codebase_kg.upgrade --covers 'app/src/**/*.kt' --covers '**/*.gradle.kts'
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" upgrade --covers 'app/src/**/*.kt' --covers '**/*.gradle.kts'
 ```
 
 Every node, anchor and edge is preserved verbatim; the upgrade only adds what v3 can answer.
@@ -143,9 +145,8 @@ codebase-kg/
 ├── templates/
 │   ├── code_graph.template.json
 │   └── codebase-kg.local.md.example
-├── .mcp.json                 # registers the codebase-kg MCP server (bin/kg-shim → mcp/src/codebase_kg/shim.py)
-├── commands/                 # /codebase-kg:setup (the only command; every other feature is a skill)
-├── skills/                   # query / build / refresh / audit / link / validate
+├── .mcp.json                 # registers the codebase-kg MCP server (mcp/launch/kg-shim → mcp/src/codebase_kg/shim.py)
+├── skills/                   # query / build / refresh / audit / link / validate, and setup (user-invoked only)
 ├── mcp/                      # the query server (one shared process per machine) + build/export/migrate CLIs
 ├── hooks/                    # Claude Code hooks: the search gate, the post-edit nudge, the unwired-clone notice
 └── git-hooks/                # advisory pre-commit + pre-push staleness checks and install.sh, vendored into any repo (stdlib-only)
@@ -157,13 +158,14 @@ A map nobody opens is worth nothing. Left alone, an agent reaches for `Grep` and
 it already has — slower, and blind to the components a search string does not appear in.
 
 The **search gate** (`hooks/kg_search_gate.py`, a `PreToolUse` hook) fixes that. In any repo that has
-a `knowledge/code_graph.db`, the first `Grep`, `Glob`, or shell `grep`/`rg`/`find -name` of a session
-is denied once, with the instruction to query the graph first. Then it **stands down for the rest of
-that session** — whether or not the agent complied. Querying any codebase-kg MCP tool stands it down
-too, so an agent that already started at the graph never sees it.
+a `knowledge/code_graph.db`, a `Grep`, `Glob`, or shell `grep`/`rg`/`find -name` aimed at mapped code
+is denied with the instruction to query the graph first. A codebase-kg query clears the next
+`gate_credit` searches (default 3); when that credit runs out, the gate denies again. A search scoped
+to a file the graph anchors is never gated. Inside a subagent, the gate adds the instruction to the
+subagent's context instead of denying.
 
-One interruption per session. It cannot loop, and no search is ever permanently blocked: if the
-graph does not cover what you need, run the search again and it goes through.
+No search is ever permanently blocked: if the graph does not cover what you need, run the same
+search again and it goes through, however you reword the command.
 
 It ships with the plugin, so there is nothing to install — it activates in every repo that has a
 graph, and stays silent in every repo that does not. `SKIP_KG=1` silences it for a shell;

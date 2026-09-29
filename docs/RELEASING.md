@@ -31,7 +31,7 @@ them, and neither tag existed until it was backfilled three releases later.
    release. Name the defect and what it cost, not the diff.
 
 3. **Run the suite.** `cd mcp && uv run pytest -q`. If uv cannot replace
-   `.venv/Scripts/codebase-kg.exe` because a server holds it, use `--no-sync`.
+   `.venv/Scripts/codebase-kg.exe` because an older server holds it, use `--no-sync`.
 
 4. **Open a PR and merge to main.** Tags point at the *merge* commit, which does
    not exist until then.

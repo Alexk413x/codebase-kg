@@ -1,7 +1,8 @@
 # skills/
 
-Five skills, all **advisory** and **source-derived**. Each is a `SKILL.md` (third-person trigger
-description + imperative workflow), with the heavy multi-agent procedures pushed into `references/`.
+Seven skills. Each is a `SKILL.md` (third-person trigger description + imperative workflow), with
+the heavy multi-agent procedures pushed into `references/`. `setup` runs only when the user types
+`/codebase-kg:setup` (`disable-model-invocation: true`), because it writes git hooks and git config.
 
 | Skill | Use when | Writes? |
 |---|---|---|
@@ -11,14 +12,15 @@ description + imperative workflow), with the heavy multi-agent procedures pushed
 | [`link`](link/SKILL.md) | establish/maintain cross-codebase parity (counterpart links) | rebuilds both graphs |
 | [`validate`](validate/SKILL.md) | cheap deterministic drift check against source | report only |
 | [`query`](query/SKILL.md) | "where does X live", "what depends on X" — find code through the graph | report only |
+| [`setup`](setup/SKILL.md) | wire the git hooks, the textconv driver and `install.sh` into a repo (user-invoked only) | writes `.githooks/`, `.gitattributes`, git config |
 
-All six lean on the MCP query surface and the schema (`../SCHEMA.md`). List **both** server names
+The six graph skills lean on the MCP query surface and the schema (`../SCHEMA.md`). List **both** server names
 in `allowed-tools` — `mcp__codebase-kg__*` when the server is installed directly and
 `mcp__plugin_codebase-kg_codebase-kg__*` when it arrives as a plugin. `test_plugin_surface.py`
 asserts the two lists match, and that no registered tool is stranded outside every skill.
 
-Each skill opens on an MCP call rather than a `Grep`, which also means the search gate has stood
-down before any search runs. Keep it that way when reordering steps — `build` is the one
+Each graph skill opens on an MCP call rather than a `Grep`, which also means the search gate has
+granted credit before any search runs. Keep it that way when reordering steps — `build` is the one
 exception and says so inline.
 
 ## Writing the graph
@@ -36,11 +38,9 @@ restructuring, a whole refresh's worth of nodes, or anything where reading the J
 building it is the point.
 
 ```sh
-# Call kg_stats first and use its `cli` field — it reports the invocation that
-# works in THIS repo. The `python -m` form below only works inside the plugin's
-# own checkout; a target repo has the plugin but no importable codebase_kg.
-python -m codebase_kg.export -o .kg-export.json      # read  (refresh, link, audit)
-python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
+# The stdlib runner beside the MCP launcher works from any repo; it needs only uv.
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" export -o .kg-export.json
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" build .kg-export.json -o knowledge/code_graph.db
 rm .kg-export.json                                   # a snapshot, not a source
 ```
 

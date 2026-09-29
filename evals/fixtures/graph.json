@@ -1,0 +1,57 @@
+{
+  "codebase": "acmeapp",
+  "root": "src",
+  "language": "kotlin",
+  "generated": "2026-09-01",
+  "covers": ["**/*.kt"],
+  "nodes": [
+    {
+      "id": "feed_ranker",
+      "kind": "Domain (pure)",
+      "description": "Ranks the main feed by freshness (6h half-life), per-source weight and a breaking-news boost. Stateless; sorts descending by score.",
+      "section": "DOMAIN",
+      "anchors": ["domain/FeedRanker.kt#FeedRanker"],
+      "edges": ["article"]
+    },
+    {
+      "id": "article",
+      "kind": "Data model",
+      "description": "Article value type and the repository that loads the latest articles from the API.",
+      "section": "DATA",
+      "anchors": ["data/ArticleRepository.kt#Article", "data/ArticleRepository.kt#ArticleRepository"],
+      "edges": []
+    },
+    {
+      "id": "feed_view_model",
+      "kind": "ViewModel",
+      "description": "Loads the latest articles and passes them through FeedRanker before the feed screen renders them.",
+      "section": "UI",
+      "anchors": ["ui/FeedViewModel.kt#FeedViewModel"],
+      "edges": ["feed_ranker", "article"]
+    },
+    {
+      "id": "feed_screen",
+      "kind": "Screen",
+      "description": "The main feed screen; renders the ranked article titles from FeedViewModel.",
+      "section": "UI",
+      "anchors": ["ui/FeedScreen.kt#FeedScreen"],
+      "edges": ["feed_view_model"]
+    },
+    {
+      "id": "saved_article",
+      "kind": "Room @Entity",
+      "description": "Persisted bookmark keyed by articleId.",
+      "section": "DATA",
+      "anchors": ["room/SavedArticleEntity.kt#SavedArticleEntity"],
+      "edges": []
+    },
+    {
+      "id": "bookmarks_screen",
+      "kind": "Screen",
+      "description": "Bookmarks list screen; renders saved articles.",
+      "section": "UI",
+      "anchors": ["ui/BookmarksScreen.kt#BookmarksScreen"],
+      "edges": ["saved_article"]
+    }
+  ]
+}

@@ -45,7 +45,7 @@ def test_an_older_graph_is_told_to_upgrade(sample_db: Path) -> None:
     _set_schema_version(sample_db, "2")
     with pytest.raises(StoreError) as exc:
         CodeGraph(sample_db)
-    assert "codebase_kg.upgrade" in str(exc.value)
+    assert 'kg_cli.py" upgrade' in str(exc.value)
 
 
 def test_a_newer_graph_is_not_told_to_rebuild(sample_db: Path) -> None:
@@ -61,7 +61,7 @@ def test_a_newer_graph_is_not_told_to_rebuild(sample_db: Path) -> None:
     message = str(exc.value)
     assert "/codebase-kg:build" not in message
     assert "Update the plugin" in message
-    assert "codebase_kg.upgrade" not in message  # nor the other direction's fix
+    assert "upgrade \"" not in message  # nor the other direction's fix
 
 
 def test_store_is_read_only(sample_db: Path) -> None:

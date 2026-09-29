@@ -200,3 +200,41 @@ def test_skip_kg_silences_it(repo: Path, monkeypatch: pytest.MonkeyPatch,
     finally:
         sys.stdin = old
     assert capsys.readouterr().out == ""
+
+
+# --- a stale graph-diff pin ---------------------------------------------------
+URL = "uvx --quiet --from \"git+https://github.com/Alexk413x/codebase-kg.git@codebase-kg--v{}#subdirectory=mcp\" codebase-kg-export"
+
+
+def test_a_pin_older_than_the_plugin_is_reported() -> None:
+    why = hook.stale_pin(URL.format("0.5.3"), "0.8.2")
+    assert why is not None and "0.5.3" in why and "0.8.2" in why
+
+
+@pytest.mark.parametrize("pinned", ["0.8.2", "0.9.0"])
+def test_a_current_or_newer_pin_is_silent(pinned: str) -> None:
+    assert hook.stale_pin(URL.format(pinned), "0.8.2") is None
+
+
+def test_a_pin_to_a_missing_plugin_folder_is_reported(tmp_path: Path) -> None:
+    gone = (tmp_path / "cache" / "codebase-kg" / "codebase-kg" / "0.2.3" / "mcp" / "src").as_posix()
+    textconv = f"python -c \"import sys; sys.path.insert(0, '{gone}'); from codebase_kg.export import main; main()\""
+    why = hook.stale_pin(textconv, "0.8.2")
+    assert why is not None and "0.2.3" in why
+
+
+def test_a_pin_to_an_existing_plugin_folder_is_silent(tmp_path: Path) -> None:
+    here = tmp_path / "codebase-kg" / "mcp"
+    here.mkdir(parents=True)
+    assert hook.stale_pin(f'uvx --from "{here.as_posix()}" codebase-kg-export', "0.8.2") is None
+
+
+def test_someone_elses_driver_is_not_ours_to_judge() -> None:
+    assert hook.stale_pin("my-own-exporter --json", "0.8.2") is None
+
+
+def test_the_notice_names_setup_for_a_stale_pin(repo: Path) -> None:
+    _git(repo, "config", "core.hooksPath", ".githooks")
+    _git(repo, "config", "diff.codegraph.textconv", URL.format("0.1.0"))
+    msg = hook.advice(repo)
+    assert msg is not None and "/codebase-kg:setup" in msg and "0.1.0" in msg

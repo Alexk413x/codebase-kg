@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: no-graph-negative
+tags: [query, negative, mocked]
+context:
+  scaffold_script: scaffold.sh

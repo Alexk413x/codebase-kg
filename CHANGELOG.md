@@ -2,6 +2,95 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.9.0] — 2026-09-28 — tooling for current Claude Code, and no top-level bin/
+
+### Changed — the MCP launchers moved to `mcp/launch/`
+
+claude.ai rejects a plugin with a top-level `bin/` on upload and org sync, and
+Cowork does not install it. `.mcp.json` now runs
+`${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg-shim` (`kg-shim.cmd` on Windows). The
+process model is unchanged: the launcher runs `shim.py` with the system Python,
+and the shim connects to one shared server.
+
+### Changed — the server venv lives outside the plugin folder
+
+The shared server's venv is `venv-<key>` in `CLAUDE_PLUGIN_DATA`, or the user
+cache directory when that is unset. The key is the third-party dependency set
+in `uv.lock`, so an update that keeps the dependencies reuses the venv instead
+of building a new one. The server runs as `python -c` with this checkout's
+`src` first on `PYTHONPATH`. A shim that started the server waits up to 25 s
+(`CODEBASE_KG_SPAWN_TIMEOUT`) before it falls back to a private server, because
+the first start after an update builds the venv and took longer than the 10 s
+connect budget.
+
+### Changed — the skills run the CLIs through a stdlib runner
+
+`mcp/launch/kg_cli.py` runs `build`, `export`, `migrate` and `upgrade` from any
+repo. The skills call it through the Bash tool as
+`uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" …`.
+Before, the skills asked `kg_stats` for the command. In `/codebase-kg:build`
+the repo has no graph yet, so `kg_stats` failed and the `python -m` fallback was
+a `ModuleNotFoundError`. Server and store errors print the same runner command.
+`kg_stats` keeps its `cli` field for one more release.
+
+The skills pre-approve exactly that command and `rm .kg-export.json`, instead
+of any `uvx` or `rm` command, and name `Agent` instead of `Task`.
+
+### Changed — the search gate
+
+- Claude Code starts the gate for a `Bash` or `PowerShell` call only when an
+  `if` rule names a search command in it, so `git status` starts no Python
+  process. When two rules match one call, one gate process decides.
+- Inside a subagent, the gate adds its instruction as context instead of
+  denying. A subagent without a codebase-kg tool could never earn credit.
+- The gate message names the codebase-kg server's `kg_search`, because other
+  plugins ship a `kg_search` that clears nothing here.
+- `warn` mode reaches the model through `additionalContext`, and still shows
+  the user the message.
+- The parser finds a search on its own line after a newline, reads
+  `Get-ChildItem -Path`, `-Filter` and `-Include`, and treats an unscoped
+  `Get-ChildItem -Recurse` as a search of the working directory.
+- The credit-granting hook on codebase-kg calls runs in the background.
+- Every hook runs `py -3` when the `py` launcher exists, else `python3`, else
+  `python`.
+
+### Changed — the MCP tools
+
+- The server sends `instructions` that say what the tools answer and that they
+  apply only in a repo with `knowledge/code_graph.db`.
+- `kg_find_by_kind`, `kg_parity_gaps`, `kg_find_by_reference`,
+  `kg_find_by_path` and `kg_neighborhood` take `limit` (default 50, up to 1000)
+  and `offset`, and return `total`, `truncated` and `next_offset`.
+  `kg_validate` caps each issue list at `limit` and reports `issue_counts`.
+- Every parameter has a schema description. `kg_upsert_node.nodes` has a typed
+  schema, and its description drops from 2,034 to 1,089 characters.
+- A refused write returns `isError: true` with the same
+  `{"ok": false, "written": false, "error": …}` body.
+- The query tools declare `readOnlyHint`, so Claude Code can run them in
+  parallel. The writes declare their destructive and idempotent hints.
+- A write reads the source tree once for its before and after validations. A
+  one-field upsert on a 3,000-file graph takes 3.0 s instead of 5.1 s.
+
+### Changed — skills, docs and manifest
+
+- `setup` is a skill with `disable-model-invocation: true`, so only the user
+  starts it.
+- Skill descriptions lead with what the skill does. `audit` checks graphs of
+  about 25 nodes or fewer itself instead of starting subagents.
+- The docs describe the credit gate instead of the old one-denial-per-session
+  gate. `SCHEMA.md` has a table of contents, and skills name it by its
+  `${CLAUDE_PLUGIN_ROOT}` path.
+- The SessionStart notice also reports a graph diff driver that pins an older
+  release or a missing plugin folder.
+- Tool descriptions and the template use cartographer's v6 graph path.
+- `plugin.json` declares `"license": "LicenseRef-Proprietary"`.
+- An eval suite for `claude plugin eval` lives in `evals/`.
+
+### Removed
+
+`MultiEdit` from the post-edit hook (Claude Code no longer has the tool), and
+`suppressOutput` from hook output (it has no effect on these events).
+
 ## [0.8.2] — 2026-09-26 — an upsert can clear verified drift
 
 ### Fixed — `kg_upsert_node` could not clear staleness (#25)

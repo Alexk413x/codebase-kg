@@ -101,7 +101,7 @@ Mutate = Callable[[sqlite3.Connection], "list[Change]"]
 # --------------------------------------------------------------------------- #
 # The engine
 # --------------------------------------------------------------------------- #
-def _validation(path: Path) -> dict[str, Any]:
+def _validation(path: Path, cache: tools.SourceCache) -> dict[str, Any]:
     """Run the graph through `kg_validate`, peer and all.
 
     The peer matters: parity is reciprocal (SCHEMA.md §9), so a write that breaks
@@ -111,7 +111,7 @@ def _validation(path: Path) -> dict[str, Any]:
     graph = CodeGraph(path)
     try:
         with tools.open_peer(graph) as peer:
-            return tools.kg_validate(graph, peer)
+            return tools.kg_validate(graph, peer, cache=cache)
     finally:
         graph.close()
 
@@ -197,7 +197,8 @@ def apply(path: str | Path, mutate: Mutate) -> dict[str, Any]:
             f"no code graph at {target}. Create one with /codebase-kg:build before editing."
         )
 
-    before = _validation(target)
+    cache = tools.SourceCache()
+    before = _validation(target, cache)
 
     # Same directory as the target, because `os.replace` is only atomic within a
     # filesystem -- and because `kg_validate` resolves anchor paths and the peer
@@ -233,7 +234,7 @@ def apply(path: str | Path, mutate: Mutate) -> dict[str, Any]:
                 "note": "every field already held that value; the graph was not rewritten",
             }
 
-        after = _validation(tmp)
+        after = _validation(tmp, cache)
         new = _new_findings(before, after)
         if new:
             raise EditError(

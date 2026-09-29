@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 import pytest
 
@@ -127,7 +127,7 @@ def test_unmigrated_repo_gets_migration_instructions(
     monkeypatch.setattr("sys.argv", ["server"])
     monkeypatch.delenv("CODEBASE_KG_PATH", raising=False)
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(FileNotFoundError, match="codebase_kg.migrate"):
+    with pytest.raises(FileNotFoundError, match='kg_cli.py" migrate'):
         server._graph_file()
 
 
@@ -201,3 +201,69 @@ def test_every_tool_is_registered_and_no_others() -> None:
         "kg_upsert_node", "kg_delete_node", "kg_add_link", "kg_remove_link",
         "kg_add_reference", "kg_remove_reference",
     }
+
+
+def _mcp_tools() -> list[Any]:
+    import asyncio
+
+    return [t.to_mcp_tool() for t in asyncio.run(server.mcp.list_tools())]
+
+
+QUERY_TOOLS = {
+    "kg_search", "kg_node", "kg_neighborhood", "kg_find_by_kind", "kg_find_by_path",
+    "kg_find_by_link", "kg_find_by_reference", "kg_parity_gaps", "kg_stats", "kg_validate",
+}
+
+
+def _properties(schema: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
+    for name, prop in schema.get("properties", {}).items():
+        yield name, prop
+        items = prop.get("items", {})
+        if "properties" in items:
+            yield from _properties(items)
+
+
+def test_descriptions_fit_the_client_limit_and_every_parameter_is_described() -> None:
+    # Claude Code truncates a tool description at 2,048 characters.
+    for tool in _mcp_tools():
+        assert tool.description and len(tool.description) <= 2048, tool.name
+        undescribed = [n for n, p in _properties(tool.input_schema) if not p.get("description")]
+        assert undescribed == [], tool.name
+
+
+def test_upsert_description_leads_with_atomicity() -> None:
+    upsert = next(t for t in _mcp_tools() if t.name == "kg_upsert_node")
+    assert upsert.description.startswith("Atomic")
+    item = upsert.input_schema["properties"]["nodes"]["items"]
+    assert {"id", "kind", "anchors", "edges", "rebaseline"} <= set(item["properties"])
+    assert item["required"] == ["id"] and item["additionalProperties"] is True
+
+
+def test_annotations_mark_queries_read_only_and_writes_closed_world() -> None:
+    hints = {
+        t.name: t.annotations.model_dump(by_alias=True, exclude_none=True)
+        for t in _mcp_tools()
+        if t.annotations is not None
+    }
+    assert set(hints) == QUERY_TOOLS | {
+        "kg_upsert_node", "kg_delete_node", "kg_add_link", "kg_remove_link",
+        "kg_add_reference", "kg_remove_reference",
+    }
+    for name in QUERY_TOOLS:
+        assert hints[name] == {"readOnlyHint": True, "openWorldHint": False}, name
+    for name in ("kg_delete_node", "kg_remove_link", "kg_remove_reference"):
+        assert hints[name] == {
+            "readOnlyHint": False, "destructiveHint": True, "openWorldHint": False,
+        }, name
+    assert hints["kg_upsert_node"] == {
+        "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True,
+        "openWorldHint": False,
+    }
+    for name in ("kg_add_link", "kg_add_reference"):
+        assert hints[name] == {"readOnlyHint": False, "openWorldHint": False}, name
+
+
+def test_server_instructions_are_short_and_name_the_graph_file() -> None:
+    text = server.mcp.instructions or ""
+    assert 0 < len(text) <= 600
+    assert "knowledge/code_graph.db" in text and "kg_search" in text

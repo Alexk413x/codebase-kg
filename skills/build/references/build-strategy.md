@@ -14,7 +14,7 @@ Loaded by `build` when the repo is large enough that a single linear pass would 
 2. Bucket files into subsystems by directory + role. Typical buckets (rename to fit the repo):
    entry point, navigation/shell, domain model, view-models, views/components, services, data layer
    (db/network/storage), DI/modules, theme/styling, background work, widgets, utilities.
-3. Each bucket becomes one `Task` sub-agent **and** one `section` value in the output.
+3. Each bucket becomes one `Agent` sub-agent **and** one `section` value in the output.
 
 ## Sub-agent contract
 
@@ -40,7 +40,7 @@ Spawn read-only Explore-style agents. Give each:
 ]
 ```
 
-Run buckets concurrently (one message, multiple `Task` calls). Collect the returned arrays.
+Run buckets concurrently (one message, multiple `Agent` calls). Collect the returned arrays.
 
 ## Assembly
 
@@ -65,7 +65,7 @@ Run buckets concurrently (one message, multiple `Task` calls). Collect the retur
 
 ## After assembly
 
-Build with `python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db`, then
+Build with `uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" build .kg-export.json -o knowledge/code_graph.db`, then
 `rm .kg-export.json`. The builder is the first gate: it names any node that breaks a rule and writes
 nothing. Then `kg_validate` — ungreppable anchors mean a symbol was guessed, so re-grep and fix.
 Then `kg_stats` for the summary.

@@ -193,3 +193,36 @@ def test_the_module_forms_still_work_inside_the_checkout(tmp_path: Path) -> None
     )
     assert proc.returncode == 0, proc.stderr
     assert out.is_file()
+
+
+# --- the stdlib runner the skills call -----------------------------------------
+RUNNER = Path(__file__).resolve().parents[1] / "launch" / "kg_cli.py"
+
+
+@pytest.mark.parametrize("name", ["build", "export", "migrate", "upgrade"])
+def test_the_runner_runs_every_cli_without_a_venv(name: str) -> None:
+    """The skills call the runner with any Python; the CLIs must need nothing else."""
+
+    proc = subprocess.run(
+        [sys.executable, "-I", str(RUNNER), name, "--help"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "usage" in proc.stdout.lower()
+
+
+def test_the_runner_refuses_an_unknown_command() -> None:
+
+    proc = subprocess.run(
+        [sys.executable, "-I", str(RUNNER), "serve"], capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode != 0
+    assert "usage" in proc.stderr
+
+
+def test_server_errors_print_the_runner_command() -> None:
+    from codebase_kg import cli
+
+    assert cli.command("export", "-o x.json") == (
+        f'uv run --no-project --quiet "{RUNNER.resolve()}" export -o x.json'
+    )

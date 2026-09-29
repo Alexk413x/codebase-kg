@@ -1,6 +1,6 @@
 ---
 name: link
-description: This skill should be used when the user asks to "link two code graphs", "set up parity between iOS and Android", "find feature gaps between the apps", "add counterpart links", "map parity across codebases", or wants to track what matches/diverges between a codebase and its port (both repos must have a code_graph.db and be readable). It reads BOTH codebases' graphs and source, then sets reciprocal counterpart + parity + divergence fields. (For single-codebase work use build / refresh.)
+description: Sets up and maintains parity between two codebases' graphs, such as an iOS app and its Android port. It reads both graphs and both source trees, then writes reciprocal counterpart, parity and divergence fields. Use when the user asks to "link two code graphs", "set up parity between iOS and Android", "find feature gaps between the apps", "add counterpart links" or "map parity across codebases". Both repos must have a code_graph.db and be readable. (For single-codebase work use build or refresh.)
 allowed-tools:
   # Both names the host gives the server: bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin.
@@ -26,22 +26,16 @@ allowed-tools:
   - Grep
   - Glob
   - Bash(git ls-files:*)
-  - Bash(python -m codebase_kg.export:*)
-  - Bash(python -m codebase_kg.build:*)
   - Write
   - Edit
-  - Bash(rm:*)
-  # The runnable forms outside the plugin's own checkout. kg_stats reports
-  # which one applies; `python -m` only works where the package imports.
-  - Bash(uvx:*)
-  - Bash(codebase-kg-build:*)
-  - Bash(codebase-kg-export:*)
+  - Bash(rm .kg-export.json)
+  - Bash(uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" *)
 ---
 
 # link — cross-codebase parity (counterpart linking)
 
 Connect two repos' graphs so feature parity is **queryable**. Parity is expressed by **direct node
-cross-linking** (`SCHEMA.md` §9) — no separate parity file. Each node gains, where applicable:
+cross-linking** (`${CLAUDE_PLUGIN_ROOT}/SCHEMA.md` §9) — no separate parity file. Each node gains, where applicable:
 `parity` (matched / divergent / `<codebase>-only`), `counterpart` (a link to the peer node), and
 `divergence` (one line, only when divergent). Detail stays in each side's own `description`; this
 skill adds the links, never duplicates the content.
@@ -50,12 +44,13 @@ skill adds the links, never duplicates the content.
 work or decide which side is "right."
 
 
-> **Before running any CLI below, call `kg_stats` and read its `cli` field.** It reports the
-> invocation that works *in this repo* — `uvx --from "<plugin>/mcp" codebase-kg-build …` when the
-> plugin ships as a source checkout, or the bare `codebase-kg-build` when the package is installed.
-> The `python -m codebase_kg.…` form written below is the plugin's own-checkout form; in a target
-> repo that has the plugin but no importable `codebase_kg` it is a `ModuleNotFoundError`, and
-> `CLAUDE_PLUGIN_ROOT` is not set in your shell so you cannot construct the path yourself.
+> **Run the graph CLIs through the Bash tool with the plugin's runner.** It needs only `uv` on
+> `PATH`, works from any repo, and builds no environment. The same runner takes `build`,
+> `export`, `migrate` and `upgrade`:
+>
+> ```sh
+> uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" export -o .kg-export.json
+> ```
 
 ## Prerequisites
 
@@ -80,9 +75,9 @@ A parity sweep is **bulk** work — it touches most of both graphs at once and t
 the deliverable — so edit each side through its JSON:
 
 ```sh
-python -m codebase_kg.export -o .kg-export.json
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" export -o .kg-export.json
 #   … set parity / counterpart / divergence …
-python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" build .kg-export.json -o knowledge/code_graph.db
 rm .kg-export.json
 ```
 
@@ -125,7 +120,8 @@ links **reciprocal**: if A→B then B→A.
 ### 5. Build both sides, then validate reciprocity
 Build each graph. Run `kg_validate` on each side (the peer is opened automatically from
 `meta.counterpart`). Fix every "not reciprocal" / "counterpart id not in peer graph" finding. Then
-`kg_parity_gaps` for the report.
+`kg_parity_gaps` for the report. Both return 50 entries by default, so when a result says
+`truncated`, pass a larger `limit` (up to 1000) or page `kg_parity_gaps` with `offset`.
 
 ## The gap report
 

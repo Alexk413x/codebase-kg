@@ -40,6 +40,25 @@ IGNORE_DIRS = {
 # Precomputed once — this was being rebuilt for every file in the tree walk.
 _IGNORE_LOWER = {d.lower() for d in IGNORE_DIRS}
 
+DEFAULT_LIMIT = 50
+MAX_LIMIT = 1000
+
+
+def _page(
+    items: list[Any], limit: int, offset: int, narrow: str
+) -> tuple[list[Any], dict[str, Any]]:
+    offset = max(0, offset)
+    page = items[offset : offset + max(1, limit)]
+    rest = len(items) - offset - len(page)
+    info: dict[str, Any] = {"total": len(items), "truncated": rest > 0}
+    if rest > 0:
+        info["next_offset"] = offset + len(page)
+        info["hint"] = (
+            f"{rest} more not shown. {narrow}, or pass offset={offset + len(page)} "
+            f"for the next page, or a larger limit (up to {MAX_LIMIT})."
+        )
+    return page, info
+
 
 @contextmanager
 def open_peer(graph: CodeGraph) -> Iterator[CodeGraph | None]:
@@ -141,7 +160,9 @@ def kg_node(graph: CodeGraph, id: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # kg_neighborhood
 # --------------------------------------------------------------------------- #
-def kg_neighborhood(graph: CodeGraph, id: str, depth: int = 1) -> dict[str, Any]:
+def kg_neighborhood(
+    graph: CodeGraph, id: str, depth: int = 1, limit: int = DEFAULT_LIMIT, offset: int = 0
+) -> dict[str, Any]:
     """A node plus everything within `depth` hops, following edges either way."""
     center = graph.node(id)
     if center is None:
@@ -149,7 +170,9 @@ def kg_neighborhood(graph: CodeGraph, id: str, depth: int = 1) -> dict[str, Any]
     depth = max(1, min(depth, 3))
     hops = graph.neighborhood_ids(id, depth)
     hops.pop(id, None)
-    nodes = {n.id: n for n in graph.nodes(list(hops), with_edges=False)}
+    ordered = sorted(hops, key=lambda i: (hops[i], i))
+    ids, paging = _page(ordered, limit, offset, "Pass a smaller depth")
+    nodes = {n.id: n for n in graph.nodes(ids, with_edges=False)}
     neighbors = [
         {
             "id": n.id,
@@ -158,15 +181,15 @@ def kg_neighborhood(graph: CodeGraph, id: str, depth: int = 1) -> dict[str, Any]
             "anchors": [str(a) for a in n.anchors],
             "hops": hops[n.id],
         }
-        for n in (nodes[i] for i in hops if i in nodes)
+        for n in (nodes[i] for i in ids if i in nodes)
     ]
-    neighbors.sort(key=lambda r: (int(r["hops"]), str(r["id"])))
     return {
         "found": True,
         "center": center.to_dict(),
         "depth": depth,
         "inbound_edges": graph.inbound(id),
         "count": len(neighbors),
+        **paging,
         "neighbors": neighbors,
         "counterpart": center.counterpart,
     }
@@ -175,8 +198,11 @@ def kg_neighborhood(graph: CodeGraph, id: str, depth: int = 1) -> dict[str, Any]
 # --------------------------------------------------------------------------- #
 # kg_find_by_kind
 # --------------------------------------------------------------------------- #
-def kg_find_by_kind(graph: CodeGraph, kind: str) -> dict[str, Any]:
+def kg_find_by_kind(
+    graph: CodeGraph, kind: str, limit: int = DEFAULT_LIMIT, offset: int = 0
+) -> dict[str, Any]:
     """All nodes whose free-text `kind` matches (case-insensitive substring)."""
+    found, paging = _page(graph.by_kind(kind), limit, offset, "Pass a more specific kind")
     matches = [
         {
             "id": n.id,
@@ -184,28 +210,33 @@ def kg_find_by_kind(graph: CodeGraph, kind: str) -> dict[str, Any]:
             "description": n.description,
             "anchors": [str(a) for a in n.anchors],
         }
-        for n in graph.by_kind(kind)
+        for n in found
     ]
-    return {"kind": kind, "count": len(matches), "nodes": matches}
+    return {"kind": kind, "count": len(matches), **paging, "nodes": matches}
 
 
 # --------------------------------------------------------------------------- #
 # kg_find_by_path
 # --------------------------------------------------------------------------- #
-def kg_find_by_path(graph: CodeGraph, path: str) -> dict[str, Any]:
+def kg_find_by_path(
+    graph: CodeGraph, path: str, limit: int = DEFAULT_LIMIT, offset: int = 0
+) -> dict[str, Any]:
     """Reverse lookup: which node(s) own a source file.
 
     The inverse of every other tool here — you have a file open and want its
     place in the map. An indexed lookup on `anchor.path`, so it stays cheap on
     a large graph. Matches a bare filename as a path suffix.
     """
-    found = graph.by_path(path)
+    found, paging = _page(
+        graph.by_path(path), limit, offset, "Pass a longer repo-relative path"
+    )
     # One query for every match's inbound edges, rather than one per match —
     # a bare filename can legitimately hit many nodes.
     inbound = graph.inbound_many([n.id for n, _ in found])
     return {
         "path": path,
         "count": len(found),
+        **paging,
         "nodes": [
             {
                 "id": n.id,
@@ -259,19 +290,26 @@ def kg_find_by_link(graph: CodeGraph, target: str) -> dict[str, Any]:
 # kg_find_by_reference
 # --------------------------------------------------------------------------- #
 def kg_find_by_reference(
-    graph: CodeGraph, query: str | None = None, kind: str | None = None
+    graph: CodeGraph,
+    query: str | None = None,
+    kind: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
 ) -> dict[str, Any]:
     """Which nodes depend on documentation matching `query`.
 
     The review an SDK move calls for: every node citing anything under one part
     of the docs, with the file or function each citation narrows to.
     """
-    found = graph.references(query, kind)
+    found, paging = _page(
+        graph.references(query, kind), limit, offset, "Pass a query or a kind filter"
+    )
     nodes = {n.id: n for n in graph.nodes(sorted({i for i, _ in found}), with_edges=False)}
     return {
         "query": query,
         "kind": kind,
         "count": len(found),
+        **paging,
         "references": [
             {
                 "node": node_id,
@@ -286,7 +324,9 @@ def kg_find_by_reference(
 # --------------------------------------------------------------------------- #
 # kg_parity_gaps
 # --------------------------------------------------------------------------- #
-def kg_parity_gaps(graph: CodeGraph, status: str | None = None) -> dict[str, Any]:
+def kg_parity_gaps(
+    graph: CodeGraph, status: str | None = None, limit: int = DEFAULT_LIMIT, offset: int = 0
+) -> dict[str, Any]:
     """Nodes flagged `divergent` or `<codebase>-only` — the gap report as a query.
 
     `status` optionally filters: 'divergent', 'only' (any *-only), or an exact
@@ -316,7 +356,8 @@ def kg_parity_gaps(graph: CodeGraph, status: str | None = None) -> dict[str, Any
     breakdown: dict[str, int] = {}
     for g in gaps:
         breakdown[str(g["parity"])] = breakdown.get(str(g["parity"]), 0) + 1
-    return {"count": len(gaps), "by_status": breakdown, "gaps": gaps}
+    page, paging = _page(gaps, limit, offset, "Pass a status filter")
+    return {"count": len(page), **paging, "by_status": breakdown, "gaps": page}
 
 
 # --------------------------------------------------------------------------- #
@@ -503,7 +544,42 @@ _CHANGED_ISSUE = (
 )
 
 
-def _check_anchors(graph: CodeGraph, base: Path) -> AnchorCheck:
+class SourceCache:
+    """The source tree as one write's validation runs read it.
+
+    `edits.apply` validates the graph before and after a mutation, and the
+    source does not change in between, so both runs walk the tree and read and
+    hash each anchored file through this cache once.
+    """
+
+    def __init__(self) -> None:
+        self._walks: dict[tuple[str, tuple[str, ...]], list[str]] = {}
+        self._files: dict[Path, tuple[bool, str | None, str | None]] = {}
+
+    def walk(self, base: Path, keep: Iterable[str]) -> list[str]:
+        key = (str(base), tuple(sorted(keep)))
+        if key not in self._walks:
+            self._walks[key] = walk_sources(base, keep=keep)
+        return self._walks[key]
+
+    def read(self, fp: Path) -> tuple[bool, str | None, str | None]:
+        if fp not in self._files:
+            self._files[fp] = _read_source(fp)
+        return self._files[fp]
+
+
+def _read_source(fp: Path) -> tuple[bool, str | None, str | None]:
+    """Whether the file exists, its text, and its digest."""
+    if not fp.is_file():
+        return False, None, None
+    try:
+        src: str | None = fp.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        src = None
+    return True, src, file_sha(fp)
+
+
+def _check_anchors(graph: CodeGraph, base: Path, cache: SourceCache | None = None) -> AnchorCheck:
     """Every anchor against real source. The strongest staleness signal there is.
 
     Two different questions, and the difference is the point:
@@ -535,17 +611,11 @@ def _check_anchors(graph: CodeGraph, base: Path) -> AnchorCheck:
     for node_id, anchor in anchors:
         out.checked += 1
         if anchor.path != path:
-            path, src = anchor.path, None
+            path = anchor.path
             fp = base / anchor.path
-            exists = fp.is_file()
-            if exists:
-                try:
-                    src = fp.read_text(encoding="utf-8", errors="ignore")
-                except OSError:
-                    src = None
-                sha = file_sha(fp)
-                if sha is not None:
-                    current[anchor.path] = sha
+            exists, src, sha = cache.read(fp) if cache else _read_source(fp)
+            if sha is not None:
+                current[anchor.path] = sha
         if not exists:
             out.issues.append({"node": node_id, "anchor": str(anchor), "issue": "file not found"})
             continue
@@ -594,7 +664,9 @@ def walk_sources(base: Path, keep: Iterable[str] = ()) -> list[str]:
     return out
 
 
-def coverage_report(graph: CodeGraph, base: Path, limit: int = 50) -> CoverageReport:
+def coverage_report(
+    graph: CodeGraph, base: Path, limit: int = 50, cache: SourceCache | None = None
+) -> CoverageReport:
     """Which files the graph was supposed to cover, and which it missed.
 
     The declaration lives in the graph (`meta.covers` / `meta.exempt`), so this
@@ -604,12 +676,16 @@ def coverage_report(graph: CodeGraph, base: Path, limit: int = 50) -> CoverageRe
     """
     meta = graph.meta
     anchored = set(graph.anchor_paths())  # already posix-normalized by the store
-    files = walk_sources(base, keep=declared_roots(meta.covers))
+    keep = declared_roots(meta.covers)
+    files = cache.walk(base, keep) if cache else walk_sources(base, keep=keep)
     return classify(files, anchored, meta.covers, meta.exempt, limit)
 
 
 def kg_validate(
-    graph: CodeGraph, peer: CodeGraph | None = None, repo_root: str | None = None
+    graph: CodeGraph,
+    peer: CodeGraph | None = None,
+    repo_root: str | None = None,
+    cache: SourceCache | None = None,
 ) -> dict[str, Any]:
     """Advisory drift check against real source. Never blocks anything.
 
@@ -642,8 +718,8 @@ def kg_validate(
     checks = AnchorCheck()
     cov = CoverageReport()
     if base is not None:
-        checks = _check_anchors(graph, base)
-        cov = coverage_report(graph, base)
+        checks = _check_anchors(graph, base, cache)
+        cov = coverage_report(graph, base, cache=cache)
 
     # `changed_since_built` is deliberately *not* part of `ok`: it means "go
     # look", not "something is broken". Folding it in would make `ok` false for
@@ -690,6 +766,37 @@ def kg_validate(
             "description length + shape (check constraint + writer)",
         ],
     }
+
+
+ISSUE_LISTS = (
+    "anchor_issues",
+    "counterpart_issues",
+    "description_issues",
+    "external_link_issues",
+    "reference_issues",
+)
+
+
+def cap_issues(report: dict[str, Any], limit: int = DEFAULT_LIMIT) -> dict[str, Any]:
+    """For the MCP tool only: `edits.py` compares complete reports before and
+    after a write, so `kg_validate` itself must keep returning every issue."""
+    out = dict(report)
+    counts: dict[str, int] = {}
+    cut: list[str] = []
+    for key in ISSUE_LISTS:
+        items = report[key]
+        counts[key] = len(items)
+        if len(items) > limit:
+            out[key] = items[:limit]
+            cut.append(key)
+    out["issue_counts"] = counts
+    out["truncated"] = bool(cut)
+    if cut:
+        out["hint"] = (
+            f"{', '.join(cut)} capped at {limit}; issue_counts has the totals. "
+            f"Pass a larger limit (up to {MAX_LIMIT}) for the complete lists."
+        )
+    return out
 
 
 #: What each unresolved outcome means, and how hard it counts. The two soft
@@ -817,6 +924,7 @@ __all__ = [
     "kg_parity_gaps",
     "kg_stats",
     "kg_validate",
+    "cap_issues",
     "repo_staleness",
     "coverage_report",
     "walk_sources",

@@ -1,6 +1,6 @@
 ---
 name: validate
-description: This skill should be used for the FAST, deterministic check on a repo that already has a graph — when the user asks to "validate the code graph", "lint code_graph.db", "run kg_validate", "find broken anchors", "check the parity links", or wants a cheap pre-check before committing. It reports anchors that no longer resolve to source, source files no node covers, mapped files whose contents changed since the graph was built, and broken or non-reciprocal counterpart and external links. Advisory only, never blocking. (For the deep SEMANTIC accuracy sweep that re-reads the source and judges whether descriptions are still true, use audit instead.)
+description: Fast, deterministic drift check on a repo that has a code graph. It reports anchors that no longer resolve, source files no node covers, mapped files changed since the graph was built, and broken or one-way counterpart and external links. Advisory; it blocks nothing. Use when the user asks to "validate the code graph", "lint code_graph.db", "run kg_validate", "find broken anchors" or "check the parity links", or wants a cheap check before committing. (For the deep check that re-reads source and judges whether descriptions are still true, use audit.)
 allowed-tools:
   # Both names the host gives the server — bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin.
@@ -16,7 +16,8 @@ allowed-tools:
 Run the codebase-kg validator over a repo's `knowledge/code_graph.db` and report. This is the
 **cheap, deterministic** drift pre-check; `audit` is the deeper source-vs-claim sweep.
 **This skill is advisory — it never blocks a commit, a build, or a tool call.** (The plugin's search
-gate does deny a tool call, once per session; that is a separate component and not this one.)
+gate does deny searches until a graph query earns credit; that is a separate component and not this
+one.)
 
 ## What it checks
 
@@ -30,12 +31,12 @@ Everything here is a question the file cannot answer about itself — it needs t
   this graph already anchors on", which cannot see a file type nobody has ever covered — that is
   why step 3 checks `coverage.declared` before reading the number.
 - **Digest drift** (`changed_since_built`) — mapped files whose contents no longer match the SHA-256
-  recorded when the graph was built (`SCHEMA.md` §6.3). The anchor still resolves, so nothing else
+  recorded when the graph was built (`${CLAUDE_PLUGIN_ROOT}/SCHEMA.md` §6.3). The anchor still resolves, so nothing else
   notices; the description may no longer fit. Deliberately outside `ok` — a changed file is a prompt
   to re-read, not a failure. Absent baselines report as `unhashed`, which means "no baseline", never
   "unchanged".
 - **Counterpart problems** — a `counterpart` whose target file or id is missing, or that the peer
-  graph doesn't link back to (a reciprocity break — `SCHEMA.md` §9).
+  graph doesn't link back to (a reciprocity break — `${CLAUDE_PLUGIN_ROOT}/SCHEMA.md` §9).
 - **External link problems** (`external_link_issues`) — a link that is malformed, or that names a
   node the peer graph does not contain. Report these: the `error`-severity ones count against `ok`,
   so skipping them lets you report "clean" over a payload that says `ok: false`. The `warning`-

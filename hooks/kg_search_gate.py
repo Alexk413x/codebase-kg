@@ -74,10 +74,10 @@ _SHELL_TOOLS = {"Bash", "PowerShell"}
 # one. `find` and `Get-ChildItem` only count when they carry a name/path filter,
 # otherwise an ordinary `find . -type d` trips the gate.
 _SHELL_SEARCH = re.compile(
-    r"(?:^|[|;&]\s*)(?:sudo\s+)?(?:grep|egrep|fgrep|rg|ripgrep|ag|ack|fd|sls|select-string)\b"
-    r"|(?:^|[|;&]\s*)(?:sudo\s+)?find\b[^|;&]*\s-(?:i?name|i?path|i?regex)\b"
-    r"|(?:^|[|;&]\s*)(?:get-childitem|gci)\b[^|;&]*\s-r(?:ecurse)?\b",
-    re.IGNORECASE,
+    r"(?:^\s*|[|;&]\s*)(?:sudo\s+)?(?:grep|egrep|fgrep|rg|ripgrep|ag|ack|fd|sls|select-string)\b"
+    r"|(?:^\s*|[|;&]\s*)(?:sudo\s+)?find\b[^|;&\n]*\s-(?:i?name|i?path|i?regex)\b"
+    r"|(?:^\s*|[|;&]\s*)(?:get-childitem|gci)\b[^|;&\n]*\s-r(?:ecurse)?\b",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 # Shell redirection operators, e.g. `2>/dev/null`, `>>out.log`, `<in.txt`,
@@ -101,8 +101,10 @@ _STATE_TTL = 7 * 24 * 3600  # prune abandoned session files after a week
 GATE_MESSAGE = (
     "codebase-kg: this repo has a committed code graph ({graph}). Query it before "
     "searching source.\n\n"
-    "1. kg_search for what you are looking for — it finds the components, not just "
-    "the string. Then kg_node / kg_neighborhood for anchors and relationships.\n"
+    "1. kg_search from the codebase-kg server (its tool name contains codebase-kg) for "
+    "what you are looking for — it finds the components, not just the string. Then "
+    "codebase-kg's kg_node / kg_neighborhood for anchors and relationships. The kg_search "
+    "of a11y-kg or a driver searches another graph and clears nothing here.\n"
     "2. Read the anchored files to confirm current behavior. The graph is "
     "authoritative for WHERE code lives; the source is authoritative for what it "
     "does now.\n"
@@ -131,11 +133,30 @@ def _prune(directory: Path) -> None:
     worth a failure, and a leftover file only costs a few bytes."""
     cutoff = time.time() - _STATE_TTL
     try:
-        for f in directory.glob("*.json"):
+        for f in [*directory.glob("*.json"), *directory.glob("calls/*")]:
             if f.stat().st_mtime < cutoff:
                 f.unlink()
     except OSError:
         pass
+
+
+def _claim_call(tool_use_id: str) -> bool:
+    """True for the first handler to see this tool call, False for the rest.
+
+    `hooks.json` registers one handler per search word, so a command such as
+    `grep a f && rg b d` starts two gate processes in parallel. Only one may
+    spend credit or record a denial.
+    """
+    try:
+        d = Path(tempfile.gettempdir()) / "codebase-kg-gate" / "calls"
+        d.mkdir(parents=True, exist_ok=True)
+        name = hashlib.sha1(tool_use_id.encode("utf-8")).hexdigest()[:16]
+        os.close(os.open(d / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        return True
 
 
 def _read_state(proj: Path, session: str) -> dict[str, object]:
@@ -251,6 +272,7 @@ _PATTERN_FIRST = {
 }
 # `find <path> -name x` names its path first instead.
 _PATH_FIRST = {"find", "get-childitem", "gci"}
+_GCI_WORDS = {"get-childitem", "gci"}
 _SEARCH_WORDS = _PATTERN_FIRST | _PATH_FIRST
 
 # Flags that take their value as the NEXT token, per tool: (short letters, long
@@ -297,6 +319,11 @@ _NAME_FILTER_FLAGS = {"--include", "-g", "--glob", "--iglob", "-name", "-iname",
                       "-path", "-ipath"}
 # `find` predicates whose value is what the search is looking for.
 _FIND_TERMS = {"-name", "-iname", "-path", "-ipath", "-regex", "-iregex"}
+# `Get-ChildItem` parameters: the ones that name where it looks, the ones that
+# filter by file name, and the others that consume the next token.
+_GCI_PATH_FLAGS = {"-path", "-literalpath", "-lp"}
+_GCI_NAME_FLAGS = {"-filter", "-include"}
+_GCI_VALUE_FLAGS = {"-exclude", "-depth", "-attributes"}
 
 # Files no code graph anchors: assets, build and project settings, logs. A
 # search that can only find these is one `kg_search` cannot answer, so gating it
@@ -553,9 +580,18 @@ def parse_shell_search(command: str, proj: Path) -> ShellSearch | None:
         options_done = False   # after `--`, everything is an operand
         pending: str | None = None  # a flag whose value is the next token
         skip_next = False
+        positional = 0
         for tok in toks[1:]:
             if skip_next:
                 skip_next = False
+                continue
+            if pending is not None and word in _GCI_WORDS:
+                if pending in _GCI_PATH_FLAGS:
+                    operands.append(tok)
+                elif pending in _GCI_NAME_FLAGS:
+                    names.append(_unquote(tok))
+                    out.terms.append(tok)
+                pending = None
                 continue
             if pending is not None:
                 if pending in _NAME_FILTER_FLAGS:
@@ -571,6 +607,19 @@ def parse_shell_search(command: str, proj: Path) -> ShellSearch | None:
                 if redirect.end() == len(tok):
                     skip_next = True  # bare operator; the NEXT token is its target
                 continue  # a redirection operand is never a search path
+            if word in _GCI_WORDS:
+                low = tok.lower()
+                if low.startswith("-"):
+                    if low in _GCI_PATH_FLAGS | _GCI_NAME_FLAGS | _GCI_VALUE_FLAGS:
+                        pending = low
+                    continue
+                positional += 1
+                if positional == 2:
+                    names.append(_unquote(tok))
+                    out.terms.append(tok)
+                else:
+                    operands.append(tok)
+                continue
             if word in _PATH_FIRST:
                 # `find <path> -name x` puts its predicates after the paths, so
                 # the first flag ends the path list. Collecting past it counted
@@ -610,6 +659,8 @@ def parse_shell_search(command: str, proj: Path) -> ShellSearch | None:
         if word in _PATTERN_FIRST and operands and not pattern_flagged:
             out.terms.append(operands[0])
             operands = operands[1:]  # the first operand is the pattern
+        if word in _GCI_WORDS and not operands:
+            operands = ["."]
         for raw in operands:
             if _is_unexpanded(raw):
                 continue
@@ -823,8 +874,16 @@ def _deny(reason: str) -> None:
     }))
 
 
-def _warn(message: str) -> None:
-    print(json.dumps({"systemMessage": message, "suppressOutput": False}))
+def _advise(message: str, notify_user: bool = False) -> None:
+    out: dict[str, object] = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": message,
+        }
+    }
+    if notify_user:
+        out["systemMessage"] = message
+    print(json.dumps(out))
 
 
 def _is_search_call(
@@ -851,10 +910,6 @@ def _run(data: dict[str, object]) -> None:
 
     cfg = load_config(proj)
 
-    # A graph query buys credit sized by what it actually handed back. On
-    # PostToolUse the answer exists and can be counted; on PreToolUse it does
-    # not, so that pass grants only the buffer — which keeps a query that errors
-    # or that this hook cannot parse worth something rather than nothing.
     if _KG_TOOL.match(tool):
         state = _read_state(proj, session)
         earned = gate_credit(cfg)
@@ -910,6 +965,11 @@ def _run(data: dict[str, object]) -> None:
         if searches_an_anchored_path(tool_input, proj, root, graph):
             return
 
+    tool_use_id = data.get("tool_use_id")
+    if tool in _SHELL_TOOLS and isinstance(tool_use_id, str) and tool_use_id:
+        if not _claim_call(tool_use_id):
+            return
+
     state = _read_state(proj, session)
     keys = [search_key(tool, tool_input)]
     subject = subject_key(tool, tool_input, proj)
@@ -942,7 +1002,11 @@ def _run(data: dict[str, object]) -> None:
     recorded = _write_state(proj, session, state)
     message = GATE_MESSAGE.format(graph=graph.name, credit=gate_credit(cfg))
     if gate_mode(cfg) == "warn" or not recorded:
-        _warn(message)
+        _advise(message, notify_user=True)
+    elif data.get("agent_id"):
+        # A subagent may hold no codebase-kg tool and so could never earn credit;
+        # the hook cannot see its tool list, so it informs instead of denying.
+        _advise(message)
     else:
         _deny(message)
 

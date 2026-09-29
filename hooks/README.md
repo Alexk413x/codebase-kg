@@ -5,7 +5,7 @@ all no-op in a repo with no `knowledge/code_graph.db`.
 
 | File | Role |
 |---|---|
-| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob\|Bash\|PowerShell` and on the codebase-kg MCP tools → `kg_search_gate.py`; PostToolUse on `Edit\|Write\|MultiEdit` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_session_start.py`. |
+| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob`, on `Bash` and `PowerShell` calls that an `if` rule names as a search (`Bash(grep *)`, `PowerShell(Select-String *)`, one rule per search word), and asynchronously on the codebase-kg MCP tools → `kg_search_gate.py`; PostToolUse on `Edit\|Write` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_session_start.py`. Each hook runs `py -3` when the `py` launcher exists, else `python3`, else `python`. |
 | `kg_search_gate.py` | The gate. Denies a search aimed at mapped code with the instruction to query the graph, and keeps doing it — a query buys credit, a located search is free, a repeat always passes. |
 | `kg_post_edit_check.py` | The nudge. Two signals: the edited file isn't in the graph at all, or enough mapped files have changed since the graph was rebuilt. |
 | `kg_session_start.py` | The unwired-clone notice. One line when this clone has the committed checkers but no `core.hooksPath` or no `diff.codegraph.textconv`. Prints; never writes. |
@@ -43,13 +43,19 @@ Three ways through, each inferred from what the agent actually did:
 - **Fails open.** A malformed payload or an unreadable graph lets the search through. An unwritable
   state file degrades the deny to a **warn**, because the escape hatch lives in that file: a denial
   that cannot be recorded is one a repeat could not be recognised against.
-- The grant is sized on `PostToolUse`, where the answer exists to be counted. The `PreToolUse` pass
-  grants the buffer alone, so a query that errors — or one this hook cannot parse — is still worth
-  something rather than nothing, and never lowers credit already held.
+- A query sets credit to `gate_credit` and never lowers credit already held, so a query that errors
+  is still worth something, and a cheap follow-up cannot cost the allowance an earlier one earned.
+- **Inside a subagent the gate informs instead of denying.** The hook cannot see a subagent's tool
+  list, and a subagent without a codebase-kg tool could never earn credit, so a gated search from a
+  subagent passes with the graph-first instruction added to its context.
+- **`warn` mode** passes the search, adds the instruction to Claude's context, and shows it to you.
 
 Shell detection is deliberately narrow — a false positive denies unrelated work. `find` and
 `Get-ChildItem` only count when they carry a name/path filter, so an ordinary `find . -type d` is not
-a search.
+a search. Claude Code starts the gate for a shell call only when an `if` rule in `hooks.json` names
+one of its subcommands, so `git status` costs no process. `test_hook_config.py` asserts that the
+rules list every word the parser knows. A command that matches two rules starts two gate processes;
+the first to claim the call's `tool_use_id` decides, and the other exits silently.
 
 ## The post-edit nudge (PostToolUse)
 
@@ -95,7 +101,9 @@ Silent unless **all** of these hold:
 - inside a git work tree;
 - the graph (`graph_path`) exists;
 - a hooks dir with both vendored checkers exists (`core.hooksPath` if set, otherwise `.githooks/`);
-- `core.hooksPath` is unset, **or** `diff.codegraph.textconv` is unset.
+- `core.hooksPath` is unset, **or** `diff.codegraph.textconv` is unset, **or** the textconv pins a
+  codebase-kg release older than the installed plugin, **or** it names a codebase-kg folder that no
+  longer exists. The last two name `/codebase-kg:setup`, which restamps the pin.
 
 And never when `core.hooksPath` already points somewhere other than that dir — that repo made a
 deliberate choice, and nagging it toward clobbering its own config is worse than saying nothing.

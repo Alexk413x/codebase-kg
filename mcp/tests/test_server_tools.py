@@ -18,6 +18,7 @@ registration, the schema coercion and the body are all exercised together.
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 from pathlib import Path
 from typing import Any, Iterator
@@ -223,3 +224,70 @@ def test_kg_add_link_then_remove_link_round_trips(served: Path) -> None:
         "written"
     ] is True
     assert call("kg_node", id=node_id).get("external_links", []) == []
+
+
+# --- the MCP call path -------------------------------------------------------
+def _call_over_mcp(name: str, arguments: dict[str, Any]) -> Any:
+    from fastmcp import Client
+
+    async def run() -> Any:
+        async with Client(server.mcp) as client:
+            return await client.call_tool(name, arguments, raise_on_error=False)
+
+    return asyncio.run(run())
+
+
+def test_a_refused_write_is_an_error_result_with_the_same_body(served: Path) -> None:
+    node_id = _any_node_id(served)
+    result = _call_over_mcp(
+        "kg_upsert_node", {"nodes": [{"id": node_id, "description": "Fixes ACME-431."}]}
+    )
+    assert result.is_error is True
+    body = result.structured_content
+    assert body["ok"] is False and body["written"] is False
+    assert "ticket refs" in body["error"]
+    assert json.loads(result.content[0].text) == body
+
+
+def test_an_accepted_write_is_not_an_error_result(served: Path) -> None:
+    node_id = _any_node_id(served)
+    result = _call_over_mcp(
+        "kg_upsert_node", {"nodes": [{"id": node_id, "section": "REVISED"}]}
+    )
+    assert result.is_error is False
+    assert result.structured_content["written"] is True
+
+
+def test_upsert_schema_passes_keys_and_types_through_to_the_edit_layer(served: Path) -> None:
+    # The typed `nodes` schema must not reject what `edits.upsert_node` accepts:
+    # unknown keys are ignored there, and anchors may be objects.
+    node_id = _any_node_id(served)
+    anchor = call("kg_node", id=node_id)["anchors"][0]
+    path, _, symbol = str(anchor).partition("#")
+    out = call(
+        "kg_upsert_node",
+        nodes=[{"id": node_id, "note": "ignored", "anchors": [{"path": path, "symbol": symbol}]}],
+    )
+    assert out["ok"] is True
+    refused = _call_over_mcp(
+        "kg_upsert_node", {"nodes": [{"id": node_id, "rebaseline": "yes"}]}
+    )
+    assert refused.is_error is True
+    assert "`rebaseline` must be true or false" in refused.structured_content["error"]
+
+
+def test_list_tools_page_through_the_tool_surface(served: Path) -> None:
+    first = call("kg_find_by_kind", kind="", limit=1)
+    assert first["count"] == 1 and first["truncated"] is True
+    rest = call("kg_find_by_kind", kind="", limit=1000, offset=first["next_offset"])
+    assert rest["truncated"] is False
+    assert first["total"] == rest["total"] == 1 + rest["count"]
+
+
+def test_kg_validate_reports_issue_counts(served: Path) -> None:
+    out = call("kg_validate", limit=1)
+    assert set(out["issue_counts"]) == {
+        "anchor_issues", "counterpart_issues", "description_issues",
+        "external_link_issues", "reference_issues",
+    }
+    assert all(len(out[k]) <= 1 for k in out["issue_counts"])

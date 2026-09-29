@@ -1,6 +1,6 @@
 ---
 name: query
-description: This skill should be used to find or orient in code in a repo that has a knowledge/code_graph.db — when the user asks "where does X live", "what handles X", "what depends on X", "how is X wired", "show me the X code", "orient me in this codebase", "what would break if I change X", or when a codebase-kg search gate has denied a Grep/Glob and told you to query the graph first. It answers WHERE from the committed graph, then reads the anchored source to confirm what the code currently does. (To change the graph use refresh; to check whether the graph is still accurate use validate or audit.)
+description: Finds and explains code in a repo that has a knowledge/code_graph.db. It answers where code lives from the committed graph, then reads the anchored source to confirm what the code does now. Use when the user asks "where does X live", "what handles X", "what depends on X", "how is X wired", "show me the X code", "orient me in this codebase", "what would break if I change X", or when the codebase-kg search gate denied a Grep/Glob and said to query the graph first. (To change the graph use refresh; to check whether it is still accurate use validate or audit.)
 allowed-tools:
   # Both names the host gives the server: bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin.
@@ -41,13 +41,16 @@ exists.
 
 ## If a search gate sent you here
 
-The plugin denies the first `Grep`/`Glob` of a session in a repo that has a graph. That is this
-workflow's cue, not an obstacle. Run step 1, and:
+In a repo that has a graph, the plugin denies a `Grep`/`Glob` (or shell `grep`/`rg`/`find -name`)
+aimed at mapped code until a codebase-kg query earns credit. One query clears the next few searches
+(`gate_credit`, default 3); when the credit runs out, the gate denies again. A search scoped to a
+file the graph anchors is never gated. The denial is this workflow's cue, not an obstacle. Run
+step 1, and:
 
 - **The graph answers it** → carry on from step 2. You are done faster than the grep would have been.
-- **The graph does not cover it** → say so and run the search again. The gate has already stood down
-  and will not deny it twice. Then treat the miss as a finding: a hole in the map is worth reporting,
-  and `/codebase-kg:refresh` is what fills it.
+- **The graph does not cover it** → say so and run the same search again. A repeat of a denied
+  search always passes, however you reword the command. Then treat the miss as a finding: a hole in
+  the map is worth reporting, and `/codebase-kg:refresh` is what fills it.
 
 Never report "the graph has nothing" without having run `kg_search` with more than one phrasing.
 

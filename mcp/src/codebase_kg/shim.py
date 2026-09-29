@@ -28,8 +28,20 @@ their own, so a session never talks to a server running other code.
 
 If the shared server cannot be reached within `CODEBASE_KG_SHARED_TIMEOUT`
 seconds (default 10), the shim runs a private stdio server as its child, so a
-session never loses its tools. `CODEBASE_KG_SHARED=0` goes straight to that.
-`CODEBASE_KG_CACHE_DIR` moves the state, lock and log files.
+session never loses its tools. A shim that started the server itself waits up
+to `CODEBASE_KG_SPAWN_TIMEOUT` seconds (default 25) instead, because the first
+start after an update builds the venv. `CODEBASE_KG_SHARED=0` goes straight to
+the private server. `CODEBASE_KG_CACHE_DIR` moves the state, lock and log files.
+
+The server's venv lives outside the plugin folder, in `CODEBASE_KG_DATA_DIR`,
+else the `CLAUDE_PLUGIN_DATA` that Claude Code exports to the server, else the
+per-user cache dir, and is keyed
+by the third-party dependency set in `uv.lock`, so a plugin update that keeps
+the dependencies reuses it. Builds that share the venv each import the package
+from their own `src` through `PYTHONPATH`, whichever checkout the venv's
+editable install points at. The server runs as `python -c`, not through the
+`codebase-kg` console script: a running script's `.exe` is locked on Windows,
+and another build's sync would fail to replace it.
 
 Stdlib only, and no imports from this package: `.mcp.json` runs this file with a
 bare system `python3`, outside any venv. The server imports it for the paths and
@@ -63,6 +75,7 @@ from typing import Any
 PACKAGE_DIR = Path(__file__).resolve().parent
 MCP_DIR = PACKAGE_DIR.parents[1]
 CONNECT_BUDGET = float(os.environ.get("CODEBASE_KG_SHARED_TIMEOUT") or 10.0)
+SPAWN_BUDGET = float(os.environ.get("CODEBASE_KG_SPAWN_TIMEOUT") or 25.0)
 HANDSHAKE_TIMEOUT = 3.0
 REPLAY_TIMEOUT = 30.0
 RETRY_DELAYS = (0.0, 1.0, 2.0)
@@ -81,14 +94,43 @@ class Rejected(RuntimeError):
 
 def cache_dir() -> Path:
     override = os.environ.get("CODEBASE_KG_CACHE_DIR")
-    if override:
-        return Path(override)
+    return Path(override) if override else user_cache_dir()
+
+
+def user_cache_dir() -> Path:
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return Path(base) / "codebase-kg"
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Caches" / "codebase-kg"
     return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "codebase-kg"
+
+
+def data_dir() -> Path:
+    override = os.environ.get("CODEBASE_KG_DATA_DIR") or os.environ.get("CLAUDE_PLUGIN_DATA")
+    return Path(override) if override else user_cache_dir()
+
+
+def dependency_key(mcp_dir: Path = MCP_DIR) -> str:
+    """A digest of `uv.lock` without this package's own version line."""
+    try:
+        text = (mcp_dir / "uv.lock").read_text(encoding="utf-8").replace("\r\n", "\n")
+    except OSError:
+        return "unlocked"
+    text = re.sub(r'(\[\[package\]\]\nname = "codebase-kg"\n)version = "[^"]*"\n', r"\1", text)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def venv_path() -> Path:
+    return data_dir() / f"venv-{dependency_key()}"
+
+
+def server_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["UV_PROJECT_ENVIRONMENT"] = str(venv_path())
+    src = str(MCP_DIR / "src")
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (src, env.get("PYTHONPATH")) if p)
+    return env
 
 
 def package_version(mcp_dir: Path = MCP_DIR) -> str:
@@ -209,7 +251,7 @@ def _take_lock(build: str) -> bool:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         try:
-            abandoned = time.time() - lock.stat().st_mtime > CONNECT_BUDGET * 2
+            abandoned = time.time() - lock.stat().st_mtime > max(CONNECT_BUDGET, SPAWN_BUDGET) * 2
         except OSError:
             return False
         if abandoned:
@@ -231,13 +273,19 @@ def _release_lock(build: str) -> None:
         pass
 
 
+_SERVER_ENTRY = "from codebase_kg.server import main; main()"
+
+
 def uv_command(*extra: str) -> list[str]:
     uv = shutil.which("uv") or "uv"
-    return [uv, "run", "--project", str(MCP_DIR), "--frozen", "--no-dev", "codebase-kg", *extra]
+    return [
+        uv, "run", "--project", str(MCP_DIR), "--frozen", "--no-dev",
+        "python", "-c", _SERVER_ENTRY, *extra,
+    ]
 
 
 def spawn_server(build: str) -> subprocess.Popen[bytes]:
-    env = dict(os.environ)
+    env = server_env()
     env.pop("CODEBASE_KG_PATH", None)
     if sys.platform == "win32":
         # CREATE_NO_WINDOW rather than DETACHED_PROCESS: a detached uv gives each
@@ -295,6 +343,7 @@ def shared_connection(
                     server = spawn_server(build)
                 except OSError:
                     return None
+                deadline = max(deadline, time.monotonic() + SPAWN_BUDGET)
             time.sleep(_POLL)
         return None
     finally:
@@ -572,7 +621,7 @@ class Relay:
         print("codebase-kg: shared server unavailable; running a private one", file=sys.stderr)
         try:
             proc = subprocess.Popen(uv_command(*self._args), stdin=subprocess.PIPE,
-                                    stdout=subprocess.PIPE)
+                                    stdout=subprocess.PIPE, env=server_env())
         except OSError as exc:
             print(f"codebase-kg: cannot start the server: {exc}", file=sys.stderr)
             return None
@@ -623,7 +672,7 @@ class Relay:
 def run_private(args: list[str]) -> int:
     """Today's per-session stdio server, sharing this process's stdin and stdout."""
     try:
-        return subprocess.call(uv_command(*args))
+        return subprocess.call(uv_command(*args), env=server_env())
     except OSError as exc:
         print(f"codebase-kg: cannot start the server: {exc}", file=sys.stderr)
         return 1
