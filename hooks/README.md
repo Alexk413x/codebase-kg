@@ -5,7 +5,7 @@ all no-op in a repo with no `knowledge/code_graph.db`.
 
 | File | Role |
 |---|---|
-| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob\|Bash\|PowerShell` and on the codebase-kg MCP tools → `kg_search_gate.py`; PostToolUse on `Edit\|Write\|MultiEdit` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_session_start.py`. |
+| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob\|Bash\|PowerShell` and on the codebase-kg MCP tools → `kg_search_gate.py`; PostToolUse on `Edit\|Write` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_session_start.py`. |
 | `kg_search_gate.py` | The gate. Denies a search aimed at mapped code with the instruction to query the graph, and keeps doing it — a query buys credit, a located search is free, a repeat always passes. |
 | `kg_post_edit_check.py` | The nudge. Two signals: the edited file isn't in the graph at all, or enough mapped files have changed since the graph was rebuilt. |
 | `kg_session_start.py` | The unwired-clone notice. One line when this clone has the committed checkers but no `core.hooksPath` or no `diff.codegraph.textconv`. Prints; never writes. |
@@ -43,9 +43,12 @@ Three ways through, each inferred from what the agent actually did:
 - **Fails open.** A malformed payload or an unreadable graph lets the search through. An unwritable
   state file degrades the deny to a **warn**, because the escape hatch lives in that file: a denial
   that cannot be recorded is one a repeat could not be recognised against.
-- The grant is sized on `PostToolUse`, where the answer exists to be counted. The `PreToolUse` pass
-  grants the buffer alone, so a query that errors — or one this hook cannot parse — is still worth
-  something rather than nothing, and never lowers credit already held.
+- A query sets credit to `gate_credit` and never lowers credit already held, so a query that errors
+  is still worth something, and a cheap follow-up cannot cost the allowance an earlier one earned.
+- **Inside a subagent the gate informs instead of denying.** The hook cannot see a subagent's tool
+  list, and a subagent without a codebase-kg tool could never earn credit, so a gated search from a
+  subagent passes with the graph-first instruction added to its context.
+- **`warn` mode** passes the search, adds the instruction to Claude's context, and shows it to you.
 
 Shell detection is deliberately narrow — a false positive denies unrelated work. `find` and
 `Get-ChildItem` only count when they carry a name/path filter, so an ordinary `find . -type d` is not

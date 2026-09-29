@@ -144,8 +144,7 @@ codebase-kg/
 │   ├── code_graph.template.json
 │   └── codebase-kg.local.md.example
 ├── .mcp.json                 # registers the codebase-kg MCP server (bin/kg-shim → mcp/src/codebase_kg/shim.py)
-├── commands/                 # /codebase-kg:setup (the only command; every other feature is a skill)
-├── skills/                   # query / build / refresh / audit / link / validate
+├── skills/                   # query / build / refresh / audit / link / validate, and setup (user-invoked only)
 ├── mcp/                      # the query server (one shared process per machine) + build/export/migrate CLIs
 ├── hooks/                    # Claude Code hooks: the search gate, the post-edit nudge, the unwired-clone notice
 └── git-hooks/                # advisory pre-commit + pre-push staleness checks and install.sh, vendored into any repo (stdlib-only)
@@ -157,13 +156,14 @@ A map nobody opens is worth nothing. Left alone, an agent reaches for `Grep` and
 it already has — slower, and blind to the components a search string does not appear in.
 
 The **search gate** (`hooks/kg_search_gate.py`, a `PreToolUse` hook) fixes that. In any repo that has
-a `knowledge/code_graph.db`, the first `Grep`, `Glob`, or shell `grep`/`rg`/`find -name` of a session
-is denied once, with the instruction to query the graph first. Then it **stands down for the rest of
-that session** — whether or not the agent complied. Querying any codebase-kg MCP tool stands it down
-too, so an agent that already started at the graph never sees it.
+a `knowledge/code_graph.db`, a `Grep`, `Glob`, or shell `grep`/`rg`/`find -name` aimed at mapped code
+is denied with the instruction to query the graph first. A codebase-kg query clears the next
+`gate_credit` searches (default 3); when that credit runs out, the gate denies again. A search scoped
+to a file the graph anchors is never gated. Inside a subagent, the gate adds the instruction to the
+subagent's context instead of denying.
 
-One interruption per session. It cannot loop, and no search is ever permanently blocked: if the
-graph does not cover what you need, run the search again and it goes through.
+No search is ever permanently blocked: if the graph does not cover what you need, run the same
+search again and it goes through, however you reword the command.
 
 It ships with the plugin, so there is nothing to install — it activates in every repo that has a
 graph, and stays silent in every repo that does not. `SKIP_KG=1` silences it for a shell;

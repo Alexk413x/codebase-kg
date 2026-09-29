@@ -1,6 +1,8 @@
 ---
-description: Wire codebase-kg into the current repo in one pass — advisory pre-commit and pre-push staleness checks, the textconv driver that makes the committed graph readable in git diffs, and a committed install.sh so every other clone gets the same wiring from one command. Idempotent, non-destructive to existing hooks, and safe to re-run any time to repair or update the wiring.
+name: setup
+description: Wire codebase-kg into the current repo in one pass — pre-commit and pre-push staleness checks, the textconv driver that makes the committed graph readable in git diffs, and a committed install.sh so every other clone gets the same wiring from one command. Idempotent, non-destructive to existing hooks, and safe to re-run any time to repair or update the wiring.
 argument-hint: "[repo path | empty = current repo]"
+disable-model-invocation: true
 ---
 
 # /codebase-kg:setup
@@ -8,9 +10,6 @@ argument-hint: "[repo path | empty = current repo]"
 One command for everything a repo needs. Run it after `/codebase-kg:build`, and again whenever the
 wiring needs repairing — every step below is idempotent and none of them overwrite work that is
 already there.
-
-This replaces the old `install-hooks` and `setup-diff` commands.
-
 ## What is already handled without this command
 
 The **search gate** and the **post-edit nudge** ship inside the plugin (`hooks/hooks.json`) and need
@@ -47,10 +46,9 @@ Copy **`${CLAUDE_PLUGIN_ROOT}/git-hooks/kg_pre_push.py` and
 
 Copy both regardless of which hooks the repo already has. `kg_pre_commit.py` imports the coverage
 and digest rules from `kg_pre_push.py` beside it rather than repeating them, so the two must land
-together — and step 5 wires a call to it in either branch. An earlier version of this command copied
-it only in the fresh-repo branch, so a repo with an existing `pre-commit` got a hook line pointing at
-a file that was never installed; `|| true` swallowed the error and the check silently never ran while
-step 10 reported it as live.
+together — and step 5 wires a call to it in either branch. Without `kg_pre_commit.py`, the hook line
+points at a missing file, `|| true` swallows the error, and the check never runs while step 10
+reports it as live.
 
 **Copy `${CLAUDE_PLUGIN_ROOT}/git-hooks/install.sh` into the hooks dir too, and stamp its version
 pin.** This is the file that makes every *other* clone work. `core.hooksPath` and the
@@ -199,10 +197,9 @@ hooks. Report that outcome as a skip, not as success.
 
 ### 10. Verify + explain
 
-**Verify the wiring the way a teammate will meet it — in a clone, not in this shell.** Setup's old
-step 9 checked `git diff` in the shell that had just run `git config`, which is a test of the value
-it set one line earlier and passes no matter how machine-local that value is. It reported the
-textconv driver as live in a repo where every other clone saw "Binary files differ".
+**Verify the wiring the way a teammate will meet it — in a clone, not in this shell.** A `git diff`
+in the shell that just ran `git config` tests the value set one line earlier, and passes no matter
+how machine-local that value is.
 
 Commit the wiring first (`.githooks/`, the mode changes, `.gitattributes`), then:
 
@@ -240,9 +237,9 @@ Also confirm, in this repo:
 
 Then tell the user what is now live:
 
-- **Search gate** (from the plugin, no install): the first `Grep`/`Glob` or shell `grep`/`rg`/
-  `find -name` of a session is denied once with the instruction to query the graph first, then it
-  stands down for that session. Any codebase-kg MCP call stands it down too.
+- **Search gate** (from the plugin, no install): a `Grep`/`Glob` or shell `grep`/`rg`/`find -name`
+  aimed at mapped code is denied with the instruction to query the graph first. A codebase-kg query
+  clears the next `gate_credit` searches (default 3), and a repeat of a denied search always passes.
 - **Post-edit nudge** (from the plugin, no install): advisory, points at `/codebase-kg:refresh`.
 - **Unwired-clone notice** (from the plugin, no install): at session start, a clone of this repo with
   no `core.hooksPath` or no `diff.codegraph.textconv` gets one line naming `sh .githooks/install.sh`.
@@ -282,8 +279,8 @@ rebuild after merging is reproducible rather than a third distinct artifact. See
 
 ## Posture
 
-Non-destructive: never overwrite an existing hook — integrate a call into it. Advisory, always
-exit 0 (this replaced an earlier blocking, date-based gate — see `docs/DESIGN.md`). The hooks,
+Non-destructive: never overwrite an existing hook — integrate a call into it. The `pre-commit`
+check always exits 0; the `pre-push` check blocks only on a staleness backlog. The hooks,
 `install.sh` and `.gitattributes` are committed in the repo, so all clones and CI behave the same;
 `core.hooksPath` and the textconv driver are local git config, which git never clones, so each clone
 runs `sh .githooks/install.sh` once. A clone that skips it sees inert hooks and the old binary

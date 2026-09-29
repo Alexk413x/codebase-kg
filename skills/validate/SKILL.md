@@ -16,7 +16,8 @@ allowed-tools:
 Run the codebase-kg validator over a repo's `knowledge/code_graph.db` and report. This is the
 **cheap, deterministic** drift pre-check; `audit` is the deeper source-vs-claim sweep.
 **This skill is advisory — it never blocks a commit, a build, or a tool call.** (The plugin's search
-gate does deny a tool call, once per session; that is a separate component and not this one.)
+gate does deny searches until a graph query earns credit; that is a separate component and not this
+one.)
 
 ## What it checks
 

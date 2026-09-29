@@ -1,6 +1,6 @@
 """FastMCP server entry point for codebase-kg.
 
-Thirteen tools over one repo's `knowledge/code_graph.db` — nine queries and four
+Sixteen tools over one repo's `knowledge/code_graph.db` — ten queries and six
 targeted writes. The graph opens on each tool call, so tools always see current
 data — including a graph created after the server started. The peer graph named
 in `meta.counterpart` is opened the same way for the cross-codebase parity
@@ -269,7 +269,7 @@ def kg_find_by_path(path: str) -> dict[str, Any]:
 @mcp.tool()
 def kg_find_by_link(target: str) -> dict[str, Any]:
     """Reverse lookup across graphs: which code node(s) link to a node in another
-    committed graph in this repo — typically a screen in `cartographer_graph.db`.
+    committed graph in this repo — typically a screen in `cartographer/baselines/baseline.db`.
 
     Use when you have a screen and want the code behind it. Accepts a full
     `<db-file>#<node-id>` target or a bare peer node id. See cartographer's
@@ -344,7 +344,7 @@ def kg_upsert_node(nodes: list[dict[str, Any]]) -> dict[str, Any]:
 
     - `anchors`: `["path/to/File.kt#Symbol", ...]` — symbols, never line numbers.
     - `edges`: outbound node ids. Both endpoints must exist after this call.
-    - `external_links`: `[{"target": "cartographer_graph.db#screen", "kind": "presented-by"}]`.
+    - `external_links`: `[{"target": "<peer-db>#<node>", "kind": "presented-by"}]`.
     - `references`: `[{"url": "https://...", "kind": "platform-api", "title": "TouchDelegate",
       "path": "path/to/File.kt", "symbol": "Symbol"}]`. `path`/`symbol` are optional
       and must equal one of this node's anchors.
@@ -386,7 +386,7 @@ def kg_delete_node(ids: list[str], dry_run: bool = True, cascade_inbound: bool =
 @mcp.tool()
 def kg_add_link(node_id: str, target: str, kind: str = "") -> dict[str, Any]:
     """Point a code node at a node in another committed graph in this repo —
-    typically a screen in `cartographer_graph.db`. The inverse of `kg_find_by_link`.
+    typically a screen in `cartographer/baselines/baseline.db`. The inverse of `kg_find_by_link`.
 
     - `target`: `<db-file>#<node-id>`, relative to `knowledge/` and never absolute
       (an absolute path breaks on the next clone). See cartographer's

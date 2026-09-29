@@ -106,7 +106,7 @@
       "anchors": ["ui/FeedScreen.kt#FeedScreen"],
       "edges": ["feed_ranker"],
       "external_links": [
-        {"target": "cartographer_graph.db#feed-main", "kind": "presented-by"}
+        {"target": "cartographer/baselines/baseline.db#feed-main", "kind": "presented-by"}
       ]
     },
     {

@@ -81,8 +81,13 @@ def slash_names() -> set[str]:
 
 def test_there_are_skills_to_check() -> None:
     """A glob that silently matches nothing would make every test below pass."""
-    assert len(SKILLS) >= 6, [p.parent.name for p in SKILLS]
-    assert len(COMMANDS) >= 1, [p.name for p in COMMANDS]
+    assert len(SKILLS) >= 7, [p.parent.name for p in SKILLS]
+
+
+def test_setup_runs_only_when_the_user_invokes_it() -> None:
+    """Setup writes git hooks and git config, so Claude must not start it alone."""
+    setup = ROOT / "skills" / "setup" / "SKILL.md"
+    assert frontmatter(setup).get("disable-model-invocation") is True
 
 
 def test_no_feature_appears_in_the_slash_menu_twice() -> None:

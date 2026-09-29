@@ -1,6 +1,6 @@
 """Advisory PostToolUse hook — nudge to refresh the code graph after source edits.
 
-Fires on Edit/Write/MultiEdit. Two signals, in order of strength:
+Fires on Edit/Write. Two signals, in order of strength:
 
 1. **The edited file is not in the graph at all.** No node anchors on it, so the
    map has a hole exactly where you are working. That is a fact, not a guess, so
@@ -35,7 +35,7 @@ from _config import (  # noqa: E402
     project_dir,
 )
 
-_EDIT_TOOLS = {"Edit", "Write", "MultiEdit"}
+_EDIT_TOOLS = {"Edit", "Write"}
 GRAPH_FILENAME = "code_graph.db"
 
 
@@ -85,7 +85,7 @@ def _write_state(proj: Path, state: dict[str, object]) -> None:
 
 
 def _emit(message: str) -> None:
-    print(json.dumps({"systemMessage": message, "suppressOutput": False}))
+    print(json.dumps({"systemMessage": message}))
 
 
 def norm_root(root: str) -> str:

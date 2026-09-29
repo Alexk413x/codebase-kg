@@ -43,10 +43,10 @@ symbols; never paste code). It is **descriptive**, not prescriptive.
 structure; rebuilding throws it away.
 
 **If the repo already has a `code_graph.db`** (the "too narrow to keep" case), the plugin's search
-gate denies the first `Grep`/`Glob` of the session once, telling you to query the graph instead.
-That instruction does not apply here — a bootstrap re-derives from source on purpose, and the graph
-you are about to replace is not the authority. Run the search again; the gate stands down for the
-rest of the session either way.
+gate denies an unscoped `Grep`/`Glob` until a graph query earns credit, telling you to query the
+graph instead. That instruction does not apply here — a bootstrap re-derives from source on purpose,
+and the graph you are about to replace is not the authority. Run the denied search again: a repeat
+of a denied search always passes. Subagents are informed rather than denied.
 
 > **Before running any CLI below, call `kg_stats` and read its `cli` field.** It reports the
 > invocation that works *in this repo* — `uvx --from "<plugin>/mcp" codebase-kg-build …` when the

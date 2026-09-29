@@ -413,6 +413,7 @@ def test_warn_mode_advises_instead_of_denying(
     result = run(monkeypatch, capsys, repo, "Grep", {"pattern": "x"})
     assert decision(result) is None
     assert "kg_search" in result["systemMessage"]  # type: ignore[index]
+    assert "kg_search" in result["hookSpecificOutput"]["additionalContext"]  # type: ignore[index]
     # Still one interruption per session.
     assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "x"}) is None
 
@@ -457,6 +458,8 @@ def test_only_searches_that_can_reach_mapped_code_are_gated(
         "find app -iname FeedRanker.kt",
         "Get-ChildItem -Recurse -Filter *.kt",
         "sudo grep -r secret /etc",
+        "cd src\ngrep -rn foo .",
+        "echo start\n  rg Ranker app",
     ],
 )
 def test_a_shell_search_counts_as_a_search(command: str) -> None:
@@ -522,6 +525,30 @@ def test_it_degrades_to_a_warning_when_state_cannot_be_written(
     result = run(monkeypatch, capsys, repo, "Grep", {"pattern": "x"})
     assert decision(result) is None
     assert "kg_search" in result["systemMessage"]  # type: ignore[index]
+    assert "kg_search" in result["hookSpecificOutput"]["additionalContext"]  # type: ignore[index]
+
+
+def test_a_subagent_is_informed_instead_of_denied(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A subagent may hold no codebase-kg tool, so it could never earn credit."""
+    payload = {
+        "tool_name": "Grep", "tool_input": {"pattern": "clickable", "path": str(repo / "app/src")},
+        "cwd": str(repo), "session_id": "s1", "agent_id": "a1",
+    }
+    monkeypatch.setattr(sys, "stdin", _Stdin(json.dumps(payload)))
+    gate.main()
+    result = json.loads(capsys.readouterr().out)
+    assert decision(result) is None
+    assert "systemMessage" not in result
+    assert "kg_search" in result["hookSpecificOutput"]["additionalContext"]
+
+
+def test_the_main_agent_is_still_denied(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result = run(monkeypatch, capsys, repo, "Grep", {"pattern": "clickable", "path": str(repo / "app/src")})
+    assert decision(result) == "deny"
 
 
 def test_an_unreadable_graph_does_not_raise(
@@ -794,6 +821,8 @@ def test_a_located_search_with_flag_values_or_variables_is_not_gated(
         ("rg -g '*.{json,plist}' thing .", "a brace alternation of non-source"),
         ("find . -iname '*.xcodeproj' -o -iname '*.xcworkspace'", "Xcode bundles"),
         ("find App.xcodeproj -name project.pbxproj", "a search inside a project bundle"),
+        ("Get-ChildItem src -Recurse -Filter *.md", "-Filter is a name filter"),
+        ("gci -Path src -Recurse -Include *.plist", "-Include is a name filter"),
     ],
 )
 def test_a_search_that_can_only_find_non_source_files_is_not_gated(
@@ -814,6 +843,9 @@ def test_a_search_that_can_only_find_non_source_files_is_not_gated(
         ("grep -A 20 thing src", "a flag value does not hide a directory target"),
         ("S=/tmp; grep -rn thing $S src", "a variable does not hide a real directory"),
         ("find src -name '*.xcscheme' -o -name '*.py'", "OR with source still reaches code"),
+        ("Get-ChildItem -Recurse -Filter *.py", "an unscoped Get-ChildItem searches the working dir"),
+        ("Get-ChildItem -Path src -Recurse -Filter *.py", "-Path names where it looks"),
+        ("gci src *.py -r", "the second positional is the filter"),
     ],
 )
 def test_the_exemptions_do_not_swallow_real_tree_searches(

@@ -41,13 +41,16 @@ exists.
 
 ## If a search gate sent you here
 
-The plugin denies the first `Grep`/`Glob` of a session in a repo that has a graph. That is this
-workflow's cue, not an obstacle. Run step 1, and:
+In a repo that has a graph, the plugin denies a `Grep`/`Glob` (or shell `grep`/`rg`/`find -name`)
+aimed at mapped code until a codebase-kg query earns credit. One query clears the next few searches
+(`gate_credit`, default 3); when the credit runs out, the gate denies again. A search scoped to a
+file the graph anchors is never gated. The denial is this workflow's cue, not an obstacle. Run
+step 1, and:
 
 - **The graph answers it** → carry on from step 2. You are done faster than the grep would have been.
-- **The graph does not cover it** → say so and run the search again. The gate has already stood down
-  and will not deny it twice. Then treat the miss as a finding: a hole in the map is worth reporting,
-  and `/codebase-kg:refresh` is what fills it.
+- **The graph does not cover it** → say so and run the same search again. A repeat of a denied
+  search always passes, however you reword the command. Then treat the miss as a finding: a hole in
+  the map is worth reporting, and `/codebase-kg:refresh` is what fills it.
 
 Never report "the graph has nothing" without having run `kg_search` with more than one phrasing.
 

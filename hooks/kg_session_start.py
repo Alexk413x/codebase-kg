@@ -122,7 +122,7 @@ def main() -> None:
         cwd = data.get("cwd")
         message = advice(project_dir(cwd if isinstance(cwd, str) else None))
         if message:
-            print(json.dumps({"systemMessage": message, "suppressOutput": True}))
+            print(json.dumps({"systemMessage": message}))
     except Exception:
         # Advisory. A session must never fail to start because of this.
         return

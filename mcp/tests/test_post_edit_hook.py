@@ -1,6 +1,6 @@
 """The PostToolUse nudge — the most-run code in the plugin, previously untested.
 
-`hooks/kg_post_edit_check.py` fires after every Edit/Write/MultiEdit in every
+`hooks/kg_post_edit_check.py` fires after every Edit/Write in every
 repo that installs the plugin, and no test imported it. `coverage.py` reported
 it as `never imported` while the package around it sat at 91%.
 
@@ -143,7 +143,7 @@ def test_non_edit_tools_are_ignored(
     assert _emitted(capsys) == []
 
 
-@pytest.mark.parametrize("tool", ["Edit", "Write", "MultiEdit"])
+@pytest.mark.parametrize("tool", ["Edit", "Write"])
 def test_every_edit_tool_is_considered(
     repo: Path, tool: str, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -182,7 +182,7 @@ def test_an_unmapped_file_is_reported_with_its_path(
     text = msg["systemMessage"]
     assert "domain/Unmapped.kt" in text          # relative to `root`, as anchored
     assert "/codebase-kg:refresh" in text
-    assert msg["suppressOutput"] is False
+    assert "suppressOutput" not in msg
 
 
 def test_an_anchored_file_is_not_reported_as_missing(
