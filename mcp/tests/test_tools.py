@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any, Iterator
+
+import pytest
 
 from codebase_kg import tools
+from codebase_kg.models import Anchor
 from codebase_kg.store import CodeGraph
 
 
@@ -317,3 +322,84 @@ def test_coverage_is_empty_without_anchors_or_declaration(tmp_path: Path) -> Non
         assert tools.coverage_report(g, tmp_path).gaps == []
     finally:
         g.close()
+
+
+# --- result bounds on a large graph -------------------------------------------
+LARGE = 2000
+
+
+@pytest.fixture(scope="module")
+def large_graph(tmp_path_factory: pytest.TempPathFactory) -> Iterator[CodeGraph]:
+    """One hub pointing at 2,000 nodes that share a file, a parity flag and a doc host."""
+    from codebase_kg.models import Meta, Node, Reference
+    from codebase_kg.writer import build
+
+    spokes = [
+        Node(
+            id=f"n{i:04d}",
+            kind="Service",
+            description="A generated service that sizes a result page.",
+            anchors=[Anchor("src/Common.kt", f"Service{i}")],
+            parity="divergent",
+            counterpart=f"../peer/code_graph.db#p{i}",
+            divergence="Differs on the peer.",
+            references=[Reference(url=f"https://docs.example.com/api/{i}", kind="spec")],
+        )
+        for i in range(LARGE)
+    ]
+    hub = Node(id="hub", kind="Hub", edges=[n.id for n in spokes])
+    db = tmp_path_factory.mktemp("large") / "code_graph.db"
+    build(db, Meta(codebase="large", root="src", generated="2026-09-28"), [hub, *spokes])
+    g = CodeGraph(db)
+    yield g
+    g.close()
+
+
+def _bounded(result: dict[str, Any], key: str) -> None:
+    assert len(result[key]) == result["count"] == tools.DEFAULT_LIMIT
+    assert result["total"] == LARGE and result["truncated"] is True
+    assert result["next_offset"] == tools.DEFAULT_LIMIT and "hint" in result
+    assert len(json.dumps(result)) < 30_000
+
+
+def test_list_tools_are_bounded_on_a_large_graph(large_graph: CodeGraph) -> None:
+    _bounded(tools.kg_find_by_kind(large_graph, "service"), "nodes")
+    _bounded(tools.kg_find_by_path(large_graph, "Common.kt"), "nodes")
+    _bounded(tools.kg_find_by_reference(large_graph, "docs.example.com"), "references")
+    _bounded(tools.kg_neighborhood(large_graph, "hub", depth=1), "neighbors")
+    gaps = tools.kg_parity_gaps(large_graph)
+    _bounded(gaps, "gaps")
+    assert gaps["by_status"] == {"divergent": LARGE}
+
+
+def test_offset_pages_to_the_end(large_graph: CodeGraph) -> None:
+    last = tools.kg_find_by_kind(large_graph, "service", limit=100, offset=LARGE - 100)
+    assert last["count"] == 100 and last["truncated"] is False
+    assert "next_offset" not in last and "hint" not in last
+    assert last["nodes"][-1]["id"] == f"n{LARGE - 1:04d}"
+    seen = [
+        n["id"]
+        for offset in range(0, LARGE, tools.MAX_LIMIT)
+        for n in tools.kg_find_by_kind(large_graph, "service", tools.MAX_LIMIT, offset)["nodes"]
+    ]
+    assert seen == [f"n{i:04d}" for i in range(LARGE)]
+
+
+def test_validate_issue_lists_are_capped_with_counts(large_graph: CodeGraph) -> None:
+    full = tools.kg_validate(large_graph)
+    assert len(full["counterpart_issues"]) == LARGE
+    capped = tools.cap_issues(full)
+    assert len(capped["counterpart_issues"]) == tools.DEFAULT_LIMIT
+    assert capped["issue_counts"]["counterpart_issues"] == LARGE
+    assert capped["truncated"] is True and "counterpart_issues" in capped["hint"]
+    assert capped["ok"] is full["ok"] is False
+    assert len(json.dumps(capped)) < 30_000
+
+
+def test_validate_cap_leaves_short_lists_whole(android_graph: CodeGraph) -> None:
+    full = tools.kg_validate(android_graph)
+    capped = tools.cap_issues(full)
+    assert capped["truncated"] is False and "hint" not in capped
+    for key in tools.ISSUE_LISTS:
+        assert capped[key] == full[key]
+        assert capped["issue_counts"][key] == len(full[key])

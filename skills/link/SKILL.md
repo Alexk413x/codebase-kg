@@ -125,7 +125,8 @@ links **reciprocal**: if A→B then B→A.
 ### 5. Build both sides, then validate reciprocity
 Build each graph. Run `kg_validate` on each side (the peer is opened automatically from
 `meta.counterpart`). Fix every "not reciprocal" / "counterpart id not in peer graph" finding. Then
-`kg_parity_gaps` for the report.
+`kg_parity_gaps` for the report. Both return 50 entries by default, so when a result says
+`truncated`, pass a larger `limit` (up to 1000) or page `kg_parity_gaps` with `offset`.
 
 ## The gap report
 

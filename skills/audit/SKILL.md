@@ -62,7 +62,9 @@ perfectly but whose description describes the wrong thing.
 ## Getting the nodes
 
 Use `python -m codebase_kg.export -o .kg-export.json` for the whole graph as JSON, or `kg_find_by_kind` /
-`kg_node` to pull the slice under audit. Export is usually right here — the audit reads every node
+`kg_node` to pull the slice under audit. `kg_find_by_kind` and `kg_validate`'s issue lists return
+50 entries by default, so when a result says `truncated`, pass a larger `limit` or page
+`kg_find_by_kind` with `offset`. Export is usually right here — the audit reads every node
 anyway, and the JSON is easy to partition across sub-agents. Delete the export when the sweep is
 done; it is a snapshot, and building it later would revert whatever `refresh` did in the meantime.
 
