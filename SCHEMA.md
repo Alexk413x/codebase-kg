@@ -5,6 +5,23 @@
 > If you change the schema, change it here first — and then in
 > `mcp/src/codebase_kg/schema.py`, which is the executable copy of §4–§6.
 
+## Contents
+
+- §0 What a code graph is (and is not)
+- §1 One graph per repo
+- §2 Why a database
+- §3 The `meta` table; §3.1 declaring `covers`
+- §4 The `node` table
+- §5 The `description` contract; §5.1 enforcement; §5.2 good and bad
+- §6 `anchor` and `edge`: §6.1 anchors, §6.2 edges, §6.3 `source` baselines, §6.4 `node_fts`
+- §7 Keeping it current; §7.1 the two write paths
+- §8 Per-repo config
+- §9 Cross-codebase parity
+- §10 Genericity rules
+- §11 Migrating from `KNOWLEDGE_GRAPH.md`
+- §12 `external_link` — pointers into another graph
+- §13 `reference` — the documentation a node depends on
+
 ## 0. What a code graph is (and is not)
 
 A code graph is a **source-accurate index of one codebase**. Nodes are the codebase's meaningful

@@ -1,6 +1,6 @@
 ---
 name: build
-description: This skill should be used when the user asks to "build a code graph", "build a knowledge graph", "bootstrap a KG", "create a code_graph.db", "map this codebase", "generate the code graph", or onboard a repo that has no graph yet (or whose graph is too narrow to keep). It reads the source tree and emits a source-derived, symbol-anchored, committed code_graph.db per the codebase-kg schema. (For updating an existing graph against changed source, use refresh instead. For converting an old KNOWLEDGE_GRAPH.md, run python -m codebase_kg.migrate — do not rebuild from scratch.)
+description: Bootstraps a committed code_graph.db from source for a repo that has no graph yet, or whose graph is too narrow to keep. It reads the source tree and writes a source-derived, symbol-anchored graph per the codebase-kg schema. Use when the user asks to "build a code graph", "build a knowledge graph", "bootstrap a KG", "create a code_graph.db", "map this codebase" or "generate the code graph". (To update an existing graph use refresh. A repo with an old KNOWLEDGE_GRAPH.md is migrated, not rebuilt; this skill says how.)
 allowed-tools:
   # Both names the host gives the server: bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin. Listing only the bare form
@@ -13,33 +13,25 @@ allowed-tools:
   - Grep
   - Glob
   - Bash(git ls-files:*)
-  - Bash(python -m codebase_kg.build:*)
-  - Bash(python -m codebase_kg.export:*)
-  - Bash(python -m codebase_kg.migrate:*)
-  - Bash(rm:*)
-  - Task
+  - Bash(rm .kg-export.json)
+  - Agent
   - Write
   - Edit
-  # The runnable forms outside the plugin's own checkout. kg_stats reports
-  # which one applies; `python -m` only works where the package imports.
-  - Bash(uvx:*)
-  - Bash(codebase-kg-build:*)
-  - Bash(codebase-kg-export:*)
-  - Bash(codebase-kg-migrate:*)
+  - Bash(uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" *)
 ---
 
 # build — bootstrap a code graph from source
 
 Read a repo's source tree and emit a committed `knowledge/code_graph.db` that conforms to the
-**schema** (`SCHEMA.md` at the plugin root). The graph is **source-derived** (every claim traces to
+**schema** (`${CLAUDE_PLUGIN_ROOT}/SCHEMA.md`). The graph is **source-derived** (every claim traces to
 code), **symbol-anchored** (`path#Symbol`, never line numbers), and **point-don't-copy** (reference
 symbols; never paste code). It is **descriptive**, not prescriptive.
 
-> Read `SCHEMA.md` before starting — it is the contract this skill writes to. For the parallel
+> Read `${CLAUDE_PLUGIN_ROOT}/SCHEMA.md` before starting — it is the contract this skill writes to. For the parallel
 > sub-agent partitioning strategy on large repos, read `references/build-strategy.md`.
 
 **If the repo already has a `knowledge/KNOWLEDGE_GRAPH.md`, stop and migrate instead:**
-`python -m codebase_kg.migrate knowledge/KNOWLEDGE_GRAPH.md`. Converting preserves curated
+`uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" migrate knowledge/KNOWLEDGE_GRAPH.md`. Converting preserves curated
 structure; rebuilding throws it away.
 
 **If the repo already has a `code_graph.db`** (the "too narrow to keep" case), the plugin's search
@@ -48,12 +40,13 @@ graph instead. That instruction does not apply here — a bootstrap re-derives f
 and the graph you are about to replace is not the authority. Run the denied search again: a repeat
 of a denied search always passes. Subagents are informed rather than denied.
 
-> **Before running any CLI below, call `kg_stats` and read its `cli` field.** It reports the
-> invocation that works *in this repo* — `uvx --from "<plugin>/mcp" codebase-kg-build …` when the
-> plugin ships as a source checkout, or the bare `codebase-kg-build` when the package is installed.
-> The `python -m codebase_kg.…` form written below is the plugin's own-checkout form; in a target
-> repo that has the plugin but no importable `codebase_kg` it is a `ModuleNotFoundError`, and
-> `CLAUDE_PLUGIN_ROOT` is not set in your shell so you cannot construct the path yourself.
+> **Run the graph CLIs through the Bash tool with the plugin's runner.** It needs only `uv` on
+> `PATH`, works from any repo, and builds no environment. The same runner takes `build`,
+> `export`, `migrate` and `upgrade`:
+>
+> ```sh
+> uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" export -o .kg-export.json
+> ```
 
 ## How the graph is written
 
@@ -62,7 +55,7 @@ path. The artifact is SQLite, so it is not written with an editor. You author a 
 and hand it to the builder:
 
 ```sh
-python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" build .kg-export.json -o knowledge/code_graph.db
 rm .kg-export.json
 ```
 
@@ -112,19 +105,19 @@ sections.
 
 ### 3. Derive nodes (parallelize on large repos)
 For each subsystem, identify the meaningful units (a screen, a model, a service, a module). For
-each, write a node per `SCHEMA.md` §4:
+each, write a node per `${CLAUDE_PLUGIN_ROOT}/SCHEMA.md` §4:
 
 - `id` — a stable concept slug (not the filename).
 - `kind` — free text (`Composable`, `ViewModel`, `Service`, `@Model`, `module`, …).
 - `anchors` — `path#Symbol` for each defining symbol, relative to `root`. **Grep the symbol to
   confirm it exists** before writing the anchor. Never write a line number.
 - `description` — **one short line, ≤ 240 chars**: what it is and what it does, now. No ticket ids,
-  no dates, no change narrative — see §5 of `SCHEMA.md`. The builder rejects all three.
+  no dates, no change narrative — see §5 of `${CLAUDE_PLUGIN_ROOT}/SCHEMA.md`. The builder rejects all three.
 - `edges` — ids of nodes it depends on / relates to (intra-graph only). Every id must exist, or the
   build fails.
 - `section` — the subsystem grouping.
 
-On a repo big enough that one pass would be shallow, fan out one `Task` sub-agent per subsystem
+On a repo big enough that one pass would be shallow, fan out one `Agent` sub-agent per subsystem
 (read-only Explore agents) that returns nodes in the JSON node shape; then merge into one document.
 See `references/build-strategy.md`.
 
@@ -178,4 +171,4 @@ which reads both codebases. Building one side cleanly first is the right order.
 
 - **`references/build-strategy.md`** — partitioning a large repo across parallel sub-agents, and the
   node-derivation checklist per subsystem.
-- **`SCHEMA.md`** (plugin root) — the node/edge/parity contract.
+- **`${CLAUDE_PLUGIN_ROOT}/SCHEMA.md`** — the node/edge/parity contract.

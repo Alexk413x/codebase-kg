@@ -8,9 +8,12 @@ A single agent auditing a large graph skims. Partitioning into ~4 coherent group
 read its nodes' source end-to-end and verify claims deeply. Four is a starting point — scale groups
 so no agent holds more than ~25 nodes.
 
+Fan out only above about 25 nodes. A graph that small fits one careful pass in the main session,
+and a subagent per group costs more than the check itself.
+
 ## Partition
 
-- Export the graph (`python -m codebase_kg.export -o .kg-export.json`) and group by `section`, so each
+- Export the graph (`uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" export -o .kg-export.json`) and group by `section`, so each
   group is one coherent subsystem cluster (e.g. {entry, navigation}, {domain, view-models},
   {views, theme}, {services, data, DI}).
 - Balance node counts across groups.
@@ -19,7 +22,7 @@ so no agent holds more than ~25 nodes.
 
 ## Sub-agent contract (one per group, read-only)
 
-Give each `Task` agent:
+Give each `Agent` subagent:
 
 - The nodes in its group, as JSON (id, kind, description, anchors, edges).
 - The repo `root`.
@@ -39,7 +42,7 @@ Give each `Task` agent:
 > Do **not** flag a description for omitting ticket ids, dates, or an account of what changed. Those
 > are excluded by the schema on purpose; their absence is correct.
 
-Run all group agents concurrently (one message, multiple `Task` calls).
+Run all group agents concurrently (one message, multiple `Agent` calls).
 
 ## Per-node verification checklist
 

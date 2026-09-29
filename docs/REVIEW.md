@@ -52,11 +52,11 @@ there is no textual merge for SQLite pages. Resolve through the JSON:
 ```sh
 git show :2:knowledge/code_graph.db > ours.db      # :2 = ours
 git show :3:knowledge/code_graph.db > theirs.db    # :3 = theirs
-python -m codebase_kg.export ours.db   -o ours.json
-python -m codebase_kg.export theirs.db -o theirs.json
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" export ours.db   -o ours.json
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" export theirs.db -o theirs.json
 
 # merge the two JSON documents, then:
-python -m codebase_kg.build merged.json -o knowledge/code_graph.db
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" build merged.json -o knowledge/code_graph.db
 git add knowledge/code_graph.db
 ```
 

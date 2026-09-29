@@ -6,7 +6,7 @@ One command per repo, then a commit. Nothing is destroyed along the way.
 
 ```sh
 cd <repo>
-python -m codebase_kg.migrate knowledge/KNOWLEDGE_GRAPH.md
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" migrate knowledge/KNOWLEDGE_GRAPH.md
 ```
 
 Add `--dry-run` first if you want the report without the file.

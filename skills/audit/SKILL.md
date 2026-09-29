@@ -1,7 +1,7 @@
 ---
 name: audit
 description: >-
-  This skill should be used when the user asks to "audit the code graph", "is the graph telling the truth", "are the descriptions still accurate", "find stale or inaccurate nodes", or wants a source-vs-graph verification sweep. It is the deep, SEMANTIC, multi-agent sweep: it partitions the graph, verifies each node's anchors and claims against current source, and reports STALE / MISSING / INACCURATE — advisory output, no edits. (For the fast, deterministic check, use validate instead; to actually fix what the audit finds, use refresh.)
+  Deep, multi-agent accuracy sweep of a code graph. It partitions the graph, checks each node's anchors and claims against current source, and reports STALE / MISSING / INACCURATE nodes without editing anything. Use when the user asks to "audit the code graph", "is the graph telling the truth", "are the descriptions still accurate" or "find stale or inaccurate nodes". (For the fast deterministic check use validate; to fix what the audit finds, use refresh.)
 allowed-tools:
   # Both names the host gives the server: bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin.
@@ -23,13 +23,9 @@ allowed-tools:
   - Grep
   - Glob
   - Bash(git ls-files:*)
-  - Bash(python -m codebase_kg.export:*)
-  - Task
-  - Bash(rm:*)
-  # The runnable forms outside the plugin's own checkout. kg_stats reports
-  # which one applies; `python -m` only works where the package imports.
-  - Bash(uvx:*)
-  - Bash(codebase-kg-export:*)
+  - Agent
+  - Bash(rm .kg-export.json)
+  - Bash(uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" *)
 ---
 
 # audit — source-vs-graph accuracy sweep (advisory)
@@ -42,12 +38,13 @@ it does not edit (hand fixes to `refresh`). Advisory, never blocking.
 > `references/audit-pattern.md`.
 
 
-> **Before running any CLI below, call `kg_stats` and read its `cli` field.** It reports the
-> invocation that works *in this repo* — `uvx --from "<plugin>/mcp" codebase-kg-build …` when the
-> plugin ships as a source checkout, or the bare `codebase-kg-build` when the package is installed.
-> The `python -m codebase_kg.…` form written below is the plugin's own-checkout form; in a target
-> repo that has the plugin but no importable `codebase_kg` it is a `ModuleNotFoundError`, and
-> `CLAUDE_PLUGIN_ROOT` is not set in your shell so you cannot construct the path yourself.
+> **Run the graph CLIs through the Bash tool with the plugin's runner.** It needs only `uv` on
+> `PATH`, works from any repo, and builds no environment. The same runner takes `build`,
+> `export`, `migrate` and `upgrade`:
+>
+> ```sh
+> uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" export -o .kg-export.json
+> ```
 
 ## What it catches that validate can't
 
@@ -61,7 +58,7 @@ perfectly but whose description describes the wrong thing.
 
 ## Getting the nodes
 
-Use `python -m codebase_kg.export -o .kg-export.json` for the whole graph as JSON, or `kg_find_by_kind` /
+Use `uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" export -o .kg-export.json` for the whole graph as JSON, or `kg_find_by_kind` /
 `kg_node` to pull the slice under audit. `kg_find_by_kind` and `kg_validate`'s issue lists return
 50 entries by default, so when a result says `truncated`, pass a larger `limit` or page
 `kg_find_by_kind` with `offset`. Export is usually right here — the audit reads every node
@@ -80,11 +77,13 @@ Run `kg_stats` for node count and sections. Read its `staleness` block: `stale_f
 was built against, and `nodes` names the first of them. Those nodes are known-suspect before anyone
 reads a line — verify them first and say so in the report.
 
-Export the graph. Partition the nodes into ~4 balanced groups (by section, so each group is
-coherent).
+**Size the sweep first.** With about 25 nodes or fewer, audit them yourself in this session: a
+subagent per group costs more than the check itself. Above that, export the graph and partition the
+nodes into ~4 balanced groups (by section, so each group is coherent).
 
-### 2. Verify each group (parallelize)
-Fan out one `Task` sub-agent per group (read-only). Each agent, for every node in its group:
+### 2. Verify each group (parallelize above ~25 nodes)
+Fan out one `Agent` sub-agent per group (read-only). On a graph of about 25 nodes or fewer, do the
+same checks yourself, node by node. Each check, for every node in its group:
 
 - Resolves each `path#Symbol` anchor in source (grep). Symbol gone → **STALE**.
 - Reads the anchored source and compares it to the `description` / `edges` / `kind`. Mismatch →
@@ -134,7 +133,7 @@ Verdict: <accurate | N findings — run refresh to reconcile>
   it accurate.
 - **Don't audit for history.** A description saying nothing about *why* the code is the way it is
   correct behavior, not a gap. Ticket refs, dates and change narrative are excluded by design
-  (`SCHEMA.md` §5); flagging their absence is a misreading of the schema.
+  (`${CLAUDE_PLUGIN_ROOT}/SCHEMA.md` §5); flagging their absence is a misreading of the schema.
 
 ## Resources
 

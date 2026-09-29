@@ -49,6 +49,7 @@ from fastmcp.tools import ToolResult
 from pydantic import ConfigDict, Field, SkipValidation, with_config
 from typing_extensions import Required, TypedDict
 
+from . import cli as _cli
 from . import edits as _edits
 from . import tools as _tools
 from .store import CodeGraph, StoreError
@@ -201,10 +202,11 @@ def _find_legacy() -> Path | None:
 def _missing_graph_error() -> FileNotFoundError:
     legacy = _find_legacy()
     if legacy is not None:
+        migrate = _cli.command("migrate", f'"{legacy}"')
         return FileNotFoundError(
             f"Found a pre-rewrite {LEGACY_FILENAME} at {legacy} but no {GRAPH_FILENAME}. "
             f"Migrate it once with:\n"
-            f"    python -m codebase_kg.migrate \"{legacy}\"\n"
+            f"    {migrate}\n"
             f"then commit knowledge/{GRAPH_FILENAME}."
         )
     return FileNotFoundError(
@@ -538,8 +540,8 @@ def kg_upsert_node(
     Create or update node(s) in place — the targeted alternative to
     export/edit/build. Use for a handful of nodes: a wrong description, an anchor
     that moved, a missing edge. For bulk work (a parity sweep, a restructuring,
-    anything you want to review as a diff first) still use
-    `python -m codebase_kg.export` → edit the JSON → `python -m codebase_kg.build`.
+    anything you want to review as a diff first) still use the plugin's
+    `mcp/launch/kg_cli.py export` → edit the JSON → `kg_cli.py build`.
 
     **Only the keys you supply change** — omit a field and it keeps its value,
     pass `null` to clear `parity`/`counterpart`/`divergence`. `anchors`, `edges`,

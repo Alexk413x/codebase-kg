@@ -55,12 +55,14 @@ another graph. Each call is atomic, is validated against the whole graph before 
 reports every field it changed, before and after.
 
 **Bulk work — the round trip.** A parity sweep, a restructuring, anything where reading the diff
-before applying it is the point. The artifact is a database, so it is authored through JSON:
+before applying it is the point. The artifact is a database, so it is authored through JSON. The
+CLIs run through a stdlib runner beside the MCP launcher, from any repo; `<plugin>` is the plugin
+folder, which skills name as `${CLAUDE_PLUGIN_ROOT}`:
 
 ```sh
-python -m codebase_kg.export -o .kg-export.json      # existing graph → JSON
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" export -o .kg-export.json      # existing graph → JSON
 #   … edit …
-python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" build .kg-export.json -o knowledge/code_graph.db
 rm .kg-export.json                                   # a snapshot, not a source
 ```
 
@@ -105,7 +107,7 @@ the committed graph **byte-identical** — not rolled back, never opened for wri
 Once per repo:
 
 ```sh
-python -m codebase_kg.migrate knowledge/KNOWLEDGE_GRAPH.md
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" migrate knowledge/KNOWLEDGE_GRAPH.md
 ```
 
 It **converts, not regenerates** — ids, kinds, anchors, edges and parity survive verbatim. It
@@ -122,7 +124,7 @@ A graph built before schema v3 has no declared coverage and no source baselines,
 a file type it never mapped or a description whose code moved underneath it. Upgrade in place:
 
 ```sh
-python -m codebase_kg.upgrade --covers 'app/src/**/*.kt' --covers '**/*.gradle.kts'
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" upgrade --covers 'app/src/**/*.kt' --covers '**/*.gradle.kts'
 ```
 
 Every node, anchor and edge is preserved verbatim; the upgrade only adds what v3 can answer.

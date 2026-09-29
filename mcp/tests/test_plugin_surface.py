@@ -119,9 +119,9 @@ def test_every_tool_a_skill_allows_is_registered(skill: Path) -> None:
 
 
 # `kg_`-shaped names in the docs that are deliberately not MCP tools: the
-# vendored git hooks, the in-session hooks, and a config key.
+# vendored git hooks, the in-session hooks, the CLI runner, and a config key.
 NOT_TOOLS = {
-    "kg_pre_commit", "kg_pre_push", "kg_post_edit_check", "kg_search_gate", "kg_path",
+    "kg_pre_commit", "kg_pre_push", "kg_post_edit_check", "kg_search_gate", "kg_path", "kg_cli",
 }
 
 
@@ -230,3 +230,28 @@ def test_a_skill_that_names_another_skill_names_a_real_one() -> None:
     for doc in SKILLS + COMMANDS:
         for named in re.findall(r"`([a-z][a-z0-9-]*)`\s+skill\b", doc.read_text(encoding="utf-8")):
             assert named in names, f"{doc} names a missing skill: {named}"
+
+
+# --- the CLI runner ------------------------------------------------------------
+RUNNER = 'uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py"'
+
+
+@pytest.mark.parametrize("skill", SKILLS, ids=lambda p: p.parent.name)
+def test_a_skill_that_runs_the_cli_pre_approves_exactly_that_command(skill: Path) -> None:
+    """The rule must match the command text the skill prints, quotes included,
+    or every CLI call prompts."""
+    body = skill.read_text(encoding="utf-8").split("---", 2)[2]
+    if RUNNER not in body or frontmatter(skill).get("disable-model-invocation"):
+        pytest.skip("this skill runs no CLI on its own")
+    assert f"Bash({RUNNER} *)" in allowed_entries(skill)
+
+
+@pytest.mark.parametrize("skill", SKILLS, ids=lambda p: p.parent.name)
+def test_no_skill_pre_approves_a_whole_command_family(skill: Path) -> None:
+    broad = {"Bash(uvx:*)", "Bash(rm:*)", "Bash(python:*)", "Bash(uv:*)"}
+    assert not broad & set(allowed_entries(skill)), skill.parent.name
+
+
+@pytest.mark.parametrize("skill", SKILLS, ids=lambda p: p.parent.name)
+def test_skills_name_the_agent_tool_by_its_current_name(skill: Path) -> None:
+    assert "Task" not in allowed_entries(skill), skill.parent.name

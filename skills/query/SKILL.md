@@ -1,6 +1,6 @@
 ---
 name: query
-description: This skill should be used to find or orient in code in a repo that has a knowledge/code_graph.db — when the user asks "where does X live", "what handles X", "what depends on X", "how is X wired", "show me the X code", "orient me in this codebase", "what would break if I change X", or when a codebase-kg search gate has denied a Grep/Glob and told you to query the graph first. It answers WHERE from the committed graph, then reads the anchored source to confirm what the code currently does. (To change the graph use refresh; to check whether the graph is still accurate use validate or audit.)
+description: Finds and explains code in a repo that has a knowledge/code_graph.db. It answers where code lives from the committed graph, then reads the anchored source to confirm what the code does now. Use when the user asks "where does X live", "what handles X", "what depends on X", "how is X wired", "show me the X code", "orient me in this codebase", "what would break if I change X", or when the codebase-kg search gate denied a Grep/Glob and said to query the graph first. (To change the graph use refresh; to check whether it is still accurate use validate or audit.)
 allowed-tools:
   # Both names the host gives the server: bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin.

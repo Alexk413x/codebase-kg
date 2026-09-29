@@ -127,7 +127,7 @@ def test_unmigrated_repo_gets_migration_instructions(
     monkeypatch.setattr("sys.argv", ["server"])
     monkeypatch.delenv("CODEBASE_KG_PATH", raising=False)
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(FileNotFoundError, match="codebase_kg.migrate"):
+    with pytest.raises(FileNotFoundError, match='kg_cli.py" migrate'):
         server._graph_file()
 
 

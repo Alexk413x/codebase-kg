@@ -15,7 +15,23 @@ carry an env var.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import TextIO
+
+RUNNER = Path(__file__).resolve().parents[2] / "launch" / "kg_cli.py"
+
+
+def command(name: str, *args: str) -> str:
+    """The shell command that runs CLI `name` (build, export, migrate, upgrade).
+
+    In the plugin, the stdlib runner beside the MCP launcher, which works from
+    any repo. Without it (an installed wheel), `python -m`, which works wherever
+    the package imports.
+    """
+    tail = " ".join(args)
+    if RUNNER.is_file():
+        return f'uv run --no-project --quiet "{RUNNER}" {name} {tail}'.rstrip()
+    return f"python -m codebase_kg.{name} {tail}".rstrip()
 
 
 def use_utf8(*streams: TextIO) -> None:

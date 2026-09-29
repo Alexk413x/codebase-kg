@@ -16,7 +16,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from . import links
+from . import cli, links
 from .coverage import COVERS_KEY, EXEMPT_KEY, parse_patterns
 from .links import ExternalLink
 from .models import Anchor, Meta, Node, Reference
@@ -121,9 +121,10 @@ class CodeGraph:
             # discards whatever the newer schema added, and looks like the graph
             # is at fault. Which side is behind decides who moves.
             if found < MIN_READABLE_VERSION:
+                upgrade = cli.command("upgrade", f'"{self.path}"')
                 fix = (
-                    f"Upgrade the graph in place, preserving every node and edge:\n"
-                    f"    python -m codebase_kg.upgrade \"{self.path}\""
+                    "Upgrade the graph in place, preserving every node and edge:\n"
+                    f"    {upgrade}"
                 )
             else:
                 fix = (

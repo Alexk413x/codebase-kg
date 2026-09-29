@@ -38,11 +38,9 @@ restructuring, a whole refresh's worth of nodes, or anything where reading the J
 building it is the point.
 
 ```sh
-# Call kg_stats first and use its `cli` field — it reports the invocation that
-# works in THIS repo. The `python -m` form below only works inside the plugin's
-# own checkout; a target repo has the plugin but no importable codebase_kg.
-python -m codebase_kg.export -o .kg-export.json      # read  (refresh, link, audit)
-python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
+# The stdlib runner beside the MCP launcher works from any repo; it needs only uv.
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" export -o .kg-export.json
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" build .kg-export.json -o knowledge/code_graph.db
 rm .kg-export.json                                   # a snapshot, not a source
 ```
 

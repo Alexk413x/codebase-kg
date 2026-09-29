@@ -1,6 +1,6 @@
 ---
 name: refresh
-description: This skill should be used when the user asks to "refresh the code graph", "update the KG", "re-sync code_graph.db with the code", "the graph is stale", after shipping a feature when the graph should reflect new/changed/deleted code, or after a codebase-kg pre-commit/pre-push staleness message naming unmapped, deleted-but-anchored, or digest-drifted files. It comprehensively re-derives the affected nodes against current source and rebuilds the committed database. This skill WRITES. (For a from-scratch graph use build; for a read-only report of what is stale without changing anything, use audit or validate.)
+description: Re-derives the affected nodes of an existing code_graph.db against current source and rebuilds the committed database. This skill writes the graph. Use when the user asks to "refresh the code graph", "update the KG", "re-sync code_graph.db with the code" or says "the graph is stale", after shipping a feature that added, changed or deleted code, or after a codebase-kg pre-commit or pre-push message names unmapped, deleted-but-anchored or digest-drifted files. (For a new graph use build; for a read-only report of what is stale, use audit or validate.)
 allowed-tools:
   # Both names the host gives the server: bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin.
@@ -34,16 +34,10 @@ allowed-tools:
   - Bash(git diff:*)
   - Bash(git log:*)
   - Bash(git ls-files:*)
-  - Bash(python -m codebase_kg.export:*)
-  - Bash(python -m codebase_kg.build:*)
   - Write
   - Edit
-  - Bash(rm:*)
-  # The runnable forms outside the plugin's own checkout. kg_stats reports
-  # which one applies; `python -m` only works where the package imports.
-  - Bash(uvx:*)
-  - Bash(codebase-kg-build:*)
-  - Bash(codebase-kg-export:*)
+  - Bash(rm .kg-export.json)
+  - Bash(uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" *)
 ---
 
 # refresh — re-derive the graph against current source
@@ -51,12 +45,13 @@ allowed-tools:
 Update `knowledge/code_graph.db` so it mirrors the code as it is **now**. Every refresh updates
 *all* affected **nodes** — add new, edit changed, remove deleted — plus edges.
 
-> **Before running any CLI below, call `kg_stats` and read its `cli` field.** It reports the
-> invocation that works *in this repo* — `uvx --from "<plugin>/mcp" codebase-kg-build …` when the
-> plugin ships as a source checkout, or the bare `codebase-kg-build` when the package is installed.
-> The `python -m codebase_kg.…` form written below is the plugin's own-checkout form; in a target
-> repo that has the plugin but no importable `codebase_kg` it is a `ModuleNotFoundError`, and
-> `CLAUDE_PLUGIN_ROOT` is not set in your shell so you cannot construct the path yourself.
+> **Run the graph CLIs through the Bash tool with the plugin's runner.** It needs only `uv` on
+> `PATH`, works from any repo, and builds no environment. The same runner takes `build`,
+> `export`, `migrate` and `upgrade`:
+>
+> ```sh
+> uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" export -o .kg-export.json
+> ```
 
 ## Two ways to write, and how to choose
 
@@ -90,9 +85,9 @@ The usual case for a refresh: several nodes move together, and reading the JSON 
 is the point.
 
 ```sh
-python -m codebase_kg.export -o .kg-export.json          # current graph, as JSON
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" export -o .kg-export.json          # current graph, as JSON
 #   … edit .kg-export.json …
-python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" build .kg-export.json -o knowledge/code_graph.db
 ```
 
 Two properties make this safe:
@@ -115,7 +110,7 @@ Determine what changed since the graph was last built:
 - **If a pre-commit or pre-push staleness message brought you here, start from its three lists.**
   They are already scoped and categorized: source no node covers (`+`), deleted files the graph still
   anchors on (`-`), and mapped files whose contents no longer match the digest recorded at build time
-  (`~` — the anchor still resolves, the description may not; `SCHEMA.md` §6.3). Each list caps at 15
+  (`~` — the anchor still resolves, the description may not; `${CLAUDE_PLUGIN_ROOT}/SCHEMA.md` §6.3). Each list caps at 15
   entries, so re-derive with `git diff` only when one says "and N more".
 - Otherwise, **diff from the commit that last touched the graph itself**. That commit is the
   watermark: everything after it is, by definition, code the graph has not seen.
@@ -126,7 +121,7 @@ Determine what changed since the graph was last built:
   ```
 
   Use this rather than the `generated` date. A date needs a "commit near it" — a judgement call at
-  the one point in the workflow where the scope has to be exact — and `SCHEMA.md` §7 is explicit that
+  the one point in the workflow where the scope has to be exact — and `${CLAUDE_PLUGIN_ROOT}/SCHEMA.md` §7 is explicit that
   the date is provenance, never a freshness claim: it can be bumped without a node changing, and a
   refresh scoped from a bumped date silently covers nothing. The graph's own commit cannot be wrong
   about when the graph last moved.
@@ -155,7 +150,7 @@ For every changed file / feature, **read the current source** and reconcile its 
   pointed at it. (The builder will refuse the document otherwise, which is the safety net, not the
   plan.)
 
-Keep descriptions inside the contract (`SCHEMA.md` §5): one short line, ≤ 240 chars, present tense,
+Keep descriptions inside the contract (`${CLAUDE_PLUGIN_ROOT}/SCHEMA.md` §5): one short line, ≤ 240 chars, present tense,
 no ticket ids, no dates, no "now does X instead of Y". If you find yourself narrating the change you
 just made, that sentence belongs in the commit message.
 
@@ -213,7 +208,7 @@ that was `<codebase>-only` now exists on both sides, or a `matched` pair diverge
 parity fields on the affected nodes, or hand the cross-codebase reconciliation to `link` if it
 needs reading the peer repo. Note any parity change in the report.
 
-Remember the store only accepts the three legal shapes (`SCHEMA.md` §9): `matched` needs a
+Remember the store only accepts the three legal shapes (`${CLAUDE_PLUGIN_ROOT}/SCHEMA.md` §9): `matched` needs a
 counterpart, `divergent` needs a counterpart *and* a divergence line, `<codebase>-only` must have
 neither.
 
