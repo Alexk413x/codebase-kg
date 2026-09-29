@@ -267,3 +267,23 @@ def test_server_instructions_are_short_and_name_the_graph_file() -> None:
     text = server.mcp.instructions or ""
     assert 0 < len(text) <= 600
     assert "knowledge/code_graph.db" in text and "kg_search" in text
+
+
+def test_the_eval_mocks_carry_the_real_tool_list() -> None:
+    """`claude plugin eval` gives mocked tools the descriptions and schemas in
+    `_tools.json`; a stale copy evaluates descriptions the server no longer sends.
+    Regenerate it from `tools/list` when a tool changes."""
+    import asyncio
+    import json
+
+    from fastmcp import Client
+
+    from codebase_kg import server
+
+    async def listed() -> dict[str, object]:
+        async with Client(server.mcp) as client:
+            result = await client.list_tools_mcp()
+        return result.model_dump(by_alias=True, exclude_none=True, mode="json")
+
+    saved = Path(__file__).resolve().parents[2] / "evals" / "mocks" / "codebase-kg" / "_tools.json"
+    assert json.loads(saved.read_text(encoding="utf-8")) == asyncio.run(listed())
