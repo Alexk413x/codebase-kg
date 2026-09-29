@@ -133,11 +133,30 @@ def _prune(directory: Path) -> None:
     worth a failure, and a leftover file only costs a few bytes."""
     cutoff = time.time() - _STATE_TTL
     try:
-        for f in directory.glob("*.json"):
+        for f in [*directory.glob("*.json"), *directory.glob("calls/*")]:
             if f.stat().st_mtime < cutoff:
                 f.unlink()
     except OSError:
         pass
+
+
+def _claim_call(tool_use_id: str) -> bool:
+    """True for the first handler to see this tool call, False for the rest.
+
+    `hooks.json` registers one handler per search word, so a command such as
+    `grep a f && rg b d` starts two gate processes in parallel. Only one may
+    spend credit or record a denial.
+    """
+    try:
+        d = Path(tempfile.gettempdir()) / "codebase-kg-gate" / "calls"
+        d.mkdir(parents=True, exist_ok=True)
+        name = hashlib.sha1(tool_use_id.encode("utf-8")).hexdigest()[:16]
+        os.close(os.open(d / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        return True
 
 
 def _read_state(proj: Path, session: str) -> dict[str, object]:
@@ -944,6 +963,11 @@ def _run(data: dict[str, object]) -> None:
         # The agent named a file the graph anchors — it already knows where the
         # code is, so there is nothing left to send it to the graph for.
         if searches_an_anchored_path(tool_input, proj, root, graph):
+            return
+
+    tool_use_id = data.get("tool_use_id")
+    if tool in _SHELL_TOOLS and isinstance(tool_use_id, str) and tool_use_id:
+        if not _claim_call(tool_use_id):
             return
 
     state = _read_state(proj, session)

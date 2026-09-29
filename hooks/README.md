@@ -5,7 +5,7 @@ all no-op in a repo with no `knowledge/code_graph.db`.
 
 | File | Role |
 |---|---|
-| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob\|Bash\|PowerShell` and on the codebase-kg MCP tools → `kg_search_gate.py`; PostToolUse on `Edit\|Write` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_session_start.py`. |
+| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob`, on `Bash` and `PowerShell` calls that an `if` rule names as a search (`Bash(grep *)`, `PowerShell(Select-String *)`, one rule per search word), and asynchronously on the codebase-kg MCP tools → `kg_search_gate.py`; PostToolUse on `Edit\|Write` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_session_start.py`. Each hook runs `py -3` when the `py` launcher exists, else `python3`, else `python`. |
 | `kg_search_gate.py` | The gate. Denies a search aimed at mapped code with the instruction to query the graph, and keeps doing it — a query buys credit, a located search is free, a repeat always passes. |
 | `kg_post_edit_check.py` | The nudge. Two signals: the edited file isn't in the graph at all, or enough mapped files have changed since the graph was rebuilt. |
 | `kg_session_start.py` | The unwired-clone notice. One line when this clone has the committed checkers but no `core.hooksPath` or no `diff.codegraph.textconv`. Prints; never writes. |
@@ -52,7 +52,10 @@ Three ways through, each inferred from what the agent actually did:
 
 Shell detection is deliberately narrow — a false positive denies unrelated work. `find` and
 `Get-ChildItem` only count when they carry a name/path filter, so an ordinary `find . -type d` is not
-a search.
+a search. Claude Code starts the gate for a shell call only when an `if` rule in `hooks.json` names
+one of its subcommands, so `git status` costs no process. `test_hook_config.py` asserts that the
+rules list every word the parser knows. A command that matches two rules starts two gate processes;
+the first to claim the call's `tool_use_id` decides, and the other exits silently.
 
 ## The post-edit nudge (PostToolUse)
 

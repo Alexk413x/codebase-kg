@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: build-cli
+tags: [build, needs-sandbox]
+context:
+  scaffold_script: scaffold.sh

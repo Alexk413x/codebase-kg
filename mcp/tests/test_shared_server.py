@@ -830,3 +830,58 @@ def test_the_session_moves_to_a_private_server_when_no_daemon_comes_back(
             _close(proc)
     finally:
         _stop(server_proc)
+
+
+# --- the venv lives outside the plugin folder ---------------------------------
+def test_the_dependency_key_ignores_this_packages_version(tmp_path: Path) -> None:
+    """An update that changes only the version keeps the venv."""
+    lock = (Path(shim.MCP_DIR) / "uv.lock").read_text(encoding="utf-8")
+    (tmp_path / "uv.lock").write_text(lock, encoding="utf-8")
+    before = shim.dependency_key(tmp_path)
+    bumped = lock.replace('name = "codebase-kg"\nversion = "', 'name = "codebase-kg"\nversion = "9', 1)
+    assert bumped != lock
+    (tmp_path / "uv.lock").write_text(bumped, encoding="utf-8")
+    assert shim.dependency_key(tmp_path) == before
+    (tmp_path / "uv.lock").write_text(bumped.replace("fastmcp", "fastmcpx", 1), encoding="utf-8")
+    assert shim.dependency_key(tmp_path) != before
+
+
+def test_the_server_venv_follows_the_plugin_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODEBASE_KG_DATA_DIR", str(tmp_path))
+    env = shim.server_env()
+    assert Path(env["UV_PROJECT_ENVIRONMENT"]).parent == tmp_path
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(Path(shim.MCP_DIR) / "src")
+
+
+def test_without_a_data_dir_the_venv_stays_out_of_the_plugin_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CODEBASE_KG_DATA_DIR", raising=False)
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(tmp_path))
+    venv = shim.venv_path()
+    assert venv.parent == shim.user_cache_dir()
+    assert Path(shim.MCP_DIR) not in venv.parents
+
+
+def test_a_shim_that_spawned_the_server_waits_past_the_connect_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first start after an update builds the venv, which outlasts the
+    connect budget; giving up then starts a second server on the same build."""
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(tmp_path))
+    started = time.monotonic()
+
+    class _Running:
+        def poll(self) -> None:
+            return None
+
+    monkeypatch.setattr(shim, "spawn_server", lambda build: _Running())
+    monkeypatch.setattr(shim, "SPAWN_BUDGET", 1.0)
+    ready = object()
+    monkeypatch.setattr(
+        shim, "_try_connect",
+        lambda build, hello: ready if time.monotonic() - started > 0.6 else None,
+    )
+    assert shim.shared_connection("b", {}, budget=0.3) is ready

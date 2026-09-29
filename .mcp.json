@@ -4,7 +4,8 @@
       "command": "${CLAUDE_PLUGIN_ROOT}/bin/kg-shim",
       "args": [],
       "env": {
-        "CODEBASE_KG_PATH": "${CODEBASE_KG_PATH:-}"
+        "CODEBASE_KG_PATH": "${CODEBASE_KG_PATH:-}",
+        "CODEBASE_KG_DATA_DIR": "${CLAUDE_PLUGIN_DATA:-}"
       }
     }
   }

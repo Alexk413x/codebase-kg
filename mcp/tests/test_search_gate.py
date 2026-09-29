@@ -932,3 +932,21 @@ def test_the_denial_memory_is_bounded(
         run(monkeypatch, capsys, repo, "Grep", {"pattern": f"p{i}"})
     state = json.loads(gate._state_path(repo, "s1").read_text(encoding="utf-8"))
     assert len(state["denied"]) <= gate._DENIED_MEMORY
+
+
+def test_two_handlers_for_one_shell_call_decide_once(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`grep a . && rg b .` matches two `if` rules, so two gate processes run.
+    Only the first may spend credit or record a denial."""
+    payload = {
+        "tool_name": "Bash", "tool_input": {"command": "grep -rn a . && rg b ."},
+        "cwd": str(repo), "session_id": "s1", "tool_use_id": "toolu_1",
+    }
+    outputs = []
+    for _ in range(2):
+        monkeypatch.setattr(sys, "stdin", _Stdin(json.dumps(payload)))
+        gate.main()
+        outputs.append(capsys.readouterr().out.strip())
+    assert decision(json.loads(outputs[0])) == "deny"
+    assert outputs[1] == ""

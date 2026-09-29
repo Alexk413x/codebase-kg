@@ -246,3 +246,35 @@ def test_is_source_file_is_still_extension_based_not_covers_aware(
     assert not c.is_source_file(
         tmp_path / ".githooks" / "pre-push", tmp_path, dict(c.DEFAULTS)
     )
+
+
+# --- hooks.json --------------------------------------------------------------
+def _handlers(tool: str) -> list[dict[str, object]]:
+    import json
+
+    config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
+    return [
+        h for group in config["hooks"]["PreToolUse"] if group["matcher"] == tool
+        for h in group["hooks"]
+    ]
+
+
+def _if_words(tool: str) -> set[str]:
+    rules = [str(h["if"]) for h in _handlers(tool)]
+    assert all(r.startswith(f"{tool}(") and r.endswith(" *)") for r in rules), rules
+    return {r[len(tool) + 1:-3].lower() for r in rules}
+
+
+def test_the_shell_if_rules_cover_every_search_word() -> None:
+    """The gate starts only for commands an `if` rule names, so a search word the
+    parser knows but no rule lists would never reach it."""
+    import kg_search_gate as gate
+
+    cmdlets = {"select-string", "sls", "get-childitem", "gci"}
+    assert _if_words("PowerShell") == gate._SEARCH_WORDS
+    assert _if_words("Bash") == (gate._SEARCH_WORDS - cmdlets) | {"sudo"}
+
+
+def test_every_shell_handler_carries_an_if_rule() -> None:
+    for tool in ("Bash", "PowerShell"):
+        assert all("if" in h for h in _handlers(tool)), tool

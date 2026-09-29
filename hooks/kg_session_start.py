@@ -80,12 +80,11 @@ def _hooks_dir(proj: Path, configured: str) -> Path | None:
 
 def advice(proj: Path) -> str | None:
     """The one line to print, or None to stay silent."""
-    if _git(proj, "rev-parse", "--is-inside-work-tree") != "true":
-        return None
-
     cfg = load_config(proj)
     graph = find_graph(proj, cfg)
     if graph is None:
+        return None
+    if _git(proj, "rev-parse", "--is-inside-work-tree") != "true":
         return None
 
     configured = _git(proj, "config", "--get", "core.hooksPath")

@@ -77,8 +77,12 @@ stdlib only and does three things:
    Windows, `~/Library/Caches/codebase-kg/` on macOS, `$XDG_CACHE_HOME/codebase-kg/` or
    `~/.cache/codebase-kg/` elsewhere). The file names the port, pid and token of the running server.
 2. If no live server answers, it takes a lock file and starts one, detached:
-   `uv run --project <plugin>/mcp --frozen --no-dev codebase-kg --serve`. The server's log is
-   `server-<build>.log` in the same directory.
+   `uv run --project <plugin>/mcp --frozen --no-dev python -c "from codebase_kg.server import main; main()" --serve`.
+   The server's log is `server-<build>.log` in the same directory. The venv is not
+   `<plugin>/mcp/.venv`: `UV_PROJECT_ENVIRONMENT` points at `venv-<key>` in `${CLAUDE_PLUGIN_DATA}`
+   (or the user cache directory when that is unset), keyed by the third-party dependencies in
+   `uv.lock`, so a plugin update that keeps them reuses the venv. `PYTHONPATH` puts the plugin's own
+   `src` first, so builds that share a venv each run their own code.
 3. It connects to `127.0.0.1:<port>`, sends a one-line handshake (the token, the build, the session's
    cwd and its explicit graph path), and then relays JSON-RPC unchanged in both directions.
 
@@ -86,8 +90,10 @@ The server listens on loopback only, on a port the OS picks, and refuses a hands
 token or build. The state file is readable only by the user. Each connection is its own MCP
 session. The server exits after 10 minutes with no connections and removes its state file.
 
-A session never loses its tools. If the shared server cannot be reached within 10 seconds, the shim
-runs a private stdio server for that session instead.
+A session never loses its tools. If the shared server cannot be reached within 10 seconds
+(`CODEBASE_KG_SHARED_TIMEOUT`), the shim runs a private stdio server for that session instead. A
+shim that started the server itself waits up to 25 seconds (`CODEBASE_KG_SPAWN_TIMEOUT`) first,
+because the first start after an update builds the venv.
 
 A session also survives a crashed shared server. The shim records the session's `initialize` request
 and `notifications/initialized`, and tracks which requests await a response. If the server hangs up
