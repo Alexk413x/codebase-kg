@@ -1,11 +1,10 @@
 {
   "mcpServers": {
     "codebase-kg": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/kg-shim",
+      "command": "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg-shim",
       "args": [],
       "env": {
-        "CODEBASE_KG_PATH": "${CODEBASE_KG_PATH:-}",
-        "CODEBASE_KG_DATA_DIR": "${CLAUDE_PLUGIN_DATA:-}"
+        "CODEBASE_KG_PATH": "${CODEBASE_KG_PATH:-}"
       }
     }
   }

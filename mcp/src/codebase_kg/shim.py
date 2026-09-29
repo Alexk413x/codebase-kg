@@ -33,8 +33,9 @@ to `CODEBASE_KG_SPAWN_TIMEOUT` seconds (default 25) instead, because the first
 start after an update builds the venv. `CODEBASE_KG_SHARED=0` goes straight to
 the private server. `CODEBASE_KG_CACHE_DIR` moves the state, lock and log files.
 
-The server's venv lives outside the plugin folder, in `CODEBASE_KG_DATA_DIR`
-(`.mcp.json` passes `${CLAUDE_PLUGIN_DATA}`) or else the per-user cache dir, and is keyed
+The server's venv lives outside the plugin folder, in `CODEBASE_KG_DATA_DIR`,
+else the `CLAUDE_PLUGIN_DATA` that Claude Code exports to the server, else the
+per-user cache dir, and is keyed
 by the third-party dependency set in `uv.lock`, so a plugin update that keeps
 the dependencies reuses it. Builds that share the venv each import the package
 from their own `src` through `PYTHONPATH`, whichever checkout the venv's
@@ -106,7 +107,7 @@ def user_cache_dir() -> Path:
 
 
 def data_dir() -> Path:
-    override = os.environ.get("CODEBASE_KG_DATA_DIR")
+    override = os.environ.get("CODEBASE_KG_DATA_DIR") or os.environ.get("CLAUDE_PLUGIN_DATA")
     return Path(override) if override else user_cache_dir()
 
 

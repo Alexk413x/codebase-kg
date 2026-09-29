@@ -143,7 +143,7 @@ codebase-kg/
 ├── templates/
 │   ├── code_graph.template.json
 │   └── codebase-kg.local.md.example
-├── .mcp.json                 # registers the codebase-kg MCP server (bin/kg-shim → mcp/src/codebase_kg/shim.py)
+├── .mcp.json                 # registers the codebase-kg MCP server (mcp/launch/kg-shim → mcp/src/codebase_kg/shim.py)
 ├── skills/                   # query / build / refresh / audit / link / validate, and setup (user-invoked only)
 ├── mcp/                      # the query server (one shared process per machine) + build/export/migrate CLIs
 ├── hooks/                    # Claude Code hooks: the search gate, the post-edit nudge, the unwired-clone notice

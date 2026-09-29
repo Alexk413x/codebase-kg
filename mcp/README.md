@@ -68,7 +68,7 @@ rm .kg-export.json                                                # a snapshot, 
 One server process per machine and server build serves every Claude Code session. A build is the
 plugin version plus a short digest of the path, size and mtime of every `*.py` in the server package,
 so a dev checkout and an installed copy at the same version never share a server.
-`.mcp.json` launches `bin/kg-shim` for each session, which runs `shim.py` with the system Python:
+`.mcp.json` launches `mcp/launch/kg-shim` for each session, which runs `shim.py` with the system Python:
 `python3`, else `python`, on macOS and Linux, and `py -3`, else `python`, on Windows (`kg-shim.cmd`),
 where a stock install has no `python3.exe` and both names may be Microsoft Store stubs. The shim is
 stdlib only and does three things:
@@ -79,8 +79,9 @@ stdlib only and does three things:
 2. If no live server answers, it takes a lock file and starts one, detached:
    `uv run --project <plugin>/mcp --frozen --no-dev python -c "from codebase_kg.server import main; main()" --serve`.
    The server's log is `server-<build>.log` in the same directory. The venv is not
-   `<plugin>/mcp/.venv`: `UV_PROJECT_ENVIRONMENT` points at `venv-<key>` in `${CLAUDE_PLUGIN_DATA}`
-   (or the user cache directory when that is unset), keyed by the third-party dependencies in
+   `<plugin>/mcp/.venv`: `UV_PROJECT_ENVIRONMENT` points at `venv-<key>` in `CODEBASE_KG_DATA_DIR`,
+   else the `CLAUDE_PLUGIN_DATA` that Claude Code exports to the server, else the user cache
+   directory, keyed by the third-party dependencies in
    `uv.lock`, so a plugin update that keeps them reuses the venv. `PYTHONPATH` puts the plugin's own
    `src` first, so builds that share a venv each run their own code.
 3. It connects to `127.0.0.1:<port>`, sends a one-line handshake (the token, the build, the session's

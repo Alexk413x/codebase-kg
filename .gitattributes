@@ -4,7 +4,7 @@
 # Keep shell + python LF even on Windows checkouts.
 *.sh text eol=lf
 *.py text eol=lf
-bin/kg-shim text eol=lf
+mcp/launch/kg-shim text eol=lf
 
 # cmd.exe misparses some LF-only batch files; keep the Windows launcher CRLF.
 *.cmd text eol=crlf

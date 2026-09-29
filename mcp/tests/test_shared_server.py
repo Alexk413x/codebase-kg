@@ -530,13 +530,21 @@ def test_shared_zero_goes_straight_to_a_private_server(tmp_path: Path) -> None:
 def test_mcp_json_launches_the_platform_shim():
     root = Path(__file__).resolve().parents[2]
     entry = json.loads((root / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["codebase-kg"]
-    assert entry["command"] == "${CLAUDE_PLUGIN_ROOT}/bin/kg-shim"
-    posix = (root / "bin" / "kg-shim").read_text(encoding="utf-8")
-    windows = (root / "bin" / "kg-shim.cmd").read_bytes().decode("utf-8")
-    for launcher in (posix, windows):
-        assert "mcp" in launcher and "shim.py" in launcher
-    assert posix.startswith("#!/bin/sh")
+    assert entry["command"] == "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg-shim"
+    launch = root / "mcp" / "launch"
+    posix = (launch / "kg-shim").read_text(encoding="utf-8")
+    windows = (launch / "kg-shim.cmd").read_bytes().decode("utf-8")
+    assert '"$(dirname "$0")/../src/codebase_kg/shim.py"' in posix
+    assert r"%~dp0..\src\codebase_kg\shim.py" in windows
+    assert (launch / ".." / "src" / "codebase_kg" / "shim.py").resolve().is_file()
+    assert posix.startswith("#!/bin/sh") and "\r\n" not in posix
     assert "py -3" in windows and "\r\n" in windows
+
+
+def test_the_plugin_has_no_top_level_bin_directory():
+    """claude.ai rejects a plugin with a top-level bin/ on upload and org sync,
+    and Cowork refuses to install it."""
+    assert not (Path(__file__).resolve().parents[2] / "bin").exists()
 
 
 # --- run as a file, the shim's own folder must not shadow the stdlib ----------
@@ -855,10 +863,19 @@ def test_the_server_venv_follows_the_plugin_data_dir(
     assert env["PYTHONPATH"].split(os.pathsep)[0] == str(Path(shim.MCP_DIR) / "src")
 
 
+def test_the_venv_uses_the_plugin_data_dir_claude_code_exports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CODEBASE_KG_DATA_DIR", raising=False)
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
+    assert shim.venv_path().parent == tmp_path
+
+
 def test_without_a_data_dir_the_venv_stays_out_of_the_plugin_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("CODEBASE_KG_DATA_DIR", raising=False)
+    monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
     monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(tmp_path))
     venv = shim.venv_path()
     assert venv.parent == shim.user_cache_dir()
