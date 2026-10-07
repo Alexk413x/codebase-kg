@@ -40,6 +40,10 @@ Run `git config core.hooksPath`:
   other clones would not get it either way.)
 
 ### 4. Vendor the checkers and the installer
+Steps 4 to 6 replace only codebase-kg's own files: `kg_pre_push.py`, `kg_pre_commit.py` and
+`install.sh`. They never replace a `pre-commit` or `pre-push` wrapper that already exists, because
+a wrapper can run the repo's own checks too.
+
 Copy **`${CLAUDE_PLUGIN_ROOT}/git-hooks/kg_pre_push.py` and
 `${CLAUDE_PLUGIN_ROOT}/git-hooks/kg_pre_commit.py`** into the hooks dir. They are **stdlib-only**
 (sqlite3 included), so they run for every clone and CI with no plugin install.
@@ -84,6 +88,8 @@ override for anyone who has the package locally.
 ### 5. Wire the `pre-commit`
 - **No existing `pre-commit`** → copy `${CLAUDE_PLUGIN_ROOT}/git-hooks/pre-commit` into the hooks
   dir; `chmod +x` it.
+- **Existing `pre-commit` that already calls `kg_pre_commit.py`** → leave it as it is. Step 4 already
+  updated the checker it calls.
 - **Existing `pre-commit`** → **do not overwrite it.** Add these lines near the top:
   ```sh
   [ -n "$SKIP_KG" ] || {
@@ -95,6 +101,8 @@ override for anyone who has the package locally.
 ### 6. Wire the `pre-push`
 - **No existing `pre-push`** → copy `${CLAUDE_PLUGIN_ROOT}/git-hooks/pre-push` into the hooks dir;
   `chmod +x` it.
+- **Existing `pre-push` that already calls `kg_pre_push.py`** → leave it as it is, unless the call
+  ends in `|| true`. Then remove `|| true`, so the call can block the push.
 - **Existing `pre-push`** → **do not overwrite it.** Add these two lines near the top (**before
   anything that reads stdin** — git feeds the pushed refs there and the checker consumes them). If
   it already contains an older blocking KG-freshness check, replace that block with this call:
