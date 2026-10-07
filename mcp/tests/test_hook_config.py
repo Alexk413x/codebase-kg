@@ -249,13 +249,13 @@ def test_is_source_file_is_still_extension_based_not_covers_aware(
 
 
 # --- hooks.json --------------------------------------------------------------
-def _handlers(tool: str) -> list[dict[str, object]]:
+def _handlers(tool: str, script: str = "kg_search_gate.py") -> list[dict[str, object]]:
     import json
 
     config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
     return [
         h for group in config["hooks"]["PreToolUse"] if group["matcher"] == tool
-        for h in group["hooks"]
+        for h in group["hooks"] if script in str(h["command"])
     ]
 
 
@@ -278,3 +278,9 @@ def test_the_shell_if_rules_cover_every_search_word() -> None:
 def test_every_shell_handler_carries_an_if_rule() -> None:
     for tool in ("Bash", "PowerShell"):
         assert all("if" in h for h in _handlers(tool)), tool
+
+
+def test_the_push_gate_starts_only_for_git_commands() -> None:
+    handlers = _handlers("Bash", "kg_push_gate.py")
+    assert [h["if"] for h in handlers] == ["Bash(git *)"]
+

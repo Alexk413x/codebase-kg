@@ -1,5 +1,5 @@
 {
-  "description": "codebase-kg hooks. (1) A PreToolUse search gate, which starts only for Grep, Glob, and shell commands that run a search command (one `if` rule per search word): a Grep/Glob (or shell grep/rg/find) aimed at mapped code is denied with the instruction to query the code graph first. A graph query clears the next gate_credit searches; a search that already names an anchored file, one aimed outside the repo, one that can only match non-source files (plists, images, Xcode project files), and a repeat of a denied search (the same pattern, however reworded) are all free. Inside a subagent the gate adds the instruction as context instead of denying. (2) A PostToolUse nudge on Edit/Write that reminds you to run /codebase-kg:refresh when you edit source no node anchors on, and periodically once enough mapped files have changed. Both honor .claude/codebase-kg.local.md (search_gate, gate_credit, gate_shell_search, post_edit_nudge, nudge_every, root, graph_path) and SKIP_KG, and both no-op when the repo has no graph. (3) A SessionStart notice: a repo that committed the vendored checkers but whose clone has no core.hooksPath or diff.codegraph.textconv gets one line naming the install command, and a clone whose graph diff driver pins an older codebase-kg release or a missing plugin folder gets one line naming /codebase-kg:setup. It only prints — git leaves .git/config out of a clone so that cloning cannot cause code to run, and wiring it automatically would route around that.",
+  "description": "codebase-kg hooks. (1) A PreToolUse search gate, which starts only for Grep, Glob, and shell commands that run a search command (one `if` rule per search word): a Grep/Glob (or shell grep/rg/find) aimed at mapped code is denied with the instruction to query the code graph first. A graph query clears the next gate_credit searches; a search that already names an anchored file, one aimed outside the repo, one that can only match non-source files (plists, images, Xcode project files), and a repeat of a denied search (the same pattern, however reworded) are all free. Inside a subagent the gate adds the instruction as context instead of denying. (2) A PostToolUse nudge on Edit/Write that reminds you to run /codebase-kg:refresh when you edit source no node anchors on, and periodically once enough mapped files have changed. Both honor .claude/codebase-kg.local.md (search_gate, gate_credit, gate_shell_search, post_edit_nudge, nudge_every, root, graph_path) and SKIP_KG, and both no-op when the repo has no graph. (3) A PreToolUse push gate on Bash `git *` commands: a `git push` (also `git -C <dir> push`, chained or env-prefixed) is denied while any mapped file is stale against HEAD, with the instruction to run /codebase-kg:refresh, commit the graph and push again; SKIP_KG=1 and a matching KG_STALE_ACK=<n> pass it, --no-verify does not. (4) A SessionStart notice: a repo that committed the vendored checkers but whose clone has no core.hooksPath or diff.codegraph.textconv gets one line naming the install command, and a clone whose graph diff driver pins an older codebase-kg release or a missing plugin folder gets one line naming /codebase-kg:setup. It only prints — git leaves .git/config out of a clone so that cloning cannot cause code to run, and wiring it automatically would route around that.",
   "hooks": {
     "PreToolUse": [
       {
@@ -15,6 +15,12 @@
       {
         "matcher": "Bash",
         "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git *)",
+            "command": "command -v py >/dev/null 2>&1 && py -3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_push_gate.py\" || python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_push_gate.py\" || python \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_push_gate.py\"",
+            "timeout": 20
+          },
           {
             "type": "command",
             "if": "Bash(grep *)",

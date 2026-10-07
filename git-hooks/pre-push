@@ -1,17 +1,21 @@
 #!/bin/sh
 # codebase-kg pre-push staleness check — reports when the commits you're pushing
 # add source no node covers, or delete source the graph still anchors on, and
-# reports the repo-wide staleness backlog.
+# checks the whole repo against the graph.
 #
-# It blocks on ONE thing: mapped files that have drifted and that this push does
-# not touch — a backlog nothing else will ever report again. Everything scoped
-# to the pushed commits stays advisory, and an error in the checker itself
-# always exits 0. Release a block with KG_STALE_ACK=<count> (the count is in the
+# It blocks on ONE thing: any mapped file whose contents no longer match the
+# graph, including files this push touches. Everything scoped to the pushed
+# commits stays advisory, and an error in the checker itself always exits 0.
+# Release a block with KG_STALE_ACK=<count> (the total stale count is in the
 # message), SKIP_KG=1, or git push --no-verify.
 #
+# Before it blocks, the checker runs `claude -p "/codebase-kg:refresh"` when it
+# can, and commits the refreshed graph. You then push again. KG_AUTO_REFRESH=0
+# turns that off.
+#
 # The exit status is deliberately NOT swallowed with `|| true` — that is what
-# makes the gate a gate. kg_pre_push.py returns non-zero only for an
-# unacknowledged backlog; it catches its own errors and returns 0.
+# makes the gate a gate. kg_pre_push.py returns non-zero only for unacknowledged
+# stale mapped files; it catches its own errors and returns 0.
 #
 # Vendored: keep kg_pre_push.py next to this file. If this repo already has a
 # pre-push hook, DON'T overwrite it — add the lines below to it instead.

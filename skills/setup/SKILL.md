@@ -106,8 +106,8 @@ override for anyone who has the package locally.
     "$PY" "$(dirname "$0")/kg_pre_push.py" || exit $?
   fi
   ```
-  **Do not append `|| true` here.** The checker returns non-zero for exactly one thing — a staleness
-  backlog this push did not create — and catches its own errors so a bug in it can never fail a push.
+  **Do not append `|| true` here.** The checker returns non-zero for exactly one thing — a stale
+  mapped file, including files this push touches — and catches its own errors so a bug in it can never fail a push.
   Swallowing the status leaves the reporting and removes the gate. The interpreter and file guards
   are what `|| true` used to cover: a `127` from a missing `python` must not block a push in a repo
   that cannot run the check at all.
@@ -280,7 +280,7 @@ rebuild after merging is reproducible rather than a third distinct artifact. See
 ## Posture
 
 Non-destructive: never overwrite an existing hook — integrate a call into it. The `pre-commit`
-check always exits 0; the `pre-push` check blocks only on a staleness backlog. The hooks,
+check always exits 0; the `pre-push` check blocks only on stale mapped files. The hooks,
 `install.sh` and `.gitattributes` are committed in the repo, so all clones and CI behave the same;
 `core.hooksPath` and the textconv driver are local git config, which git never clones, so each clone
 runs `sh .githooks/install.sh` once. A clone that skips it sees inert hooks and the old binary

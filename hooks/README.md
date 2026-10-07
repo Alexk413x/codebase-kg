@@ -1,12 +1,13 @@
 # hooks/
 
-Three Claude Code hooks. All ship with the plugin — there is **nothing to install per repo** — and
+Four Claude Code hooks. All ship with the plugin — there is **nothing to install per repo** — and
 all no-op in a repo with no `knowledge/code_graph.db`.
 
 | File | Role |
 |---|---|
-| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob`, on `Bash` and `PowerShell` calls that an `if` rule names as a search (`Bash(grep *)`, `PowerShell(Select-String *)`, one rule per search word), and asynchronously on the codebase-kg MCP tools → `kg_search_gate.py`; PostToolUse on `Edit\|Write` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_session_start.py`. Each hook runs `py -3` when the `py` launcher exists, else `python3`, else `python`. |
+| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob`, on `Bash` and `PowerShell` calls that an `if` rule names as a search (`Bash(grep *)`, `PowerShell(Select-String *)`, one rule per search word), and asynchronously on the codebase-kg MCP tools → `kg_search_gate.py`; `Bash(git *)` calls → `kg_push_gate.py`; PostToolUse on `Edit\|Write` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_session_start.py`. Each hook runs `py -3` when the `py` launcher exists, else `python3`, else `python`. |
 | `kg_search_gate.py` | The gate. Denies a search aimed at mapped code with the instruction to query the graph, and keeps doing it — a query buys credit, a located search is free, a repeat always passes. |
+| `kg_push_gate.py` | The push gate. Denies an agent's `git push` while any mapped file is stale against `HEAD`. |
 | `kg_post_edit_check.py` | The nudge. Two signals: the edited file isn't in the graph at all, or enough mapped files have changed since the graph was rebuilt. |
 | `kg_session_start.py` | The unwired-clone notice. One line when this clone has the committed checkers but no `core.hooksPath` or no `diff.codegraph.textconv`. Prints; never writes. |
 | `_config.py` | Reads `root` from the committed graph's `meta` table (auto-discovers `knowledge/code_graph.db`); a gitignored `.claude/codebase-kg.local.md` may override. Decides what counts as a source file. |
@@ -56,6 +57,29 @@ a search. Claude Code starts the gate for a shell call only when an `if` rule in
 one of its subcommands, so `git status` costs no process. `test_hook_config.py` asserts that the
 rules list every word the parser knows. A command that matches two rules starts two gate processes;
 the first to claim the call's `tool_use_id` decides, and the other exits silently.
+
+## The push gate (PreToolUse)
+
+Denies a `git push` that an agent runs while any mapped file is stale against `HEAD`. The pre-push git
+hook blocks the same push, but an agent that sees that block can retry with `--no-verify` or a
+`SKIP_KG=1` prefix without anyone noticing. This hook denies earlier, in the agent's turn, and says
+what to do: run `/codebase-kg:refresh`, commit the graph, push again. The reason lists up to 20 stale
+files with the total count.
+
+- **Detects the push by parsing the command.** It finds `git push` after `&&`, `||`, `;`, `|`, a
+  newline, `cd <dir>`, `git -C <dir>`, `git -c k=v`, an env prefix (`SKIP_KG=1 git push`), `env`,
+  `command`, and `bash -c '…'`. `git commit -m "push"`, `git stash push` and `echo git push` are not a
+  push. Claude Code starts the hook only for Bash commands that match `Bash(git *)`.
+- **Uses the pre-push hook's comparison.** The hook loads `git-hooks/kg_pre_push.py` by path and
+  compares every anchored file against `HEAD`, so both agree on what is stale.
+- **Ways through.** `SKIP_KG=1`, or `KG_STALE_ACK=<n>` naming the stale count, in the command's env
+  prefix (or an earlier `export`) or in the environment of the Claude Code process. `--no-verify` does
+  not pass: it skips git hooks, and the point is that an agent cannot skip the check silently.
+- **Fails open.** A parse error, an unreadable graph or any other error allows the push. The git hook
+  still blocks it.
+- **No double refresh.** When this hook denies, the pre-push hook's headless refresh never starts. The
+  agent refreshes in its own turn. When the agent pushes again with a current graph, nothing is stale
+  and neither hook acts.
 
 ## The post-edit nudge (PostToolUse)
 

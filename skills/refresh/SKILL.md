@@ -164,7 +164,7 @@ Run the builder. Then `kg_validate` — fix ungreppable anchors, and add nodes f
 leaving it looking like an oversight). Run `kg_stats` and report the delta.
 
 Neither a build nor an edit changes a recorded baseline on its own. A drifted file stays in
-`changed_since_built`, and in the pre-push backlog, until you say you checked it. For each node you
+`changed_since_built`, and in the pre-push stale-file list, until you say you checked it. For each node you
 re-read against current source and verified, upsert it with `rebaseline: true`, after the build if
 you ran one:
 
@@ -176,7 +176,7 @@ kg_upsert_node(nodes=[{"id": "feed_ranker",
 
 The flag re-hashes every file that node anchors, and the result lists each `source` row it changed.
 Use it instead of deleting paths from the export's `sources` and rebuilding, and instead of
-`KG_STALE_ACK`, which accepts a backlog you chose not to fix rather than one you verified.
+`KG_STALE_ACK`, which accepts stale files you chose not to fix rather than ones you verified.
 
 The baseline belongs to the file, not the node. Re-baselining a file clears it for every node
 anchored there, the same as `--rebaseline`. Before you set the flag, run `kg_find_by_path` on each

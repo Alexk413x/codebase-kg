@@ -2,6 +2,48 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.11.0] — 2026-10-07 — pre-push blocks on every stale file
+
+### Changed
+
+- The `pre-push` hook blocks on every stale mapped file, including files the
+  push touches. A mapped file is stale when its contents no longer match the
+  digest recorded when the graph was built. Before, the hook blocked only on
+  stale files the push did not touch and let drift in pushed files through as
+  advice. A push publishes the code, so the graph has to match it first. Run
+  `/codebase-kg:audit`, then `/codebase-kg:refresh`.
+- The block message lists every stale file as a repo-relative path.
+- `KG_STALE_ACK=<n>` names the total stale count, not the count of files the
+  push leaves untouched. The ack still stops matching when the count moves.
+  `SKIP_KG=1` and `git push --no-verify` work as before.
+- Before the hook blocks, it runs `claude -p "/codebase-kg:refresh"` headless
+  in the repo root. The run gets the graph's MCP tools, `Read(./**)`, `Grep`,
+  `Glob` and read-only `git`, and a minimal environment. It gets no `Write`,
+  `Edit` or CLI runner, so text in the repo cannot steer it into writing or
+  running anything else. It runs only when `claude` is on `PATH`,
+  `KG_AUTO_REFRESH` is not `0`, `KG_REFRESHING` is not set, a pushed ref points
+  at `HEAD`, and the graph file has no uncommitted changes. When the run exits
+  0 and no mapped file is stale, the hook commits the graph as "Refresh the code
+  graph" and exits 1. A pre-push hook cannot add a commit to the push in
+  progress, so you run `git push` again. When `claude` fails or times out (900
+  seconds), a file stays stale, or anything raises, the hook prints the reason,
+  leaves any graph change uncommitted and prints the normal block. Each stale
+  push costs one headless model run. `KG_AUTO_REFRESH=0` turns the refresh off.
+- A new `PreToolUse` hook, `hooks/kg_push_gate.py`, denies an agent's `git push`
+  while any mapped file is stale against `HEAD`. It parses the Bash command, so
+  `git -C <dir> push`, chained commands and env prefixes are covered. The reason
+  lists up to 20 stale files and tells the agent to run `/codebase-kg:refresh`,
+  commit the graph and push again. `SKIP_KG=1` and a matching
+  `KG_STALE_ACK=<n>` pass it. `--no-verify` does not, so an agent cannot skip
+  the check silently. The hook uses the pre-push hook's staleness comparison and
+  fails open on any error. When it denies, the pre-push hook's headless refresh
+  does not run.
+- The change-set findings (unmapped, deleted and drifted files in the pushed
+  commits) stay advisory, `pre-commit` stays advisory, and an error inside the
+  check still exits 0.
+- `git-hooks/README.md`, `README.md`, `SCHEMA.md` and the setup and refresh
+  skills describe the new rule. `git-hooks/install.sh` pins 0.11.0.
+
 ## [0.10.0] — 2026-09-28 — retire the kg_stats CLI field
 
 ### Removed

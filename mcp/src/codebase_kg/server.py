@@ -516,7 +516,7 @@ class NodePatch(TypedDict, total=False):
             description=(
                 "`true` records that you checked this node against its source now. It "
                 "re-hashes every file the node anchors, so those files leave "
-                "`changed_since_built` and the pre-push backlog. The baseline belongs to "
+                "`changed_since_built` and the pre-push stale-file list. The baseline belongs to "
                 "the file, not the node: it clears every node anchored to that file, the "
                 "same as `build --rebaseline`. Set it only after you have checked every "
                 "node that anchors those files. Without it, a recorded baseline never "

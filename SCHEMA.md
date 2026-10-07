@@ -37,8 +37,8 @@ The graph is a **tool that reflects current code state to reduce search cost. No
   will go stale. §5.1 makes this a rule the store enforces.
 - **Point, don't copy.** Reference symbols; never paste code into the graph. Copied code rots.
 - **Advisory, with one gate.** Freshness, drift, and validation surface as advice. They never gate a
-  build, a tool, or a commit. The push hook gates on exactly one thing: mapped files that have
-  drifted and that the push does not touch (§6.3) — a backlog nothing else will report again.
+  build, a tool, or a commit. The push hook gates on exactly one thing: any mapped file that has
+  drifted (§6.3), including files the push touches.
 - **Machine-first.** The artifact is a database, read by tools. It is not meant to be read raw or
   reviewed in a diff.
 
@@ -283,8 +283,8 @@ Staleness is answered by comparing the graph to the code:
   graph was built (§6.3). All three are facts about the source tree.
 - **the staleness hooks** — the same three questions, scoped to what you are committing or pushing,
   plus the repo-wide total those three cannot see. They read the digests out of git (the index, or
-  the pushed tips). `pre-commit` reports and exits 0. `pre-push` exits non-zero for one thing: a
-  backlog of drifted files it did not create, released by `KG_STALE_ACK=<count>`, `SKIP_KG=1` or
+  the pushed tips). `pre-commit` reports and exits 0. `pre-push` exits non-zero for one thing: any
+  drifted mapped file, released by `KG_STALE_ACK=<count>`, `SKIP_KG=1` or
   `--no-verify`.
 - **the post-edit hook** — says so the first time you edit a file no node anchors on.
 

@@ -17,28 +17,48 @@ status `M`, and a check that reads only `A` and `D` is silent through exactly
 the drift that accumulates: on one repo it let a graph fall 48 commits behind,
 of which two thirds were modifications it never mentioned.
 
-All three are scoped to the change set, and are advisory. That scoping is right
-for per-commit noise and wrong for a backlog: a file that drifts and is never
-re-derived is reported once, in the commit that touched it, and never again. One
-consumer repo carried 47 stale files for months with every one of these checks
-passing. So this hook also asks the repo-wide question — every anchored file
-against its baseline — and **the backlog is the one thing it blocks on**.
+The first three findings are scoped to the change set and are advisory. That
+scoping is right for per-commit noise and wrong for a standing gap: a file that
+drifts and is never re-derived is reported once, in the commit that touched it,
+and never again. One consumer repo carried 47 stale files for months with every
+one of these checks passing. So this hook also asks the repo-wide question —
+every anchored file against its baseline — and **blocks on any stale mapped
+file**.
 
-The backlog is repo-wide staleness minus whatever this push itself touches. That
-split is what keeps the gate from becoming wallpaper: drift you are introducing
-right now is reported and let through, because the commit-time check already
-named it and you are plainly still working on it; drift you walked away from and
-never came back to is what stops the push. In a repo that is kept current the
-backlog is zero and this hook is silent, so there is nothing to develop a habit
-of bypassing — which was the standing argument against gating here, and is
-answered by narrowing what gates rather than by not gating.
+The gate covers every stale file, including the ones this push touches. A push
+is publication: it records the code on the remote, and a graph that lags the
+code at that point stays wrong for everyone who reads it. Refresh the graph
+before you push, or acknowledge the drift explicitly. In a repo that is kept
+current no file is stale and this hook is silent.
+
+When the gate would block, the hook first tries to fix the cause: it runs
+`claude -p "/codebase-kg:refresh"` headless in the repo root. The run reads
+the repo, runs read-only git, and writes only through the graph's MCP write
+tools: no `Write`, `Edit` or CLI runner, and a minimal environment. It does this
+only when all of these hold:
+
+  * `claude` is on `PATH`;
+  * `KG_AUTO_REFRESH` is not `0`, and `KG_REFRESHING` is not set (the recursion
+    guard the hook sets for the run);
+  * a pushed ref's local sha is `HEAD`, so the refreshed graph can be committed
+    on top of what is being pushed;
+  * the graph file has no uncommitted changes.
+
+If the run exits 0, the graph file changed and no mapped file is stale against
+`HEAD`, the hook commits the graph as "Refresh the code graph" and still exits
+1. A pre-push hook cannot add a commit to the push in progress, so you run
+`git push` again. Every other outcome — `claude` fails or times out (900 s), a
+file stays stale, anything raises — prints the reason, leaves any graph change
+uncommitted, and falls through to the normal block. A refresh costs one headless
+model run per stale push.
 
 The escape hatches are deliberate and all explicit:
 
-  * `KG_STALE_ACK=<n>` where `<n>` is the backlog count this run reports. It
-    names the number on purpose — it stops matching the moment the backlog
-    moves, so it cannot be set once in a shell profile and forgotten.
+  * `KG_STALE_ACK=<n>` where `<n>` is the total stale-file count this run
+    reports. It names the number on purpose — it stops matching the moment the
+    count moves, so it cannot be set once in a shell profile and forgotten.
   * `SKIP_KG=1` skips the check entirely, as it does at commit time.
+  * `KG_AUTO_REFRESH=0` keeps the check and skips only the automatic refresh.
   * `git push --no-verify` skips every hook.
 
 An unexpected error is never a block: `main` returns 0 on anything it did not
@@ -65,6 +85,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -528,7 +549,7 @@ def repo_staleness(graph: Graph, root: str, revs: list[str]) -> Staleness:
 
     The question neither hook was asking. `analyze` compares a change set, so a
     file that drifts and is never re-derived is named once and then never again;
-    this compares the whole map, so a backlog cannot go quiet by being old.
+    this compares the whole map, so stale files cannot go quiet by being old.
 
     Read from `revs` rather than the working tree for the same reason the change
     set is: a push of a branch that is not checked out would otherwise be
@@ -553,7 +574,7 @@ def standing_line(stale: list[str], nodes: list[str], graph_rel: str) -> str:
     """The repo-wide total as one line, shared by both hooks.
 
     One line on purpose. The change-set report is already scoped and worth
-    reading; the standing backlog only needs to stop being invisible, and a
+    reading; the repo-wide total only needs to stop being invisible, and a
     second block at every commit would make people stop reading the first.
     """
     return (
@@ -663,7 +684,7 @@ def _emit(
 
     `blocked` suppresses the two advisory lines for the same reason. These
     findings are still advisory when a push is blocked — the block comes from the
-    backlog, reported separately below them — but a header promising the push is
+    stale files, reported separately below them — but a header promising the push is
     going through, three lines above one saying it is not, is the same defect.
     """
     unmapped, deleted, drifted = findings
@@ -691,21 +712,14 @@ def _emit(
     sys.stderr.write("\n".join(msg) + "\n")
 
 
-def _emit_backlog(
+def _emit_stale(
     stale: list[str],
-    backlog: list[str],
     nodes: list[str],
     graph_rel: str,
     root: str,
     blocked: bool,
 ) -> None:
-    """Report the repo-wide total, and the verdict on the backlog.
-
-    `stale` is every mapped file that has drifted; `backlog` is the part of it
-    this push does not touch. The distinction is the whole design: drift you are
-    making now was already reported at commit time and you are still working on
-    it, while drift you left behind is what no change set will ever mention
-    again.
+    """Report the repo-wide total, list every stale file, and give the verdict.
 
     Paths are converted back to repo-relative for display. They arrive relative
     to the graph's `root`, which is what the comparison needs and is not what
@@ -714,15 +728,13 @@ def _emit_backlog(
     files.
     """
     msg = ["[codebase-kg]", standing_line(stale, nodes, graph_rel)]
-    if backlog:
-        msg.append("[codebase-kg]")
-        _block(
-            msg,
-            [_root_to_rel(p, root) for p in backlog],
-            f"{len(backlog)} of those are untouched by this push - a standing "
-            "backlog no change set will report again:",
-            "~",
-        )
+    msg.append("[codebase-kg]")
+    _block(
+        msg,
+        [_root_to_rel(p, root) for p in stale],
+        f"{len(stale)} mapped file(s) no longer match the graph:",
+        "~",
+    )
     if not blocked:
         # `_block` closes with a separator for whatever follows it. Nothing does.
         while msg and msg[-1] == "[codebase-kg]":
@@ -731,20 +743,20 @@ def _emit_backlog(
         return
     msg += [
         "[codebase-kg] PUSH BLOCKED. A commit is provisional; a push is publication,",
-        "[codebase-kg] and this drift is leaving your local branch unrecorded.",
+        "[codebase-kg] and the graph no longer matches the code you are publishing.",
         "[codebase-kg]",
         "[codebase-kg]   Fix it:         /codebase-kg:audit, then /codebase-kg:refresh",
-        f"[codebase-kg]   Accept it once: KG_STALE_ACK={len(backlog)} git push ...",
+        f"[codebase-kg]   Accept it once: KG_STALE_ACK={len(stale)} git push ...",
         "[codebase-kg]   Skip the check: SKIP_KG=1 git push ...  (or git push --no-verify)",
         "[codebase-kg]",
         "[codebase-kg] The ack names the count on purpose: it stops matching as soon as",
-        "[codebase-kg] the backlog moves, so it cannot be set once and forgotten.",
+        "[codebase-kg] the count moves, so it cannot be set once and forgotten.",
     ]
     sys.stderr.write("\n".join(msg) + "\n")
 
 
-def acknowledged(backlog: list[str]) -> bool:
-    """Is this exact backlog already acknowledged for this push?
+def acknowledged(stale: list[str]) -> bool:
+    """Is this exact set of stale files already acknowledged for this push?
 
     `KG_STALE_ACK` must name the count. An ack that meant "yes, whatever the
     number" is the `--no-verify`-and-forget failure in a different spelling: set
@@ -752,11 +764,157 @@ def acknowledged(backlog: list[str]) -> bool:
     afterwards. Naming the number makes the acknowledgement expire on its own.
     """
     ack = os.environ.get("KG_STALE_ACK", "").strip()
-    return ack.isdigit() and int(ack) == len(backlog)
+    return ack.isdigit() and int(ack) == len(stale)
+
+
+REFRESH_PROMPT = (
+    "/codebase-kg:refresh This run is unattended. Write the graph only through the kg_* "
+    "write tools (kg_upsert_node, kg_delete_node and the link and reference tools). Do not "
+    "export, edit or build .kg-export.json, and do not run the CLI runner."
+)
+REFRESH_TIMEOUT = 900
+
+_REFRESH_MCP_TOOLS = (
+    "kg_validate", "kg_stats", "kg_search", "kg_node", "kg_find_by_path",
+    "kg_upsert_node", "kg_delete_node", "kg_add_link", "kg_remove_link",
+    "kg_add_reference", "kg_remove_reference", "kg_neighborhood",
+)
+
+# Unattended, so narrower than the skill's own `allowed-tools`: the run reads the
+# repo, runs read-only git, and writes only through the MCP write tools, which
+# validate each change and touch nothing but the graph. No Write, Edit or CLI
+# runner, so text in the repo cannot steer the run into writing or executing
+# anything else. Both server names are listed: the host prefixes the plugin's
+# server one way and a direct install another.
+REFRESH_TOOLS = [
+    f"{prefix}{name}"
+    for prefix in ("mcp__codebase-kg__", "mcp__plugin_codebase-kg_codebase-kg__")
+    for name in _REFRESH_MCP_TOOLS
+] + [
+    "Read(./**)", "Grep", "Glob",
+    "Bash(git diff:*)", "Bash(git log:*)", "Bash(git ls-files:*)",
+    "Bash(git status:*)", "Bash(git merge-base:*)",
+]
+
+# Git exports GIT_DIR, GIT_INDEX_FILE and friends into hooks; passed on, they
+# point the nested run's git at the pushing process's state. Everything else the
+# run needs to start, authenticate and reach the API is named here.
+_REFRESH_ENV = (
+    "PATH", "PATHEXT", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "USER", "USERNAME",
+    "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "SYSTEMROOT", "SYSTEMDRIVE",
+    "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "TERM",
+    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
+    "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
+)
+
+
+def refresh_env() -> dict[str, str]:
+    upper = {k.upper(): v for k, v in os.environ.items()}
+    env = {name: upper[name] for name in _REFRESH_ENV if name in upper}
+    env["KG_REFRESHING"] = "1"
+    return env
+
+
+def can_auto_refresh(refs: list[tuple[str, str, str, str]], graph_rel: str) -> bool:
+    """May the hook run the refresh itself for this push?
+
+    The pushed tip has to be `HEAD`: the hook cannot add a commit to the push in
+    progress, so the refreshed graph is committed on `HEAD` and lands with the
+    next push. A graph file with uncommitted changes is someone's work, and the
+    refresh would build on top of it.
+    """
+    if os.environ.get("KG_AUTO_REFRESH", "").strip() == "0":
+        return False
+    if os.environ.get("KG_REFRESHING"):
+        return False
+    if not shutil.which("claude"):
+        return False
+    head = _git("rev-parse", "HEAD").strip()
+    if not head or head not in push_tips(refs):
+        return False
+    return not _git("status", "--porcelain", "--", graph_rel).strip()
+
+
+def _run_claude(claude: str, repo: Path) -> str | None:
+    """Run the refresh skill headless. Returns the failure, or None on exit 0.
+
+    stdin is closed: the hook's own stdin carried the pushed refs and is spent.
+    `KG_REFRESHING` stops a refresh that somehow pushes from refreshing again.
+    """
+    try:
+        proc = subprocess.run(
+            [claude, "-p", REFRESH_PROMPT, "--allowedTools", ",".join(REFRESH_TOOLS)],
+            cwd=repo,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=REFRESH_TIMEOUT,
+            env=refresh_env(),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return f"claude did not finish within {REFRESH_TIMEOUT} seconds"
+    except OSError as exc:
+        return f"claude did not start: {exc}"
+    if proc.returncode != 0:
+        tail = " ".join((proc.stderr or proc.stdout or "").strip().splitlines()[-3:])
+        return f"claude exited with status {proc.returncode}" + (f": {tail}" if tail else "")
+    return None
+
+
+def _commit_graph(graph_rel: str) -> str | None:
+    """Commit the graph file alone. Returns the short sha, or None on failure."""
+    env = {**os.environ, "KG_REFRESHING": "1"}
+    for cmd in (
+        ["git", "add", "--", graph_rel],
+        ["git", "commit", "-m", "Refresh the code graph", "--", graph_rel],
+    ):
+        if subprocess.run(cmd, capture_output=True, env=env, check=False).returncode != 0:
+            return None
+    return _git("rev-parse", "--short", "HEAD").strip() or None
+
+
+def _may_auto_refresh(refs: list[tuple[str, str, str, str]], graph_rel: str) -> bool:
+    try:
+        return can_auto_refresh(refs, graph_rel)
+    except Exception:  # noqa: BLE001 - the stale state is real; fall back to the block
+        return False
+
+
+def auto_refresh(repo: Path, graph_rel: str, root: str) -> str | None:
+    """Refresh the graph with a headless run and commit it.
+
+    Returns None once the refreshed graph is committed, else the reason it was
+    not. Any graph change from a failed run stays uncommitted.
+    """
+    try:
+        failure = _run_claude(shutil.which("claude") or "claude", repo)
+        if failure:
+            return failure
+        fresh = read_graph(repo / graph_rel)
+        if fresh is None:
+            return "the refreshed graph is unreadable"
+        left = repo_staleness(fresh, root, ["HEAD"]).stale
+        if left:
+            return f"{len(left)} mapped file(s) are still stale after the refresh"
+        if not _git("status", "--porcelain", "--", graph_rel).strip():
+            return "the refresh did not change the graph"
+        sha = _commit_graph(graph_rel)
+        if sha is None:
+            return "git could not commit the refreshed graph"
+    except Exception as exc:  # noqa: BLE001 - the block message still follows
+        return f"the refresh raised: {exc}"
+    sys.stderr.write(
+        f"[codebase-kg] Graph refreshed and committed as {sha}. Review it with "
+        f"`git show {sha}`, then run git push again: a pre-push hook cannot add a commit "
+        "to the push in progress.\n"
+    )
+    return None
 
 
 def main() -> int:
-    """Run the check. Returns 1 only for an unacknowledged backlog.
+    """Run the check. Returns 1 only for unacknowledged stale mapped files.
 
     Every other outcome — no graph, an unreadable one, findings in the change
     set, or a bug in here — returns 0. A staleness check that can fail a push by
@@ -813,16 +971,26 @@ def _run() -> int:
     # The repo-wide pass, over every anchored file rather than the change set.
     revs = push_tips(refs) or ["HEAD"]
     split = repo_staleness(graph, root, revs)
-    touched = {_rel_to_root(rel, root) for _status, rel in changed}
-    backlog = [p for p in split.stale if p not in touched]
-    blocked = bool(backlog) and not acknowledged(backlog)
+    blocked = bool(split.stale) and not acknowledged(split.stale)
+
+    if blocked and _may_auto_refresh(refs, graph_rel):
+        sys.stderr.write(
+            f"[codebase-kg] The graph is stale ({len(split.stale)} mapped file(s)). Running "
+            '`claude -p "/codebase-kg:refresh"` to refresh it. This can take a few minutes and '
+            "costs one headless model run. Set KG_AUTO_REFRESH=0 to turn it off.\n"
+        )
+        failure = auto_refresh(repo, graph_rel, root)
+        if failure is None:
+            return 1
+        sys.stderr.write(
+            f"[codebase-kg] Auto-refresh failed: {failure}. "
+            "Any change to the graph is left uncommitted.\n"
+        )
 
     if any(findings):
         _emit(findings, graph_rel, blocked=blocked)
     if split.stale:
-        _emit_backlog(
-            split.stale, backlog, stale_nodes(graph, split.stale), graph_rel, root, blocked
-        )
+        _emit_stale(split.stale, stale_nodes(graph, split.stale), graph_rel, root, blocked)
     return 1 if blocked else 0
 
 

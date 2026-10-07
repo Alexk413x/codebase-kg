@@ -17,9 +17,9 @@ every session*.
   carrying a parity status + one-line divergence — so "find all feature gaps between the iOS app and
   its Android port" is a query across two graphs, not a hand-maintained file.
 - **Advisory, with one gate.** Drift and validation surface as advice; they never gate a build or a
-  tool, and never a commit. The push hook blocks on exactly one thing: mapped files that have
-  drifted and that the push does not touch — a backlog nothing else will report again. Zero in a
-  repo that is kept current, and releasable with an acknowledgement that names the count.
+  tool, and never a commit. The push hook blocks on exactly one thing: any mapped file that has
+  drifted, including files the push touches. Zero in a repo that is kept current, and releasable
+  with an acknowledgement that names the count.
 
 The graph is **descriptive** (a mirror of current code), **source-derived** (never ticket- or
 history-derived), and **point-don't-copy** (references symbols, never pastes code). It is a tool
@@ -148,7 +148,7 @@ codebase-kg/
 ├── .mcp.json                 # registers the codebase-kg MCP server (mcp/launch/kg-shim → mcp/src/codebase_kg/shim.py)
 ├── skills/                   # query / build / refresh / audit / link / validate, and setup (user-invoked only)
 ├── mcp/                      # the query server (one shared process per machine) + build/export/migrate CLIs
-├── hooks/                    # Claude Code hooks: the search gate, the post-edit nudge, the unwired-clone notice
+├── hooks/                    # Claude Code hooks: the search gate, the push gate, the post-edit nudge, the unwired-clone notice
 └── git-hooks/                # advisory pre-commit + pre-push staleness checks and install.sh, vendored into any repo (stdlib-only)
 ```
 
@@ -185,6 +185,12 @@ Two advisory layers, both pointing at the same fix (`/codebase-kg:refresh`):
 
 - **In-session nudge** (`hooks/`): while Claude edits source, it says so the first time you touch a
   file no node covers, and periodically once enough mapped files have changed.
+- **Push gate for agents** (`hooks/kg_push_gate.py`, a `PreToolUse` hook on Bash): when an agent runs
+  `git push` (also `git -C <dir> push`, chained, or env-prefixed) while any mapped file is stale
+  against `HEAD`, the hook denies the call. The reason lists the stale files and tells the agent to run
+  `/codebase-kg:refresh`, commit the graph and push again. `SKIP_KG=1` and a matching
+  `KG_STALE_ACK=<n>` pass it. `--no-verify` does not, because it skips git hooks and not this one. The
+  hook fails open on any error. It uses the pre-push hook's comparison, so both agree on what is stale.
 - **Commit/push checks** (`git-hooks/`): installed per-repo via `/codebase-kg:setup`. They compare
   the change set against the graph and report three things: source no node covers, deleted files the
   graph still anchors on, and mapped files whose contents no longer match the digest recorded when
@@ -192,9 +198,11 @@ Two advisory layers, both pointing at the same fix (`/codebase-kg:refresh`):
   modifications, and a check that reads only additions and deletions is silent through most of the
   drift. Both also report the **repo-wide** total, which no change set can see: a file that drifts
   and is never re-derived is named once and then never again. Commit-time is one line and never
-  blocks; push-time blocks on the backlog it did not create (`KG_STALE_ACK=<n>`, `SKIP_KG=1` or
-  `--no-verify` to get past it). They're stdlib-only and vendored into the repo, so they run for
-  every clone and CI.
+  blocks; push-time blocks on every stale mapped file (`KG_STALE_ACK=<n>`, `SKIP_KG=1` or
+  `--no-verify` to get past it). Before it blocks, the push hook runs
+  `claude -p "/codebase-kg:refresh"` and commits the refreshed graph, then asks you to push again.
+  That costs one headless model run per stale push; `KG_AUTO_REFRESH=0` turns it off. They're
+  stdlib-only and vendored into the repo, so they run for every clone and CI.
 
 ### One command per clone
 
