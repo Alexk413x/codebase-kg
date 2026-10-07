@@ -101,6 +101,27 @@ imports and calls peaks at 29 MB.
 - `kg_validate` takes about 2 s in every mode, so the mode adds 10-20 % at most. For quick lookups
   the CLI adds about 160 ms each.
 
+## Many agents at once
+
+`mcp/bench/concurrency.py` runs N agents at once. Each agent makes the nine lookup calls of the loop in
+order (`kg_validate` left out). Each MCP agent has its own session through the shim to the one shared
+server. Each CLI agent starts one process per call. Measured 2026-10-07 on a 16-CPU Windows 11 machine
+at 94 % CPU load from other work, so treat the figures as a range. Two runs, no errors in either.
+
+| Agents | CLI, call median | CLI, all agents done | MCP, call median | MCP, all agents done |
+|---|---|---|---|---|
+| 1 | 177-570 ms | 1.8-5.8 s | 22-25 ms | 0.5 s |
+| 4 | 434-692 ms | 4.2-6.5 s | 33-64 ms | 0.6-1.2 s |
+| 8 | 333-635 ms | 3.4-6.3 s | 162-201 ms | 2.6-2.7 s |
+| 16 | 659-968 ms | 7.9-11.2 s | 348-419 ms | 4.8-6.3 s |
+
+- Reads don't conflict. SQLite serves concurrent readers, and no call failed.
+- MCP slows sharply past 4 agents. All sessions share one server process, which runs one tool call at
+  a time. At 16 agents a call waits about 0.4 s, and the slowest wait 2-2.5 s.
+- The CLI slows less in proportion, because each call is its own process on its own CPU. It starts
+  slower, so it stays behind MCP at every N measured.
+- Concurrent graph writes weren't tested.
+
 ## Split by when a tool runs
 
 Keep MCP for tools the model calls repeatedly while it works, where 5-10 ms against 160 ms matters,
