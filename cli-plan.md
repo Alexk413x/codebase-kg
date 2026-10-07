@@ -81,6 +81,19 @@ ten calls.
 | `kg_validate` | 1,982 ms | 2,415 ms | 2,170 ms | 2,248 ms |
 | **Loop of 10, median** | **2.1 s** | **4.2 s** | **2.4 s** | **3.6 s** |
 
+Memory during the loop (3 rounds, 30 calls per mode):
+
+| Mode | While idle | During the loop |
+|---|---|---|
+| CLI | 0 | 21 MB peak per call (max 25 MB), freed when the call ends |
+| CLI + server | The shared server stays resident | 20 MB peak per client call, plus the server |
+| MCP, one session | 116 MB (shim, `uv`, launcher and server processes) | 123 MB after 30 calls |
+| One plain Python process making all 30 calls | 0 | 21 MB after imports, 29 MB peak |
+
+The live shared server on this machine held 37.5 MB, and each session's shim 12-22 MB. Most of the
+MCP figure is process overhead and the fastmcp import, not the graph: plain Python with the same
+imports and calls peaks at 29 MB.
+
 - "In-process" is the function called with no process start: the floor for any design.
 - "CLI + server" is `mcp/bench/kg_client.py`: one Python process per call that forwards to the shared
   server. It saves only 15-40 ms per call over the plain CLI, because Python start-up (about 140 ms on

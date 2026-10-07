@@ -28,7 +28,9 @@ from fastmcp.client.transports import StdioTransport
 
 MCP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(MCP_DIR / "src"))
+sys.path.insert(0, str(MCP_DIR / "bench"))
 from codebase_kg import query  # noqa: E402
+from cli_vs_mcp import _counters, _process_mb  # noqa: E402
 from codebase_kg.store import CodeGraph  # noqa: E402
 
 RUNNER = MCP_DIR / "launch" / "kg_cli.py"
@@ -67,23 +69,28 @@ def run_inprocess(graph: str) -> list[tuple[float, dict]]:
     return out
 
 
-def _proc(cmd: list[str], env: dict[str, str]) -> tuple[float, dict]:
+PEAKS: dict[str, list[int]] = {"cli": [], "cli+server": []}
+
+
+def _proc(cmd: list[str], env: dict[str, str], mode: str) -> tuple[float, dict]:
     t = time.perf_counter()
-    p = subprocess.run(cmd, capture_output=True, env=env)
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    out, err = p.communicate()
     ms = (time.perf_counter() - t) * 1000
+    PEAKS[mode].append(_counters(int(p._handle)).PeakWorkingSetSize)  # type: ignore[attr-defined]
     if p.returncode != 0:
-        raise RuntimeError(f"{cmd[-2:]} failed: {p.stdout[:200]!r} {p.stderr[:300]!r}")
-    return ms, json.loads(p.stdout.decode("utf-8"))
+        raise RuntimeError(f"{cmd[-2:]} failed: {out[:200]!r} {err[:300]!r}")
+    return ms, json.loads(out.decode("utf-8"))
 
 
 def run_cli(graph: str, python: str) -> list[tuple[float, dict]]:
     env = dict(os.environ, CODEBASE_KG_PATH=graph)
-    return [_proc([python, "-I", str(RUNNER), "query", tool, json.dumps(args)], env) for tool, args in CALLS]
+    return [_proc([python, "-I", str(RUNNER), "query", tool, json.dumps(args)], env, "cli") for tool, args in CALLS]
 
 
 def run_cli_server(graph: str, python: str) -> list[tuple[float, dict]]:
     env = dict(os.environ, CODEBASE_KG_PATH=graph)
-    return [_proc([python, "-I", str(CLIENT), tool, json.dumps(args)], env) for tool, args in CALLS]
+    return [_proc([python, "-I", str(CLIENT), tool, json.dumps(args)], env, "cli+server") for tool, args in CALLS]
 
 
 async def run_mcp(client: Client) -> list[tuple[float, dict]]:
@@ -98,15 +105,24 @@ async def run_mcp(client: Client) -> list[tuple[float, dict]]:
 async def main_async(graph: str, rounds: int, python: str) -> dict:
     env = dict(os.environ, CODEBASE_KG_PATH=graph)
     modes: dict[str, list[list[tuple[float, dict]]]] = {"in-process": [], "cli": [], "mcp": [], "cli+server": []}
+    before = frozenset(_process_mb("codebase_kg")["pids"])
+    memory: dict = {}
     async with Client(StdioTransport(command=sys.executable, args=[str(SHIM)], env=env)) as client:
         await client.call_tool("kg_stats", {})
+        memory["mcp_server_idle_mb"] = _process_mb("codebase_kg", before)["total_mb"]
         for _ in range(rounds):
             modes["in-process"].append(run_inprocess(graph))
             modes["cli"].append(run_cli(graph, python))
             modes["mcp"].append(await run_mcp(client))
             modes["cli+server"].append(run_cli_server(graph, python))
+        memory["mcp_server_after_loops_mb"] = _process_mb("codebase_kg", before)["total_mb"]
+    memory["this_process_peak_mb"] = round(_counters(-1).PeakWorkingSetSize / 2**20, 1)
+    for m, peaks in PEAKS.items():
+        memory[f"{m}_per_call_peak_mb"] = {"median": round(statistics.median(peaks) / 2**20, 1),
+                                           "max": round(max(peaks) / 2**20, 1)}
 
-    report: dict = {"graph": graph, "rounds": rounds, "per_call_median_ms": {}, "loop_of_10_ms": {}, "parity": {}}
+    report: dict = {"graph": graph, "rounds": rounds, "memory": memory, "per_call_median_ms": {},
+                    "loop_of_10_ms": {}, "parity": {}}
     for i in range(len(CALLS)):
         report["per_call_median_ms"][_label(i)] = {
             m: round(statistics.median(r[i][0] for r in runs), 1) for m, runs in modes.items()
