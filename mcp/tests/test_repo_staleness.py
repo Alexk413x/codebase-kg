@@ -419,7 +419,7 @@ class _Refresh:
         drifted = () if self.refreshed and not self.leaves_stale else (KNOWN,)
         return _fake_blobs(_tree_digests(self.repo / "src", drifted))(specs)
 
-    def _run_claude(self, claude: str, repo: Path) -> str | None:
+    def _run_claude(self, claude: str, repo: Path, stale: list[str]) -> str | None:
         self.runs.append(claude)
         self.refreshed = True
         return self.run_result
@@ -574,17 +574,18 @@ def test_run_claude_runs_the_skill_headless_with_a_narrow_allowlist(
     monkeypatch.setattr(g.subprocess, "run", fake_run)
     monkeypatch.setenv("GIT_DIR", "/elsewhere/.git")
     monkeypatch.setenv("GITHUB_TOKEN", "secret")
-    assert g._run_claude("claude", tmp_path) is None
+    assert g._run_claude("claude", tmp_path, ["src/a.kt"]) is None
     cmd, kwargs = seen["cmd"], seen["kwargs"]
     assert isinstance(cmd, list) and isinstance(kwargs, dict)
     assert cmd[:2] == ["claude", "-p"]
     assert cmd[2].startswith("/codebase-kg:refresh ")
+    assert cmd[2].endswith("Stale mapped files:\n- src/a.kt")
     assert "--dangerously-skip-permissions" not in cmd
     allowed = cmd[cmd.index("--allowedTools") + 1].split(",")
     assert "mcp__plugin_codebase-kg_codebase-kg__kg_upsert_node" in allowed
     assert "mcp__codebase-kg__kg_validate" in allowed
-    assert "Bash(git diff:*)" in allowed
-    assert not any(t in ("Bash", "Bash(*)", "Write", "Edit", "Read") for t in allowed)
+    assert not any(t.startswith("Bash") for t in allowed)
+    assert not any(t in ("Write", "Edit", "Read") for t in allowed)
     assert not any("kg_cli" in t or t.startswith(("Write(", "Edit(")) for t in allowed)
     assert kwargs["cwd"] == tmp_path
     assert kwargs["stdin"] is g.subprocess.DEVNULL
@@ -602,14 +603,14 @@ def test_run_claude_reports_a_nonzero_exit_and_a_timeout(
     monkeypatch.setattr(
         g.subprocess, "run", lambda *a, **k: _Completed(3, stderr="line1\nauth required\n")
     )
-    reason = g._run_claude("claude", tmp_path)
+    reason = g._run_claude("claude", tmp_path, ["src/a.kt"])
     assert reason is not None and "status 3" in reason and "auth required" in reason
 
     def hang(*_a: object, **_k: object) -> None:
         raise g.subprocess.TimeoutExpired("claude", g.REFRESH_TIMEOUT)
 
     monkeypatch.setattr(g.subprocess, "run", hang)
-    reason = g._run_claude("claude", tmp_path)
+    reason = g._run_claude("claude", tmp_path, ["src/a.kt"])
     assert reason is not None and "did not finish" in reason
 
 

@@ -32,10 +32,10 @@ before you push, or acknowledge the drift explicitly. In a repo that is kept
 current no file is stale and this hook is silent.
 
 When the gate would block, the hook first tries to fix the cause: it runs
-`claude -p "/codebase-kg:refresh"` headless in the repo root. The run reads
-the repo, runs read-only git, and writes only through the graph's MCP write
-tools: no `Write`, `Edit` or CLI runner, and a minimal environment. It does this
-only when all of these hold:
+`claude -p "/codebase-kg:refresh"` headless in the repo root, with the stale
+files listed in the prompt. The run reads the repo and writes only through the
+graph's MCP write tools: no shell, no `Write`, `Edit` or CLI runner, and a
+minimal environment. It does this only when all of these hold:
 
   * `claude` is on `PATH`;
   * `KG_AUTO_REFRESH` is not `0`, and `KG_REFRESHING` is not set (the recursion
@@ -768,9 +768,11 @@ def acknowledged(stale: list[str]) -> bool:
 
 
 REFRESH_PROMPT = (
-    "/codebase-kg:refresh This run is unattended. Write the graph only through the kg_* "
-    "write tools (kg_upsert_node, kg_delete_node and the link and reference tools). Do not "
-    "export, edit or build .kg-export.json, and do not run the CLI runner."
+    "/codebase-kg:refresh This run is unattended and has no shell, so it cannot run git. "
+    "The push hook already found the change set: the mapped files below no longer match "
+    "the graph. Read them, re-derive the nodes that anchor on them, and write the graph "
+    "only through the kg_* write tools (kg_upsert_node, kg_delete_node and the link and "
+    "reference tools). Do not export, edit or build .kg-export.json."
 )
 REFRESH_TIMEOUT = 900
 
@@ -781,20 +783,21 @@ _REFRESH_MCP_TOOLS = (
 )
 
 # Unattended, so narrower than the skill's own `allowed-tools`: the run reads the
-# repo, runs read-only git, and writes only through the MCP write tools, which
-# validate each change and touch nothing but the graph. No Write, Edit or CLI
-# runner, so text in the repo cannot steer the run into writing or executing
-# anything else. Both server names are listed: the host prefixes the plugin's
-# server one way and a direct install another.
+# repo and writes only through the MCP write tools, which validate each change and
+# touch nothing but the graph. No Bash at all: even read-only git takes
+# `--output=<file>`. No Write, Edit or CLI runner either, so text in the repo
+# cannot steer the run into writing or executing anything. The hook supplies the
+# change set in the prompt instead. Both server names are listed: the host
+# prefixes the plugin's server one way and a direct install another.
 REFRESH_TOOLS = [
     f"{prefix}{name}"
     for prefix in ("mcp__codebase-kg__", "mcp__plugin_codebase-kg_codebase-kg__")
     for name in _REFRESH_MCP_TOOLS
-] + [
-    "Read(./**)", "Grep", "Glob",
-    "Bash(git diff:*)", "Bash(git log:*)", "Bash(git ls-files:*)",
-    "Bash(git status:*)", "Bash(git merge-base:*)",
-]
+] + ["Read(./**)", "Grep", "Glob"]
+
+
+def refresh_prompt(stale: list[str]) -> str:
+    return REFRESH_PROMPT + "\n\nStale mapped files:\n" + "\n".join(f"- {path}" for path in stale)
 
 # Git exports GIT_DIR, GIT_INDEX_FILE and friends into hooks; passed on, they
 # point the nested run's git at the pushing process's state. Everything else the
@@ -836,7 +839,7 @@ def can_auto_refresh(refs: list[tuple[str, str, str, str]], graph_rel: str) -> b
     return not _git("status", "--porcelain", "--", graph_rel).strip()
 
 
-def _run_claude(claude: str, repo: Path) -> str | None:
+def _run_claude(claude: str, repo: Path, stale: list[str]) -> str | None:
     """Run the refresh skill headless. Returns the failure, or None on exit 0.
 
     stdin is closed: the hook's own stdin carried the pushed refs and is spent.
@@ -844,7 +847,7 @@ def _run_claude(claude: str, repo: Path) -> str | None:
     """
     try:
         proc = subprocess.run(
-            [claude, "-p", REFRESH_PROMPT, "--allowedTools", ",".join(REFRESH_TOOLS)],
+            [claude, "-p", refresh_prompt(stale), "--allowedTools", ",".join(REFRESH_TOOLS)],
             cwd=repo,
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -882,14 +885,16 @@ def _may_auto_refresh(refs: list[tuple[str, str, str, str]], graph_rel: str) -> 
         return False
 
 
-def auto_refresh(repo: Path, graph_rel: str, root: str) -> str | None:
+def auto_refresh(repo: Path, graph_rel: str, root: str, stale: list[str]) -> str | None:
     """Refresh the graph with a headless run and commit it.
 
     Returns None once the refreshed graph is committed, else the reason it was
     not. Any graph change from a failed run stays uncommitted.
     """
     try:
-        failure = _run_claude(shutil.which("claude") or "claude", repo)
+        failure = _run_claude(
+            shutil.which("claude") or "claude", repo, [_root_to_rel(p, root) for p in stale]
+        )
         if failure:
             return failure
         fresh = read_graph(repo / graph_rel)
@@ -979,7 +984,7 @@ def _run() -> int:
             '`claude -p "/codebase-kg:refresh"` to refresh it. This can take a few minutes and '
             "costs one headless model run. Set KG_AUTO_REFRESH=0 to turn it off.\n"
         )
-        failure = auto_refresh(repo, graph_rel, root)
+        failure = auto_refresh(repo, graph_rel, root, split.stale)
         if failure is None:
             return 1
         sys.stderr.write(

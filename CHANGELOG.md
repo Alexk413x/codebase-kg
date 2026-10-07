@@ -17,10 +17,12 @@ All notable changes to the `codebase-kg` plugin.
   push leaves untouched. The ack still stops matching when the count moves.
   `SKIP_KG=1` and `git push --no-verify` work as before.
 - Before the hook blocks, it runs `claude -p "/codebase-kg:refresh"` headless
-  in the repo root. The run gets the graph's MCP tools, `Read(./**)`, `Grep`,
-  `Glob` and read-only `git`, and a minimal environment. It gets no `Write`,
-  `Edit` or CLI runner, so text in the repo cannot steer it into writing or
-  running anything else. It runs only when `claude` is on `PATH`,
+  in the repo root, with the stale files listed in the prompt. The run gets the
+  graph's MCP tools, `Read(./**)`, `Grep` and `Glob`, and a minimal
+  environment. It gets no shell, `Write`, `Edit` or CLI runner, so text in the
+  repo cannot steer it into writing or running anything else. Even read-only
+  `git` is left out, because `git diff` and `git log` take `--output=<file>`.
+  It runs only when `claude` is on `PATH`,
   `KG_AUTO_REFRESH` is not `0`, `KG_REFRESHING` is not set, a pushed ref points
   at `HEAD`, and the graph file has no uncommitted changes. When the run exits
   0 and no mapped file is stale, the hook commits the graph as "Refresh the code

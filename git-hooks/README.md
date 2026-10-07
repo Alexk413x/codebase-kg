@@ -87,10 +87,12 @@ The hook runs the refresh only when all of these hold:
 The run is unattended, so it gets less than the refresh skill's own `allowed-tools`:
 
 - The graph's MCP tools. The write tools validate each change and write only the graph file.
-- `Read(./**)`, `Grep` and `Glob`, and the read-only `git` commands the skill runs.
-- No `Write`, no `Edit` and no CLI runner, so text in the repo cannot steer the run into writing or
-  running anything else. The prompt tells the skill to use the write tools, not the export and
-  build path.
+- `Read(./**)`, `Grep` and `Glob`.
+- No shell, no `Write`, no `Edit` and no CLI runner, so text in the repo cannot steer the run into
+  writing or running anything else. Even read-only `git` is left out, because `git diff` and
+  `git log` take `--output=<file>`. The hook lists the stale files in the prompt in place of the
+  skill's own `git` scoping, and tells the skill to use the write tools, not the export and build
+  path.
 - A minimal environment: the variables `claude` needs to start, sign in and reach the API, plus
   `KG_REFRESHING=1`, so a refresh cannot trigger another one. The `GIT_*` variables git sets for
   the hook do not reach the run.
