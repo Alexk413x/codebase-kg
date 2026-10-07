@@ -116,8 +116,9 @@ at 94 % CPU load from other work, so treat the figures as a range. Two runs, no 
 | 16 | 659-968 ms | 7.9-11.2 s | 348-419 ms | 4.8-6.3 s |
 
 - Reads don't conflict. SQLite serves concurrent readers, and no call failed.
-- MCP slows sharply past 4 agents. All sessions share one server process, which runs one tool call at
-  a time. At 16 agents a call waits about 0.4 s, and the slowest wait 2-2.5 s.
+- MCP slows sharply past 4 agents. All sessions share one server process. The latency growth suggests
+  it runs about one tool call at a time; that is inferred, not confirmed in the server code. At 16
+  agents a call waits about 0.4 s, and the slowest wait 2-2.5 s.
 - The CLI slows less in proportion, because each call is its own process on its own CPU. It starts
   slower, so it stays behind MCP at every N measured.
 - Concurrent graph writes weren't tested.
