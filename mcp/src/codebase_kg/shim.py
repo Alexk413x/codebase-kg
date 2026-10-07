@@ -43,9 +43,14 @@ editable install points at. The server runs as `python -c`, not through the
 `codebase-kg` console script: a running script's `.exe` is locked on Windows,
 and another build's sync would fail to replace it.
 
-Stdlib only, and no imports from this package: `.mcp.json` runs this file with a
-bare system `python3`, outside any venv. The server imports it for the paths and
-the build below, so the two sides cannot disagree about either.
+Claude Code does not use the shim: it reaches the same server over HTTP (see
+`http_transport.py`). The HTTP port, the per-user HTTP token, `/health` and the
+check that a port's holder is this user's server live here too, because the
+SessionStart hook and `mcp/launch/kg_headers.py` load this file by path.
+
+Stdlib only, and no imports from this package: `kg-shim` runs this file with a
+bare system `python3`, outside any venv. The server imports it for the paths,
+the build and the port, so the two sides cannot disagree about any of them.
 """
 
 from __future__ import annotations
@@ -62,8 +67,10 @@ if __name__ == "__main__":
     ]
 
 import hashlib
+import http.client
 import json
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -83,6 +90,7 @@ RESTARTED = "codebase-kg shared server restarted; retry the call"
 RESTARTED_CODE = -32000
 _POLL = 0.1
 _CHUNK = 65536
+_CONNECT_TIMEOUT = 0.25
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _STILL_ACTIVE = 259
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
@@ -147,26 +155,174 @@ def package_version(mcp_dir: Path = MCP_DIR) -> str:
 
 
 def server_build(package: Path = PACKAGE_DIR) -> str:
+    return build_info(package)["build"]
+
+
+def build_info(package: Path = PACKAGE_DIR) -> dict[str, Any]:
+    """The build, its package version, and the newest source mtime, which orders two builds."""
     digest = hashlib.sha256()
+    built = 0.0
     for path in sorted(package.rglob("*.py")):
         try:
             stat = path.stat()
         except OSError:
             continue
         digest.update(f"{path}|{stat.st_size}|{stat.st_mtime_ns}\n".encode("utf-8"))
-    return f"{package_version()}+{digest.hexdigest()[:12]}"
+        built = max(built, stat.st_mtime)
+    version = package_version()
+    return {"build": f"{version}+{digest.hexdigest()[:12]}", "version": version, "built": built}
+
+
+def _version_key(version: object) -> tuple[int, ...]:
+    return tuple(int(p) for p in re.findall(r"\d+", str(version))[:3])
+
+
+def outranks(mine: dict[str, Any], theirs: dict[str, Any]) -> bool:
+    """True when build `mine` should replace `theirs` on the HTTP port.
+
+    A higher package version wins; at the same version, the newer source wins.
+    The order is total, so two builds never take the port from each other in turn.
+    """
+    if mine.get("build") == theirs.get("build"):
+        return False
+    try:
+        their_built = float(theirs.get("built") or 0.0)
+    except (TypeError, ValueError):
+        their_built = 0.0
+    return (_version_key(mine.get("version")), float(mine.get("built") or 0.0)) > (
+        _version_key(theirs.get("version")), their_built)
+
+
+DEFAULT_HTTP_PORT = 47821
+
+
+def http_port() -> int:
+    """`CODEBASE_KG_PORT`, else the plugin's `server_port` setting, else 47821. 0 lets the OS pick."""
+    for name in ("CODEBASE_KG_PORT", "CLAUDE_PLUGIN_OPTION_SERVER_PORT"):
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            continue
+        try:
+            port = int(float(raw))
+        except ValueError:
+            continue
+        if 0 <= port <= 65535:
+            return port
+    return DEFAULT_HTTP_PORT
+
+
+def http_token_path() -> Path:
+    return cache_dir() / "http-token"
+
+
+def http_token(create: bool = False) -> str | None:
+    """The per-user bearer token for the HTTP endpoint.
+
+    One token serves every build and outlives each server: Claude Code keeps the
+    headers it got at connect and sends them to a server that restarted since.
+    """
+    path = http_token_path()
+    try:
+        token = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        token = ""
+    if token or not create:
+        return token or None
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return http_token()
+    token = secrets.token_hex(32)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(token)
+    return token
+
+
+FREE, OURS, OTHER = "free", "codebase-kg", "other"
+
+
+def health(port: int, timeout: float = 1.0) -> tuple[str, dict[str, Any]]:
+    """What answers `GET /health` on the port: `free`, `codebase-kg` with its reply, or `other`."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        # Windows retries a refused loopback connect for about a second rather than
+        # failing at once, so a connect that does not finish quickly means nothing listens.
+        conn.sock = socket.create_connection(("127.0.0.1", port), timeout=_CONNECT_TIMEOUT)
+        conn.sock.settimeout(timeout)
+    except OSError:
+        conn.close()
+        return FREE, {}
+    try:
+        conn.request("GET", "/health", headers={"Host": f"127.0.0.1:{port}"})
+        response = conn.getresponse()
+        body = response.read(_CHUNK)
+    except ConnectionRefusedError:
+        return FREE, {}
+    except (OSError, http.client.HTTPException):
+        return OTHER, {}
+    finally:
+        conn.close()
+    try:
+        reply = json.loads(body)
+    except ValueError:
+        return OTHER, {}
+    if response.status != 200 or not isinstance(reply, dict) or reply.get("service") != OURS:
+        return OTHER, {}
+    return OURS, reply
+
+
+def verified_holder(port: int) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """The `/health` reply and state file of the codebase-kg server on the port, once verified.
+
+    The server's pid and port must match the state file it wrote, which only this
+    user can read, and that pid must be alive. A program squatting on the port
+    cannot pass, so nothing here sends it a credential.
+    """
+    kind, reply = health(port)
+    if kind != OURS or not isinstance(reply.get("build"), str):
+        return None
+    state = read_state(reply["build"])
+    if state is None or state.get("pid") != reply.get("pid") or state.get("http_port") != port:
+        return None
+    if not pid_alive(state["pid"]):
+        return None
+    return reply, state
+
+
+def verified_token(port: int) -> str | None:
+    """The HTTP token, only when the port answers as a verified codebase-kg server."""
+    return http_token() if verified_holder(port) is not None else None
+
+
+_BUILD = re.compile(r"[0-9A-Za-z][0-9A-Za-z.\-]{0,63}\+[0-9a-f]{12}")
+
+
+def _build_file(build: str, suffix: str) -> Path:
+    """`server-<build><suffix>` in the cache dir, for a build `server_build()` could have made.
+
+    A build can arrive from an untrusted `/health` reply, so anything else, such as
+    one with a path separator or `..`, raises ValueError instead of naming a file.
+    """
+    if not isinstance(build, str) or not _BUILD.fullmatch(build) or ".." in build:
+        raise ValueError(f"not a codebase-kg build: {build!r}")
+    base = cache_dir()
+    path = base / f"server-{build}{suffix}"
+    if path.resolve().parent != base.resolve():
+        raise ValueError(f"not a codebase-kg build: {build!r}")
+    return path
 
 
 def state_path(build: str) -> Path:
-    return cache_dir() / f"server-{build}.json"
+    return _build_file(build, ".json")
 
 
 def lock_path(build: str) -> Path:
-    return cache_dir() / f"server-{build}.lock"
+    return _build_file(build, ".lock")
 
 
 def log_path(build: str) -> Path:
-    return cache_dir() / f"server-{build}.log"
+    return _build_file(build, ".log")
 
 
 def read_state(build: str) -> dict[str, Any] | None:

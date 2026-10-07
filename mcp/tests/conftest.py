@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -18,6 +19,10 @@ from codebase_kg.store import CodeGraph  # noqa: E402
 from codebase_kg.writer import build  # noqa: E402
 
 FIX = Path(__file__).resolve().parent / "fixtures"
+
+# Every server a test starts inherits this, so none takes the real HTTP port 47821.
+os.environ["CODEBASE_KG_PORT"] = "0"
+os.environ.pop("CLAUDE_PLUGIN_OPTION_SERVER_PORT", None)
 
 
 @pytest.fixture(scope="session")

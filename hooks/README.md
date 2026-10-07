@@ -1,14 +1,15 @@
 # hooks/
 
-Four Claude Code hooks. All ship with the plugin — there is **nothing to install per repo** — and
-all no-op in a repo with no `knowledge/code_graph.db`.
+Five Claude Code hooks. All ship with the plugin — there is **nothing to install per repo**. The
+first four no-op in a repo with no `knowledge/code_graph.db`; the server start runs in every session.
 
 | File | Role |
 |---|---|
-| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob`, on `Bash` and `PowerShell` calls that an `if` rule names as a search (`Bash(grep *)`, `PowerShell(Select-String *)`, one rule per search word), and asynchronously on the codebase-kg MCP tools → `kg_search_gate.py`; `Bash(git *)` calls → `kg_push_gate.py`; PostToolUse on `Edit\|Write` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_session_start.py`. Each hook runs `py -3` when the `py` launcher exists, else `python3`, else `python`. |
+| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob`, on `Bash` and `PowerShell` calls that an `if` rule names as a search (`Bash(grep *)`, `PowerShell(Select-String *)`, one rule per search word), and asynchronously on the codebase-kg MCP tools → `kg_search_gate.py`; `Bash(git *)` calls → `kg_push_gate.py`; PostToolUse on `Edit\|Write` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_server_start.py`, then `kg_session_start.py`. Each hook runs `py -3` when the `py` launcher exists, else `python3`, else `python`. |
 | `kg_search_gate.py` | The gate. Denies a search aimed at mapped code with the instruction to query the graph, and keeps doing it — a query buys credit, a located search is free, a repeat always passes. |
 | `kg_push_gate.py` | The push gate. Denies an agent's `git push` while any mapped file is stale against `HEAD`. |
 | `kg_post_edit_check.py` | The nudge. Two signals: the edited file isn't in the graph at all, or enough mapped files have changed since the graph was rebuilt. |
+| `kg_server_start.py` | The server start. Starts the shared HTTP server when nothing answers on the `server_port` setting, or an older build does. One line only when the port belongs to another program or the server does not come up. |
 | `kg_session_start.py` | The unwired-clone notice. One line when this clone has the committed checkers but no `core.hooksPath` or no `diff.codegraph.textconv`. Prints; never writes. |
 | `_config.py` | Reads `root` from the committed graph's `meta` table (auto-discovers `knowledge/code_graph.db`); a gitignored `.claude/codebase-kg.local.md` may override. Decides what counts as a source file. |
 
@@ -133,6 +134,26 @@ And never when `core.hooksPath` already points somewhere other than that dir —
 deliberate choice, and nagging it toward clobbering its own config is worse than saying nothing.
 `SKIP_KG` silences it like the rest. Any error exits silently; a session never fails to start
 because of this.
+
+## The server start (SessionStart)
+
+Claude Code reaches the codebase-kg server over HTTP on the `server_port` setting (default 47821). It
+tries to connect a few times in the first seconds of a session, once more as soon as the
+`SessionStart` hooks finish, and then gives up for the session. This hook makes sure something is
+listening by then:
+
+- It asks `GET /health` on the port. When this build, or a newer codebase-kg build, answers, it does
+  nothing.
+- When nothing answers, or an older codebase-kg build does, it starts this plugin's server detached,
+  under the same lock the shim uses, and waits up to 3 s for `/health` to answer. A newer server
+  takes the port from an older one itself.
+- When the port answers as something else, it prints one line naming the `server_port` setting.
+- When the server does not answer in 3 s, it prints one line naming the server's log. The first
+  start after an update builds the venv and can take longer; that session then has no codebase-kg
+  tools, and the next one connects.
+
+It exits 0 every time and prints nothing when all is well. Stdlib only; it imports
+`mcp/src/codebase_kg/shim.py` by path for the port, the build and the start routine.
 
 ## Config — optional per-dev override only (gitignored `.claude/codebase-kg.local.md`)
 

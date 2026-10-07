@@ -18,11 +18,12 @@ an optional `graph_path` in `.claude/codebase-kg.local.md`, else
 re-resolved on every tool call so a freshly built graph is picked up.
 
 Under `--serve` (see `daemon.py`) one process serves every session on the
-machine, so its own argv, environment and cwd describe none of them. Each
+machine, so its own argv, environment and cwd describe none of them. Each shim
 connection's handshake carries the session's cwd and explicit graph path, and
-`bind_connection` puts them in a context variable that every tool call in that
-connection resolves from, in the same order. The resolved path is cached per
-connection, never process-wide.
+each HTTP client's headers and roots carry the same (see `http_transport.py`).
+`bind_connection` puts them in a context variable that every tool call from
+that session resolves from, in the same order. The resolved path is cached per
+session, never process-wide.
 
 **The graph is opened per tool call and closed again.** That is affordable
 precisely because opening a store is constant-time (~1 ms) rather than a parse
@@ -118,6 +119,10 @@ def enter_serve_mode() -> None:
 
 def bind_connection(conn: Connection) -> Token[Connection | None]:
     return _connection.set(conn)
+
+
+def unbind_connection(token: Token[Connection | None]) -> None:
+    _connection.reset(token)
 
 
 def _current() -> Connection | None:

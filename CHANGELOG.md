@@ -2,6 +2,44 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.12.0] — 2026-10-07 — one shared HTTP server for Claude Code
+
+### Changed
+
+- Claude Code reaches codebase-kg over Streamable HTTP at `http://127.0.0.1:47821/mcp` instead of
+  launching a stdio shim per session. Each open session cost a shim process whether or not it called
+  a tool: eight sessions held 317 MB across 18 processes. Over HTTP, eight sessions hold 94 MB in the
+  one server's two processes. `kg-shim` and the TCP path stay unchanged for Codex and other stdio
+  clients, in the same server process.
+- The server learns each Claude Code session's repo by asking for its roots on the first tool call,
+  and caches the answer per connection. The `headersHelper` runs in the plugin folder and cannot see
+  the session's cwd. `CODEBASE_KG_PATH` still names a graph, and a relative one resolves against the
+  session's root.
+- A server that holds the HTTP port exits after 8 hours with no request
+  (`CODEBASE_KG_HTTP_IDLE_TIMEOUT`), not 10 minutes. Claude Code never restarts a server that stopped
+  mid-session, so an idle exit would leave the session with failing tools.
+
+### Added
+
+- Plugin settings `server_port` (default 47821) and `max_workers` (default 4, reserved for the
+  worker pool). `CODEBASE_KG_PORT` overrides the port for any client.
+- `hooks/kg_server_start.py`, a `SessionStart` hook that starts the server when nothing answers
+  `GET /health`, or an older build does, and waits up to 3 s. It prints one line only when the port
+  belongs to another program or the server does not come up.
+- `mcp/launch/kg_headers.py`, the `headersHelper`.
+- `GET /health` reports the service, build and pid. `POST /shutdown` stops the server; it takes that
+  server's own state-file token. A newer build asks an older one on the port to stop and takes the
+  port; an older build leaves a newer one running and serves only shims.
+
+### Security
+
+- The HTTP server binds `127.0.0.1` only, refuses a request whose `Host` is not its loopback address
+  or whose `Origin` is foreign, and requires a per-user bearer token. It answers a missing or wrong
+  token with 403, not 401, which would start Claude Code's OAuth flow.
+- The helper and the takeover send a credential only to a server whose pid and port match a live
+  state file of this user. A build name from `/health` must match the format a build has, so a
+  reply cannot point the check at a file outside the cache dir.
+
 ## [0.11.0] — 2026-10-07 — pre-push blocks on every stale file
 
 ### Added

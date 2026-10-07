@@ -1,6 +1,7 @@
 """N agents at once, each running the nine lookup calls of loop10.py in order: CLI against MCP.
 
-Each MCP agent is its own session through the shim to the shared server. Each CLI agent runs
+Each MCP agent is its own session through the shim to the shared server. Each HTTP agent is its
+own client over Streamable HTTP to one shared server, as Claude Code connects. Each CLI agent runs
 one process per call. Reports wall time and per-call latency for each N.
 
     uv run --project <codebase-kg>/mcp python <codebase-kg>/mcp/bench/concurrency.py --graph knowledge/code_graph.db
@@ -23,6 +24,7 @@ from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cli_vs_mcp import http_client, http_server  # noqa: E402
 from loop10 import CALLS, RUNNER, SHIM  # noqa: E402
 
 LOOKUPS = [c for c in CALLS if c[0] != "kg_validate"]
@@ -58,9 +60,12 @@ def cli_agents(n: int, graph: str, python: str) -> dict:
     return _summary([x for r in results for x in r[0]], wall, sum(r[1] for r in results))
 
 
-async def mcp_agents(n: int, graph: str) -> dict:
+async def mcp_agents(n: int, graph: str, server: dict | None = None) -> dict:
     env = dict(os.environ, CODEBASE_KG_PATH=graph)
-    clients = [Client(StdioTransport(command=sys.executable, args=[str(SHIM)], env=env)) for _ in range(n)]
+    if server is None:
+        clients = [Client(StdioTransport(command=sys.executable, args=[str(SHIM)], env=env)) for _ in range(n)]
+    else:
+        clients = [http_client(server, graph, f"agent{n}-{i}") for i in range(n)]
     for c in clients:
         await c.__aenter__()
         await c.call_tool("kg_stats", {})
@@ -91,13 +96,23 @@ def main() -> int:
     ap.add_argument("--graph", required=True)
     ap.add_argument("--agents", default="1,4,8,16")
     ap.add_argument("--python", default="python")
+    ap.add_argument("--modes", default="cli,mcp,http")
     ap.add_argument("--out")
     a = ap.parse_args()
     graph = str(Path(a.graph).resolve())
-    report: dict = {"graph": graph, "calls_per_agent": len(LOOKUPS), "cpus": os.cpu_count(), "cli": {}, "mcp": {}}
-    for n in (int(x) for x in a.agents.split(",")):
-        report["cli"][n] = cli_agents(n, graph, a.python)
-        report["mcp"][n] = asyncio.run(mcp_agents(n, graph))
+    modes = a.modes.split(",")
+    report: dict = {"graph": graph, "calls_per_agent": len(LOOKUPS), "cpus": os.cpu_count(),
+                    **{m: {} for m in modes}}
+    agents = [int(x) for x in a.agents.split(",")]
+    for n in agents:
+        if "cli" in modes:
+            report["cli"][n] = cli_agents(n, graph, a.python)
+        if "mcp" in modes:
+            report["mcp"][n] = asyncio.run(mcp_agents(n, graph))
+    if "http" in modes:
+        with http_server() as server:
+            for n in agents:
+                report["http"][n] = asyncio.run(mcp_agents(n, graph, server))
     text = json.dumps(report, indent=2)
     print(text)
     if a.out:

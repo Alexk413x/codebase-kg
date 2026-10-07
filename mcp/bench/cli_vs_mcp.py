@@ -4,6 +4,10 @@ Run from mcp/ with the dev venv (it needs fastmcp for the MCP client):
 
     uv run python bench/cli_vs_mcp.py --graph <code_graph.db> [--out results.json]
 
+The `mcp` mode is one stdio shim per session; the `http` mode is one shared
+server reached over Streamable HTTP, started the way the SessionStart hook
+starts it but with its own cache dir and an OS-picked port.
+
 Memory figures are Windows working sets, read through the Win32 API.
 """
 
@@ -11,29 +15,36 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import ctypes
+import http.client
 import json
 import os
 import platform
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
 from pathlib import Path
+from typing import Any
 
 from fastmcp import Client
-from fastmcp.client.transports import StdioTransport
+from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
 
 MCP_DIR = Path(__file__).resolve().parents[1]
 RUNNER = MCP_DIR / "launch" / "kg_cli.py"
 SHIM = MCP_DIR / "src" / "codebase_kg" / "shim.py"
+sys.path.insert(0, str(MCP_DIR / "src"))
+from codebase_kg import shim  # noqa: E402
 
 CALLS = [
-    ("search", ["search", "ledger"], "kg_search", {"query": "ledger"}),
-    ("node", ["node", "ledger_core"], "kg_node", {"id": "ledger_core"}),
-    ("neighborhood", ["neighborhood", "ledger_core"], "kg_neighborhood", {"id": "ledger_core"}),
+    ("search", ["kg_search", '{"query": "ledger"}'], "kg_search", {"query": "ledger"}),
+    ("node", ["kg_node", '{"id": "ledger_core"}'], "kg_node", {"id": "ledger_core"}),
+    ("neighborhood", ["kg_neighborhood", '{"id": "ledger_core"}'], "kg_neighborhood", {"id": "ledger_core"}),
 ]
 
 
@@ -166,6 +177,89 @@ async def bench_mcp(graph: str, reps: int, sessions: int) -> dict:
     return result
 
 
+@contextlib.contextmanager
+def http_server() -> Iterator[dict[str, Any]]:
+    """A shared HTTP server for this run only: its own cache dir and an OS-picked port."""
+    saved = {k: os.environ.get(k) for k in ("CODEBASE_KG_CACHE_DIR", "CODEBASE_KG_PORT")}
+    os.environ["CODEBASE_KG_CACHE_DIR"] = tempfile.mkdtemp(prefix="kg-bench-")
+    os.environ["CODEBASE_KG_PORT"] = "0"
+    build = shim.server_build()
+    shim.cache_dir().mkdir(parents=True, exist_ok=True)
+    before = frozenset(_process_mb("codebase_kg")["pids"])
+    proc = shim.spawn_server(build)
+    state: dict[str, Any] | None = None
+    try:
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline and proc.poll() is None:
+            state = shim.read_state(build)
+            if state and state.get("http_port"):
+                break
+            time.sleep(0.05)
+        if not state or not state.get("http_port"):
+            raise RuntimeError(f"no HTTP server; see {shim.log_path(build)}")
+        yield {"port": state["http_port"], "token": shim.http_token(), "before": before}
+    finally:
+        if state and state.get("http_port"):
+            conn = http.client.HTTPConnection("127.0.0.1", state["http_port"], timeout=5)
+            with contextlib.suppress(OSError):
+                conn.request("POST", "/shutdown", headers={
+                    "Host": f"127.0.0.1:{state['http_port']}",
+                    "Authorization": f"Bearer {state['token']}", "Content-Length": "0",
+                })
+                conn.getresponse().read()
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=10)
+        if proc.poll() is None:
+            proc.kill()
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def http_client(server: dict[str, Any], graph: str, client_id: str) -> Client:
+    """A session as Claude Code opens one: helper headers, and the repo as its root."""
+    transport = StreamableHttpTransport(f"http://127.0.0.1:{server['port']}/mcp", headers={
+        "Authorization": f"Bearer {server['token']}", "X-Codebase-KG-Client": client_id,
+        "X-Codebase-KG-Graph": graph,
+    })
+    return Client(transport, roots=[Path(graph).parents[1].as_uri()])
+
+
+async def bench_http(graph: str, reps: int, sessions: int, server: dict[str, Any]) -> dict:
+    result: dict = {}
+    before = server["before"]
+    t = time.perf_counter()
+    async with http_client(server, graph, "one") as c:
+        result["connect_ms"] = round((time.perf_counter() - t) * 1000, 1)
+        t = time.perf_counter()
+        await c.call_tool(CALLS[0][2], CALLS[0][3])
+        result["first_call_ms"] = round((time.perf_counter() - t) * 1000, 1)
+        for name, _, tool, params in CALLS:
+            ms = []
+            for _ in range(reps):
+                t = time.perf_counter()
+                await c.call_tool(tool, params)
+                ms.append((time.perf_counter() - t) * 1000)
+            result[name] = _stats(ms)
+        result["memory_one_session"] = _process_mb("codebase_kg", before)
+
+    clients = [http_client(server, graph, f"s{i}") for i in range(sessions)]
+    for c in clients:
+        await c.__aenter__()
+    try:
+        await asyncio.gather(*(c.call_tool(CALLS[0][2], CALLS[0][3]) for c in clients))
+        result[f"memory_{sessions}_sessions"] = _process_mb("codebase_kg", before)
+        t = time.perf_counter()
+        await asyncio.gather(*(c.call_tool(CALLS[0][2], CALLS[0][3]) for c in clients))
+        result["concurrent_warm_calls"] = {"sessions": sessions, "wall_ms": round((time.perf_counter() - t) * 1000, 1)}
+    finally:
+        for c in clients:
+            await c.__aexit__(None, None, None)
+    return result
+
+
 async def parity(graph: str) -> dict:
     env = dict(os.environ, CODEBASE_KG_PATH=graph)
     out = {}
@@ -198,6 +292,8 @@ def main() -> int:
         "cli_concurrent": bench_cli_concurrent(args.python, graph, args.sessions),
         "mcp": asyncio.run(bench_mcp(graph, args.reps, args.sessions)),
     }
+    with http_server() as server:
+        report["http"] = asyncio.run(bench_http(graph, args.reps, args.sessions, server))
     text = json.dumps(report, indent=2)
     print(text)
     if args.out:

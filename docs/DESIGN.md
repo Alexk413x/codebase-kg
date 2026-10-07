@@ -95,6 +95,38 @@ costs a working install. Precedent: the `a11y-plugin` → `accessibility-tools` 
 left Acme-iOS pointing at a nonexistent marketplace, silently disabling two plugins until it was
 found weeks later. Renaming `codebase-kg` would repeat that across three repos plus user settings.
 
+## One server, two transports
+
+A server per session cost about 116 MB and four processes for each open session. One
+`codebase-kg --serve` process per machine and build now serves every session, over two transports
+in the same process with the same tool registrations:
+
+- **Streamable HTTP for Claude Code**, at `http://127.0.0.1:<server_port>/mcp`. It holds about
+  90 MB however many sessions connect, against 317 MB for eight shim sessions (`http-server-plan.md`).
+- **A loopback TCP socket for stdio clients**, through `kg-shim`, which Codex and sentinel-swarm's
+  role sessions launch. Unchanged.
+
+The server has no cwd of its own that means anything, so each session tells it which repo it is in.
+A shim sends its cwd in a handshake. Claude Code speaks MCP 2026-07-28 over HTTP, which has no
+sessions, and its `headersHelper` runs in the plugin folder, so neither can carry the cwd. Instead
+the helper sends a random client id, and the server answers that client's first tool call with an
+`InputRequiredResult` asking for roots. Claude Code answers with the session's cwd; the server caches
+it under the client id. Measured: the extra round trip costs about 10 ms, once per connection.
+
+Two rules follow from Claude Code's behaviour, measured in `http-server-plan.md` (Phase 0):
+
+- **Something must listen within about 7 s of session start.** Claude Code gives up on a server it
+  cannot reach by then, for the whole session, and `SessionStart` hooks do not run before it first
+  tries. The `SessionStart` hook starts the server; Claude Code retries as the hooks finish.
+- **The server must outlive the sessions.** Claude Code sends each call to whatever holds the port
+  and never re-runs anything that could start a server mid-session. So a server that holds the HTTP
+  port exits only after 8 hours with no request.
+
+The bearer token is one per user and outlives each server, because Claude Code keeps the headers it
+got at connect and sends them to a server that restarted since. It is sent only to a server whose
+pid and port match a state file only this user can read, and a takeover authenticates with the old
+server's own state-file token, so a program squatting on the port never receives a credential.
+
 ## The gate that measured the wrong thing
 
 The pre-push hook used to block a push when source changed and the graph's `refreshed:` header was

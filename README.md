@@ -102,6 +102,30 @@ A write runs against a private copy of the file, inside one transaction, and the
 original only after `kg_validate` confirms it introduced no new finding. So a rejected edit leaves
 the committed graph **byte-identical** — not rolled back, never opened for writing.
 
+## The server
+
+One `codebase-kg --serve` process per machine and build serves every session. Claude Code reaches it
+over Streamable HTTP at `http://127.0.0.1:47821/mcp`; other MCP clients (Codex, any stdio client)
+launch `mcp/launch/kg-shim`, which relays stdio to the same process over a loopback socket.
+
+- **Starting it.** A `SessionStart` hook starts the server when nothing answers `GET /health` on the
+  port, and waits up to 3 s. Claude Code retries the connection for about 7 s after a session starts,
+  then gives up for that session. The first start after an update builds the server's venv and can
+  take longer; the next session then connects.
+- **Which repo.** The server asks Claude Code for the session's roots on the first tool call and
+  resolves the graph from the first root, as a shim resolves it from its cwd. `CODEBASE_KG_PATH`
+  still names a graph explicitly.
+- **Port.** The plugin setting `server_port` (default 47821) moves it. When another program holds
+  the port, the hook prints one line naming the setting. A newer codebase-kg build takes the port
+  from an older one; an older build leaves a newer one running.
+- **Security.** The server binds `127.0.0.1` only, refuses any `Host` but its own loopback address
+  and any foreign `Origin`, and needs a bearer token that only your user account can read. The
+  `headersHelper` (`mcp/launch/kg_headers.py`) sends that token only after the server on the port
+  proves, through its state file, to be yours.
+- **Lifetime.** A server that holds the HTTP port exits after 8 hours with no request; a shim-only
+  server exits after 10 minutes with no connection.
+- **`max_workers`** is declared for the planned worker pool and does nothing yet.
+
 ## Migrating from `KNOWLEDGE_GRAPH.md`
 
 Once per repo:
@@ -145,10 +169,10 @@ codebase-kg/
 ├── templates/
 │   ├── code_graph.template.json
 │   └── codebase-kg.local.md.example
-├── .mcp.json                 # registers the codebase-kg MCP server (mcp/launch/kg-shim → mcp/src/codebase_kg/shim.py)
+├── .mcp.json                 # registers the codebase-kg HTTP server, with mcp/launch/kg_headers.py as its headersHelper
 ├── skills/                   # query / build / refresh / audit / link / validate, and setup (user-invoked only)
 ├── mcp/                      # the query server (one shared process per machine) + build/export/migrate CLIs
-├── hooks/                    # Claude Code hooks: the search gate, the push gate, the post-edit nudge, the unwired-clone notice
+├── hooks/                    # Claude Code hooks: the search gate, the push gate, the post-edit nudge, the unwired-clone notice, the server start
 └── git-hooks/                # advisory pre-commit + pre-push staleness checks and install.sh, vendored into any repo (stdlib-only)
 ```
 

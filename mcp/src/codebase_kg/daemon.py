@@ -2,17 +2,31 @@
 
 `shim.py` starts this on first use and relays each session to it over a
 loopback TCP connection. The server binds 127.0.0.1 on a port the OS picks and
-publishes `{version, port, pid, token}` in a per-build state file readable
-only by the user, where `version` is `shim.server_build()`: the package version
-plus a digest of the source files. A connection opens with one JSON handshake
-line — the token, the build, and the session's cwd and explicit graph path — and
-the server answers with one line before any MCP traffic flows. It refuses a
-handshake from any other build.
+publishes `{version, port, pid, token, http_port}` in a per-build state file
+readable only by the user, where `version` is `shim.server_build()`: the package
+version plus a digest of the source files. A connection opens with one JSON
+handshake line — the token, the build, and the session's cwd and explicit graph
+path — and the server answers with one line before any MCP traffic flows. It
+refuses a handshake from any other build.
 
 Each accepted connection runs its own MCP session over the socket, with the
 same tool registrations the stdio server uses, bound to that connection's
-`server.Connection`. The server exits once it has had no connection for
-`CODEBASE_KG_IDLE_TIMEOUT` seconds (default 600) and removes its state file.
+`server.Connection`.
+
+The same process serves Streamable HTTP at `http://127.0.0.1:<port>/mcp` for
+Claude Code (see `http_transport.py`), on the port `shim.http_port()` names, and
+records that port in the state file as `http_port`, or null when it holds none.
+When the port answers as an older codebase-kg build that its state file
+verifies, this server asks it to stop and takes the port. When it answers as a
+newer build, or as anything it cannot verify, this server serves the shims only.
+
+Claude Code sends each call to whatever holds the port, but nothing restarts a
+server that stopped mid-session. So a server that holds the HTTP port exits only
+after `CODEBASE_KG_HTTP_IDLE_TIMEOUT` seconds (default 8 hours) with no HTTP
+request and no shim connection. One without it exits after
+`CODEBASE_KG_IDLE_TIMEOUT` seconds (default 600) with no shim connection.
+`POST /shutdown` with the server's own state-file token stops it at once.
+Either way it removes its state file.
 """
 
 from __future__ import annotations
@@ -22,34 +36,38 @@ import json
 import logging
 import os
 import secrets
+import socket
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
 import anyio
+import uvicorn
 from anyio.abc import SocketAttribute, SocketStream
 from anyio.streams.buffered import BufferedByteReceiveStream
 from mcp.server.lowlevel.server import NotificationOptions
 from mcp.shared.message import SessionMessage
 from mcp.types import jsonrpc_message_adapter
 
-from . import server, shim
+from . import http_transport, server, shim
 
 logger = logging.getLogger("codebase_kg.daemon")
 
 DEFAULT_IDLE_TIMEOUT = 600.0
+DEFAULT_HTTP_IDLE_TIMEOUT = 8 * 3600.0
 HANDSHAKE_TIMEOUT = 5.0
+HTTP_STOP_TIMEOUT = 5.0
 MAX_HANDSHAKE = 64 * 1024
 MAX_MESSAGE = 64 * 1024 * 1024
 
 
-def idle_timeout() -> float:
-    raw = os.environ.get("CODEBASE_KG_IDLE_TIMEOUT", "").strip()
+def idle_timeout(name: str = "CODEBASE_KG_IDLE_TIMEOUT", default: float = DEFAULT_IDLE_TIMEOUT) -> float:
+    raw = os.environ.get(name, "").strip()
     try:
-        return float(raw) if raw else DEFAULT_IDLE_TIMEOUT
+        return float(raw) if raw else default
     except ValueError:
-        return DEFAULT_IDLE_TIMEOUT
+        return default
 
 
 def _write_private(path: Path, data: bytes) -> None:
@@ -74,12 +92,24 @@ def _write_private(path: Path, data: bytes) -> None:
 
 
 class Daemon:
-    def __init__(self, version: str, token: str, timeout: float) -> None:
+    def __init__(
+        self, version: str, token: str, timeout: float,
+        http_port: int | None = None, http_timeout: float = DEFAULT_HTTP_IDLE_TIMEOUT,
+    ) -> None:
         self.version = version
         self.token = token
         self.timeout = timeout
+        self.http_port = http_port
+        self.http_timeout = http_timeout
         self.active = 0
         self.last_seen = time.monotonic()
+        self.stopping = False
+
+    def touch(self) -> None:
+        self.last_seen = time.monotonic()
+
+    def stop(self) -> None:
+        self.stopping = True
 
     def accept(self, line: bytes) -> server.Connection:
         """Validate a handshake line, or raise ValueError naming what is wrong."""
@@ -133,9 +163,10 @@ class Daemon:
             self.last_seen = time.monotonic()
 
     async def watch_idle(self) -> None:
-        while True:
-            await anyio.sleep(min(1.0, self.timeout / 4))
-            if self.active == 0 and time.monotonic() - self.last_seen >= self.timeout:
+        limit = self.http_timeout if self.http_port is not None else self.timeout
+        while not self.stopping:
+            await anyio.sleep(min(0.25, limit / 4))
+            if self.active == 0 and time.monotonic() - self.last_seen >= limit:
                 return
 
 
@@ -184,22 +215,50 @@ async def _run_session(buffered: BufferedByteReceiveStream, stream: SocketStream
         tg.cancel_scope.cancel()
 
 
-async def _serve(daemon: Daemon) -> None:
+async def _serve_http(http: uvicorn.Server, sock: socket.socket, done: anyio.Event) -> None:
+    try:
+        await http.serve(sockets=[sock])
+    finally:
+        done.set()
+
+
+def _http_server(daemon: Daemon, sock: socket.socket, info: dict[str, Any]) -> uvicorn.Server:
+    app = http_transport.build_app(
+        sock.getsockname()[1], shim.http_token(create=True) or "", daemon.token,
+        http_transport.health_reply(info, os.getpid()),
+        on_request=daemon.touch, on_shutdown=daemon.stop,
+    )
+    return uvicorn.Server(uvicorn.Config(
+        app, lifespan="on", log_level="warning", access_log=False, timeout_graceful_shutdown=2,
+    ))
+
+
+async def _serve(daemon: Daemon, http_sock: socket.socket | None, info: dict[str, Any]) -> None:
     listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
     port = listener.extra(SocketAttribute.local_port)
     state = shim.state_path(daemon.version)
     state.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     _write_private(state, json.dumps({
         "version": daemon.version, "port": port, "pid": os.getpid(), "token": daemon.token,
+        "http_port": daemon.http_port,
     }).encode("utf-8"))
     logger.info("serving codebase-kg %s on 127.0.0.1:%d", daemon.version, port)
+    http = _http_server(daemon, http_sock, info) if http_sock is not None else None
+    done = anyio.Event()
     try:
         # Entered once here, as run_stdio_async does, so each session's lowlevel
         # run() reuses it through FastMCP's ref count instead of re-running setup.
         async with server.mcp._lifespan_manager():
             async with listener, anyio.create_task_group() as tg:
                 tg.start_soon(listener.serve, daemon.handle)
+                if http is not None and http_sock is not None:
+                    logger.info("HTTP on http://127.0.0.1:%d/mcp", daemon.http_port)
+                    tg.start_soon(_serve_http, http, http_sock, done)
                 await daemon.watch_idle()
+                if http is not None:
+                    http.should_exit = True
+                    with anyio.move_on_after(HTTP_STOP_TIMEOUT):
+                        await done.wait()
                 tg.cancel_scope.cancel()
     finally:
         _remove_if_ours(state, daemon.token)
@@ -220,5 +279,18 @@ def serve() -> None:
         format="%(asctime)s %(process)d %(levelname)s %(name)s: %(message)s",
     )
     server.enter_serve_mode()
-    daemon = Daemon(shim.server_build(), secrets.token_hex(32), idle_timeout())
-    anyio.run(_serve, daemon)
+    info = shim.build_info()
+    port = shim.http_port()
+    http_sock = http_transport.claim_port(port, info)
+    if http_sock is None:
+        holder = shim.verified_holder(port)
+        if holder is not None and holder[0].get("build") == info["build"]:
+            # Its state file is the one shims read; a second server of this build would replace it.
+            logger.info("codebase-kg %s already serves port %d; exiting", info["build"], port)
+            return
+    daemon = Daemon(
+        info["build"], secrets.token_hex(32), idle_timeout(),
+        http_port=http_sock.getsockname()[1] if http_sock is not None else None,
+        http_timeout=idle_timeout("CODEBASE_KG_HTTP_IDLE_TIMEOUT", DEFAULT_HTTP_IDLE_TIMEOUT),
+    )
+    anyio.run(_serve, daemon, http_sock, info)

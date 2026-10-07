@@ -336,7 +336,9 @@ def test_serve_mode_never_falls_back_to_process_state(
 # --- idle exit ----------------------------------------------------------------
 def test_idle_exit_removes_the_state_file(tmp_path: Path) -> None:
     cache = tmp_path / "cache"
-    proc = _start_daemon(cache, tmp_path, {"CODEBASE_KG_IDLE_TIMEOUT": "1.5"})
+    proc = _start_daemon(cache, tmp_path, {
+        "CODEBASE_KG_IDLE_TIMEOUT": "1.5", "CODEBASE_KG_HTTP_IDLE_TIMEOUT": "1.5",
+    })
     try:
         state = _wait_for_state(cache)
         repo = _repo(tmp_path / "alpha", "alpha")
@@ -527,10 +529,25 @@ def test_shared_zero_goes_straight_to_a_private_server(tmp_path: Path) -> None:
     assert "shared server" not in log
 
 
-def test_mcp_json_launches_the_platform_shim():
+def test_mcp_json_declares_the_http_server_with_the_headers_helper():
     root = Path(__file__).resolve().parents[2]
     entry = json.loads((root / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["codebase-kg"]
-    assert entry["command"] == "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg-shim"
+    assert entry["type"] == "http"
+    assert entry["url"] == "http://127.0.0.1:${user_config.server_port}/mcp"
+    helper = '"${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_headers.py"'
+    assert entry["headersHelper"] == (
+        f"command -v py >/dev/null 2>&1 && py -3 {helper} || python3 {helper} || python {helper}"
+    )
+    assert (root / "mcp" / "launch" / "kg_headers.py").is_file()
+    manifest = json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    assert manifest["userConfig"]["server_port"]["type"] == "number"
+    assert manifest["userConfig"]["server_port"]["default"] == shim.DEFAULT_HTTP_PORT
+    assert manifest["userConfig"]["max_workers"] == {**manifest["userConfig"]["max_workers"],
+                                                     "type": "number", "default": 4}
+
+
+def test_the_platform_shim_launchers_stay_for_stdio_clients():
+    root = Path(__file__).resolve().parents[2]
     launch = root / "mcp" / "launch"
     posix = (launch / "kg-shim").read_text(encoding="utf-8")
     windows = (launch / "kg-shim.cmd").read_bytes().decode("utf-8")
@@ -901,4 +918,4 @@ def test_a_shim_that_spawned_the_server_waits_past_the_connect_budget(
         shim, "_try_connect",
         lambda build, hello: ready if time.monotonic() - started > 0.6 else None,
     )
-    assert shim.shared_connection("b", {}, budget=0.3) is ready
+    assert shim.shared_connection("0.0.0+000000000000", {}, budget=0.3) is ready

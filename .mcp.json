@@ -1,11 +1,9 @@
 {
   "mcpServers": {
     "codebase-kg": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg-shim",
-      "args": [],
-      "env": {
-        "CODEBASE_KG_PATH": "${CODEBASE_KG_PATH:-}"
-      }
+      "type": "http",
+      "url": "http://127.0.0.1:${user_config.server_port}/mcp",
+      "headersHelper": "command -v py >/dev/null 2>&1 && py -3 \"${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_headers.py\" || python3 \"${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_headers.py\" || python \"${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_headers.py\""
     }
   }
 }
