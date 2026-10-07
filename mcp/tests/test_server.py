@@ -1,15 +1,16 @@
-"""Server wiring: path resolution, caching, and the tool registration surface."""
+"""Graph-path resolution (`resolve.py`), caching, and the tool definitions in `server.py`."""
 
 from __future__ import annotations
 
 import shutil
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
 import pytest
 
-from codebase_kg import migrate, server, tools
+from codebase_kg import migrate, resolve, server, tools
 from codebase_kg.models import Meta, Node
 from codebase_kg.store import CodeGraph
 from codebase_kg.writer import build
@@ -34,6 +35,10 @@ def _repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _resolved() -> Path | None:
+    return resolve.resolve(resolve.from_process(sys.argv))
+
+
 @contextmanager
 def _graph() -> Iterator[CodeGraph]:
     g = CodeGraph(server._graph_file())
@@ -48,7 +53,7 @@ def test_cli_arg_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = _repo(tmp_path)
     target = repo / "knowledge" / "code_graph.db"
     monkeypatch.setattr("sys.argv", ["server", str(target)])
-    assert server._resolve_graph_path() == target.resolve()
+    assert _resolved() == target.resolve()
 
 
 def test_env_var_used_when_no_cli_arg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -56,7 +61,7 @@ def test_env_var_used_when_no_cli_arg(tmp_path: Path, monkeypatch: pytest.Monkey
     target = repo / "knowledge" / "code_graph.db"
     monkeypatch.setattr("sys.argv", ["server"])
     monkeypatch.setenv("CODEBASE_KG_PATH", str(target))
-    assert server._resolve_graph_path() == target.resolve()
+    assert _resolved() == target.resolve()
 
 
 def test_walks_up_to_knowledge_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -65,7 +70,7 @@ def test_walks_up_to_knowledge_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr("sys.argv", ["server"])
     monkeypatch.delenv("CODEBASE_KG_PATH", raising=False)
     monkeypatch.chdir(deep)
-    assert server._resolve_graph_path() == (repo / "knowledge" / "code_graph.db").resolve()
+    assert _resolved() == (repo / "knowledge" / "code_graph.db").resolve()
 
 
 def test_no_repo_root_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -74,7 +79,7 @@ def test_no_repo_root_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr("sys.argv", ["server"])
     monkeypatch.delenv("CODEBASE_KG_PATH", raising=False)
     monkeypatch.chdir(tmp_path)
-    assert server._resolve_graph_path() is None
+    assert _resolved() is None
 
 
 # --- .local.md override ------------------------------------------------------
@@ -86,34 +91,34 @@ def _write_local(base: Path, body: str) -> None:
 def test_local_graph_path_override(tmp_path: Path) -> None:
     build(tmp_path / "custom.db", Meta(codebase="x"), [Node(id="a", kind="K")])
     _write_local(tmp_path, "---\ngraph_path: custom.db\n---\n")
-    assert server._local_graph_path(tmp_path) == tmp_path / "custom.db"
+    assert resolve.local_graph_path(tmp_path) == tmp_path / "custom.db"
 
 
 def test_legacy_kg_path_key_still_honored(tmp_path: Path) -> None:
     # Existing checkouts configured before the rename must keep working.
     build(tmp_path / "custom.db", Meta(codebase="x"), [Node(id="a", kind="K")])
     _write_local(tmp_path, "---\nkg_path: custom.db\n---\n")
-    assert server._local_graph_path(tmp_path) == tmp_path / "custom.db"
+    assert resolve.local_graph_path(tmp_path) == tmp_path / "custom.db"
 
 
 def test_graph_path_wins_over_legacy_key(tmp_path: Path) -> None:
     _write_local(tmp_path, "---\nkg_path: old.db\ngraph_path: new.db\n---\n")
-    assert server._local_graph_path(tmp_path) == tmp_path / "new.db"
+    assert resolve.local_graph_path(tmp_path) == tmp_path / "new.db"
 
 
 def test_local_placeholder_is_ignored(tmp_path: Path) -> None:
     _write_local(tmp_path, "---\ngraph_path: <path to the db>\n---\n")
-    assert server._local_graph_path(tmp_path) is None
+    assert resolve.local_graph_path(tmp_path) is None
 
 
 def test_local_without_frontmatter_is_ignored(tmp_path: Path) -> None:
     _write_local(tmp_path, "graph_path: custom.db\n")
-    assert server._local_graph_path(tmp_path) is None
+    assert resolve.local_graph_path(tmp_path) is None
 
 
 def test_local_comment_tail_is_stripped(tmp_path: Path) -> None:
     _write_local(tmp_path, "---\ngraph_path: custom.db   # per-clone\n---\n")
-    assert server._local_graph_path(tmp_path) == tmp_path / "custom.db"
+    assert resolve.local_graph_path(tmp_path) == tmp_path / "custom.db"
 
 
 # --- errors ------------------------------------------------------------------
@@ -277,21 +282,13 @@ def test_server_instructions_are_short_and_name_the_graph_file() -> None:
     assert "knowledge/code_graph.db" in text and "kg_search" in text
 
 
-def test_the_eval_mocks_carry_the_real_tool_list() -> None:
+def test_the_eval_mocks_carry_the_served_tool_list() -> None:
     """`claude plugin eval` gives mocked tools the descriptions and schemas in
     `_tools.json`; a stale copy evaluates descriptions the server no longer sends.
-    Regenerate it from `tools/list` when a tool changes."""
-    import asyncio
+    `mcp/scripts/gen_catalog.py` rewrites it with the catalog."""
     import json
 
-    from fastmcp import Client
-
-    from codebase_kg import server
-
-    async def listed() -> dict[str, object]:
-        async with Client(server.mcp) as client:
-            result = await client.list_tools_mcp()
-        return result.model_dump(by_alias=True, exclude_none=True, mode="json")
+    from codebase_kg import core
 
     saved = Path(__file__).resolve().parents[2] / "evals" / "mocks" / "codebase-kg" / "_tools.json"
-    assert json.loads(saved.read_text(encoding="utf-8")) == asyncio.run(listed())
+    assert json.loads(saved.read_text(encoding="utf-8"))["tools"] == core.CATALOG["tools"]

@@ -5,8 +5,7 @@ own cwd, environment and argv belong to whichever session started it. The
 contamination tests start it from inside a repo that has a graph, with
 `CODEBASE_KG_PATH` pointing at that graph, and prove no connection ever sees it.
 
-The end-to-end tests launch `shim.py` the way a stdio client does and need `uv` on
-PATH; they skip without it.
+The end-to-end tests launch `shim.py` the way a stdio client does.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ from typing import IO, Any, Iterator
 
 import pytest
 
-from codebase_kg import server, shim
+from codebase_kg import pool, resolve, shim
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.store import CodeGraph
 from codebase_kg.writer import build
@@ -36,9 +35,6 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 SHIM = SRC / "codebase_kg" / "shim.py"
 BUILD = shim.server_build()
 TIMEOUT = 30.0
-
-needs_uv = pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
-
 
 def _sha(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
@@ -129,9 +125,8 @@ def _node_ids(client: Client) -> set[str]:
 # --- a daemon started from inside a repo it must never serve ------------------
 def _start_daemon(cache: Path, cwd: Path, env_extra: dict[str, str]) -> subprocess.Popen[bytes]:
     env = {**os.environ, "CODEBASE_KG_CACHE_DIR": str(cache), **env_extra}
-    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(SRC), env.get("PYTHONPATH")]))
     return subprocess.Popen(
-        [sys.executable, "-m", "codebase_kg.server", "--serve"],
+        shim.server_command("--serve"),
         cwd=cwd, env=env, stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
@@ -257,16 +252,12 @@ def test_a_write_changes_only_the_writing_connections_graph(
 
 
 def test_a_connection_without_a_graph_gets_the_stdio_error(
-    connect: Any, two_repos: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    connect: Any, two_repos: tuple[Path, Path], tmp_path: Path,
 ) -> None:
     alpha, _ = two_repos
     empty = tmp_path / "empty"
     empty.mkdir()
-    monkeypatch.setattr("sys.argv", ["codebase-kg"])
-    monkeypatch.delenv("CODEBASE_KG_PATH", raising=False)
-    monkeypatch.chdir(empty)
-    monkeypatch.setattr(server, "_graph_path", None)
-    expected = str(server._missing_graph_error())
+    expected = resolve.missing_graph_message(resolve.Connection(cwd=empty))
 
     a = connect(alpha)
     assert _node_ids(a) == {"alpha_widget"}
@@ -322,15 +313,6 @@ def test_a_version_mismatch_is_rejected(daemon: dict[str, Any], tmp_path: Path) 
 def test_the_shim_refuses_a_rejected_server(daemon: dict[str, Any], tmp_path: Path) -> None:
     with pytest.raises(shim.Rejected, match="version mismatch"):
         shim.handshake(daemon, {"version": "0.0.0", "cwd": str(tmp_path), "graph_path": None})
-
-
-def test_serve_mode_never_falls_back_to_process_state(
-    monkeypatch: pytest.MonkeyPatch, two_repos: tuple[Path, Path]
-) -> None:
-    monkeypatch.chdir(two_repos[0])
-    monkeypatch.setattr(server, "_serving", True)
-    with pytest.raises(RuntimeError, match="connection context"):
-        server._graph_file()
 
 
 # --- idle exit ----------------------------------------------------------------
@@ -457,7 +439,6 @@ def shim_cache(tmp_path: Path) -> Iterator[Path]:
     _kill_daemon(cache)
 
 
-@needs_uv
 def test_two_shims_share_one_daemon_end_to_end(
     two_repos: tuple[Path, Path], shim_cache: Path
 ) -> None:
@@ -467,6 +448,8 @@ def test_two_shims_share_one_daemon_end_to_end(
         clients = [_client(p) for p in procs]
         for c in clients:
             assert c.initialize()["result"]["serverInfo"]["name"] == "codebase-kg"
+        listed = clients[0].request("tools/list", {})["result"]["tools"]
+        assert {t["name"] for t in listed} >= {"kg_search", "kg_upsert_node"}
         assert _node_ids(clients[0]) == {"alpha_widget"}
         assert _node_ids(clients[1]) == {"beta_widget"}
         state = _wait_for_state(shim_cache)
@@ -478,7 +461,6 @@ def test_two_shims_share_one_daemon_end_to_end(
     assert shim.pid_alive(state["pid"]), "the daemon died with the sessions that started it"
 
 
-@needs_uv
 def test_shims_started_at_once_spawn_exactly_one_daemon(
     tmp_path: Path, shim_cache: Path
 ) -> None:
@@ -499,7 +481,6 @@ def test_shims_started_at_once_spawn_exactly_one_daemon(
         encoding="utf-8", errors="replace").count("serving codebase-kg") == 1
 
 
-@needs_uv
 def test_the_shim_falls_back_to_a_private_server(tmp_path: Path) -> None:
     repo = _repo(tmp_path / "alpha", "alpha")
     unusable = tmp_path / "not-a-dir"
@@ -514,7 +495,6 @@ def test_the_shim_falls_back_to_a_private_server(tmp_path: Path) -> None:
     assert "running a private one" in log
 
 
-@needs_uv
 def test_shared_zero_goes_straight_to_a_private_server(tmp_path: Path) -> None:
     repo = _repo(tmp_path / "alpha", "alpha")
     cache = tmp_path / "cache"
@@ -542,8 +522,10 @@ def test_mcp_json_declares_the_http_server_with_the_headers_helper():
     manifest = json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert manifest["userConfig"]["server_port"]["type"] == "number"
     assert manifest["userConfig"]["server_port"]["default"] == shim.DEFAULT_HTTP_PORT
-    assert manifest["userConfig"]["max_workers"] == {**manifest["userConfig"]["max_workers"],
-                                                     "type": "number", "default": 4}
+    workers = manifest["userConfig"]["max_workers"]
+    assert workers == {**workers, "type": "number", "default": pool.DEFAULT_MAX_WORKERS} and workers["default"] == 8
+    assert "max" not in workers and "kg_cli.py server stop" in workers["description"]
+    assert "restart Claude Code" in workers["description"]
 
 
 def test_the_platform_shim_launchers_stay_for_stdio_clients():
@@ -809,7 +791,6 @@ def test_stdin_eof_ends_the_shim_without_reconnecting(tmp_path: Path) -> None:
         fake.close()
 
 
-@needs_uv
 def test_the_session_survives_a_daemon_crash(tmp_path: Path, shim_cache: Path) -> None:
     repo = _repo(tmp_path / "alpha", "alpha")
     proc = _shim(repo, shim_cache)
@@ -830,7 +811,6 @@ def test_the_session_survives_a_daemon_crash(tmp_path: Path, shim_cache: Path) -
         _close(proc)
 
 
-@needs_uv
 def test_the_session_moves_to_a_private_server_when_no_daemon_comes_back(
     tmp_path: Path,
 ) -> None:
@@ -857,46 +837,27 @@ def test_the_session_moves_to_a_private_server_when_no_daemon_comes_back(
         _stop(server_proc)
 
 
-# --- the venv lives outside the plugin folder ---------------------------------
-def test_the_dependency_key_ignores_this_packages_version(tmp_path: Path) -> None:
-    """An update that changes only the version keeps the venv."""
-    lock = (Path(shim.MCP_DIR) / "uv.lock").read_text(encoding="utf-8")
-    (tmp_path / "uv.lock").write_text(lock, encoding="utf-8")
-    before = shim.dependency_key(tmp_path)
-    bumped = lock.replace('name = "codebase-kg"\nversion = "', 'name = "codebase-kg"\nversion = "9', 1)
-    assert bumped != lock
-    (tmp_path / "uv.lock").write_text(bumped, encoding="utf-8")
-    assert shim.dependency_key(tmp_path) == before
-    (tmp_path / "uv.lock").write_text(bumped.replace("fastmcp", "fastmcpx", 1), encoding="utf-8")
-    assert shim.dependency_key(tmp_path) != before
+# --- the server runs on the base interpreter, with no venv ---------------------
+def test_the_server_runs_on_the_base_interpreter_without_uv() -> None:
+    command = shim.server_command("--serve")
+    assert command[0] == (getattr(sys, "_base_executable", None) or sys.executable)
+    assert command[1:3] == ["-I", "-S"]
+    assert Path(command[5]) == SRC.resolve() and command[6:] == ["--serve"]
+    assert not any("uv" == Path(part).stem for part in command)
 
 
-def test_the_server_venv_follows_the_plugin_data_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("CODEBASE_KG_DATA_DIR", str(tmp_path))
-    env = shim.server_env()
-    assert Path(env["UV_PROJECT_ENVIRONMENT"]).parent == tmp_path
-    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(Path(shim.MCP_DIR) / "src")
-
-
-def test_the_venv_uses_the_plugin_data_dir_claude_code_exports(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("CODEBASE_KG_DATA_DIR", raising=False)
-    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
-    assert shim.venv_path().parent == tmp_path
-
-
-def test_without_a_data_dir_the_venv_stays_out_of_the_plugin_folder(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("CODEBASE_KG_DATA_DIR", raising=False)
-    monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
-    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(tmp_path))
-    venv = shim.venv_path()
-    assert venv.parent == shim.user_cache_dir()
-    assert Path(shim.MCP_DIR) not in venv.parents
+def test_the_server_imports_only_the_standard_library() -> None:
+    probe = ("import sys, json; sys.path.insert(0, sys.argv[1]); "
+             "import codebase_kg.daemon; print(json.dumps(sorted(sys.modules)))")
+    python = shim.server_command()[0]
+    out = subprocess.run([python, "-I", "-S", "-c", probe, str(SRC)], capture_output=True, text=True,
+                         timeout=TIMEOUT)
+    assert out.returncode == 0, out.stderr
+    modules = json.loads(out.stdout)
+    assert "codebase_kg.http_transport" in modules and "codebase_kg.tcp_transport" in modules
+    third_party = {"fastmcp", "mcp", "mcp_types", "pydantic", "pydantic_core", "starlette", "anyio", "uvicorn"}
+    assert not [m for m in modules if m.split(".")[0] in third_party]
+    assert "codebase_kg.server" not in modules
 
 
 def test_a_shim_that_spawned_the_server_waits_past_the_connect_budget(
@@ -935,13 +896,24 @@ def test_a_server_whose_state_file_is_gone_or_replaced_is_orphaned(tmp_path: Pat
 
 
 def test_an_orphaned_server_stops_watching(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import anyio
-
     from codebase_kg import daemon
 
     monkeypatch.setattr(daemon, "ORPHAN_CHECK_INTERVAL", 0.0)
     d = daemon.Daemon("0.0.0+000000000000", "mine", 600.0)
     d.state = tmp_path / "server.json"
     started = time.monotonic()
-    anyio.run(d.watch_idle)
+    d.wait()
     assert time.monotonic() - started < 5.0
+
+
+def test_a_server_whose_state_file_goes_exits_within_five_seconds(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    proc = _start_daemon(cache, tmp_path, {"CODEBASE_KG_IDLE_TIMEOUT": "600"})
+    try:
+        _wait_for_state(cache)
+        (cache / f"server-{BUILD}.json").unlink()
+        removed = time.monotonic()
+        proc.wait(timeout=TIMEOUT)
+        assert time.monotonic() - removed < 7.0
+    finally:
+        _stop(proc)

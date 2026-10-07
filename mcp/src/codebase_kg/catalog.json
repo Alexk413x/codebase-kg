@@ -1,12 +1,5 @@
 {
-  "_meta": {
-    "io.modelcontextprotocol/serverInfo": {
-      "name": "codebase-kg",
-      "version": "4.0.3"
-    }
-  },
-  "ttlMs": 0,
-  "cacheScope": "private",
+  "instructions": "codebase-kg serves a committed map of this repository's code in knowledge/code_graph.db: components, the files and symbols that implement them, and how they depend on each other. The tools apply only in a repo that has that file; elsewhere they return an error. kg_search is the entry point: it finds components by concept, including ones whose names lack the search words. kg_node and kg_neighborhood give anchors and dependents, and kg_find_by_path maps a file back to its component. In a repo with a graph, a hook denies a Grep or Glob over mapped source until a graph query has been made.",
   "tools": [
     {
       "name": "kg_search",
@@ -751,6 +744,5 @@
         "openWorldHint": false
       }
     }
-  ],
-  "resultType": "complete"
+  ]
 }

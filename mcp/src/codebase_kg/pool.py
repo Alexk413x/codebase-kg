@@ -1,9 +1,9 @@
-"""The shared server's elastic pool of worker processes for read tools. Stdlib only.
+"""The shared server's elastic pool of worker processes for tool calls. Stdlib only.
 
 One interpreter running every session's tool calls makes many agents queue
-behind its lock. So under `--serve` each read tool call goes to a worker
-(`worker.py`), a plain-Python process with no fastmcp, over newline-delimited
-JSON on its stdin and stdout.
+behind its lock. So under `--serve` each tool call goes to a worker
+(`worker.py`), a plain-Python process, over newline-delimited JSON on its stdin
+and stdout.
 
 - An idle worker takes the call. With none idle and fewer than `limit` running,
   the pool starts one; otherwise the call waits for the next free worker.
@@ -14,8 +14,8 @@ JSON on its stdin and stdout.
   the next call starts a fresh worker, and other calls are not affected.
 
 The limit is `CODEBASE_KG_MAX_WORKERS`, else the plugin's `max_workers`
-setting, else 4. A server reads it once, at start. 0 means no pool: the server
-runs calls in its own process.
+setting, else 8. It has no upper bound. A server reads it once, at start.
+0 means no pool: the server runs calls in its own process.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import IO, Any
 
 SRC = Path(__file__).resolve().parents[1]
-DEFAULT_MAX_WORKERS = 4
+DEFAULT_MAX_WORKERS = 8
 IDLE_EXIT = 60.0
 CALL_TIMEOUT = 60.0
 STOP_WAIT = 2.0
@@ -45,6 +45,14 @@ class WorkerError(RuntimeError):
 
 class CallError(RuntimeError):
     """The tool raised in the worker. The message is the worker's `str(exc)`."""
+
+
+class Refused(RuntimeError):
+    """The graph refused a write. `body` is the refusal the tool returns."""
+
+    def __init__(self, body: dict[str, Any]) -> None:
+        super().__init__(str(body.get("error")))
+        self.body = body
 
 
 def _setting(names: tuple[str, ...], default: float) -> float:
@@ -60,7 +68,7 @@ def _setting(names: tuple[str, ...], default: float) -> float:
 
 
 def max_workers() -> int:
-    """`CODEBASE_KG_MAX_WORKERS`, else the plugin's `max_workers` setting, else 4."""
+    """`CODEBASE_KG_MAX_WORKERS`, else the plugin's `max_workers` setting, else 8."""
     value = _setting(("CODEBASE_KG_MAX_WORKERS", "CLAUDE_PLUGIN_OPTION_MAX_WORKERS"), DEFAULT_MAX_WORKERS)
     return max(0, int(value))
 
@@ -191,6 +199,8 @@ class Pool:
             self._release(worker, healthy)
         if reply.get("ok"):
             return reply.get("result") or {}
+        if isinstance(reply.get("refused"), dict):
+            raise Refused(reply["refused"])
         raise CallError(str(reply.get("error") or "the worker reported an unnamed error"))
 
     def _acquire(self) -> _Worker:

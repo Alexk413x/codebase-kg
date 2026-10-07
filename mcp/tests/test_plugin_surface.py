@@ -17,6 +17,7 @@ markdown rather than the Python.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -30,7 +31,7 @@ except ImportError:  # pragma: no cover - yaml ships with the dev env
 ROOT = Path(__file__).resolve().parent.parent.parent
 SKILLS = sorted(ROOT.joinpath("skills").glob("*/SKILL.md"))
 COMMANDS = sorted(ROOT.joinpath("commands").glob("*.md"))
-SERVER = ROOT / "mcp" / "src" / "codebase_kg" / "server.py"
+CATALOG = ROOT / "mcp" / "src" / "codebase_kg" / "catalog.json"
 
 BARE = "mcp__codebase-kg__"
 PLUGIN = "mcp__plugin_codebase-kg_codebase-kg__"
@@ -38,8 +39,7 @@ PLUGIN = "mcp__plugin_codebase-kg_codebase-kg__"
 
 def registered_tools() -> set[str]:
     """The tool names the MCP server actually exposes."""
-    src = SERVER.read_text(encoding="utf-8")
-    return set(re.findall(r"^def (kg_\w+)", src, re.M))
+    return {t["name"] for t in json.loads(CATALOG.read_text(encoding="utf-8"))["tools"]}
 
 
 def frontmatter(path: Path) -> dict[str, object]:

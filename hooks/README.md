@@ -148,9 +148,12 @@ listening by then:
   under the same lock the shim uses, and waits up to 3 s for `/health` to answer. A newer server
   takes the port from an older one itself.
 - When the port answers as something else, it prints one line naming the `server_port` setting.
-- When the server does not answer in 3 s, it prints one line naming the server's log. The first
-  start after an update builds the venv and can take longer; that session then has no codebase-kg
-  tools, and the next one connects.
+- When the server does not answer in 3 s, it prints one line naming the server's log. The server
+  imports only the standard library and starts in about 0.2 s, so this means it failed to start.
+
+The server it starts reads the `max_workers` setting from this hook's environment, once. To apply a
+changed `max_workers`, run `kg_cli.py server stop` and restart Claude Code; the README's
+"Changing `max_workers`" section has the steps.
 
 It exits 0 every time and prints nothing when all is well. Stdlib only; it imports
 `mcp/src/codebase_kg/shim.py` by path for the port, the build and the start routine.

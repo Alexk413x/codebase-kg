@@ -6,8 +6,9 @@ agent answers "where does X live / what depends on it / what diverges from the p
 call instead of re-grepping every session, and fixes one wrong description without regenerating the
 whole artifact.
 
-Mirrors the author's `a11y-kg` server (FastMCP, `uv`-run). Everything except `server` and `daemon` is
-**stdlib only** — the whole graph layer is testable without FastMCP installed.
+The server and everything it imports are **stdlib only**: it runs on the base Python 3.10 or later,
+with no venv. The tool definitions are fastmcp registrations in `server.py`, a dev-only module;
+`scripts/gen_catalog.py` turns them into `src/codebase_kg/catalog.json`, which the server serves.
 
 ## Queries
 
@@ -68,7 +69,7 @@ rm .kg-export.json                                                # a snapshot, 
 One server process per machine and server build serves every session. A build is the
 plugin version plus a short digest of the path, size and mtime of every `*.py` in the server package,
 so a dev checkout and an installed copy at the same version never share a server.
-Claude Code reaches it over Streamable HTTP (`.mcp.json`, `http_transport.py`). Stdio clients such as
+Claude Code reaches it over HTTP, MCP 2026-07-28 (`.mcp.json`, `http_transport.py`). Stdio clients such as
 Codex launch `mcp/launch/kg-shim`, which runs `shim.py` with the system Python:
 `python3`, else `python`, on macOS and Linux, and `py -3`, else `python`, on Windows (`kg-shim.cmd`),
 where a stock install has no `python3.exe` and both names may be Microsoft Store stubs. The shim is
@@ -77,25 +78,23 @@ stdlib only and does three things:
 1. It reads `server-<build>.json` from the user cache directory (`%LOCALAPPDATA%\codebase-kg\` on
    Windows, `~/Library/Caches/codebase-kg/` on macOS, `$XDG_CACHE_HOME/codebase-kg/` or
    `~/.cache/codebase-kg/` elsewhere). The file names the port, pid and token of the running server.
-2. If no live server answers, it takes a lock file and starts one, detached:
-   `uv run --project <plugin>/mcp --frozen --no-dev python -c "from codebase_kg.server import main; main()" --serve`.
-   The server's log is `server-<build>.log` in the same directory. The venv is not
-   `<plugin>/mcp/.venv`: `UV_PROJECT_ENVIRONMENT` points at `venv-<key>` in `CODEBASE_KG_DATA_DIR`,
-   else the `CLAUDE_PLUGIN_DATA` that Claude Code exports to the server, else the user cache
-   directory, keyed by the third-party dependencies in
-   `uv.lock`, so a plugin update that keeps them reuses the venv. `PYTHONPATH` puts the plugin's own
-   `src` first, so builds that share a venv each run their own code.
+2. If no live server answers, it takes a lock file and starts one, detached: the base interpreter
+   of the Python running the shim, as `python -I -S -c <entry> <plugin>/mcp/src --serve`
+   (`shim.server_command`). It starts in about 0.2 s. The server's log is `server-<build>.log` in
+   the same directory.
 3. It connects to `127.0.0.1:<port>`, sends a one-line handshake (the token, the build, the session's
    cwd and its explicit graph path), and then relays JSON-RPC unchanged in both directions.
 
 The server listens on loopback only, on a port the OS picks, and refuses a handshake with the wrong
-token or build. The state file is readable only by the user. Each connection is its own MCP
-session. The server exits after 10 minutes with no connections and removes its state file.
+token or build. The state file is readable only by the user. Each connection is its own classic MCP
+session (`initialize`, `tools/list`, `tools/call`), served by `tcp_transport.py` from the same
+`core.Core` as HTTP. A server without the HTTP port exits after 10 minutes with no connections; one
+with it, after 8 hours with no request and no connection. Either removes its state file.
 
 A session never loses its tools. If the shared server cannot be reached within 10 seconds
 (`CODEBASE_KG_SHARED_TIMEOUT`), the shim runs a private stdio server for that session instead. A
 shim that started the server itself waits up to 25 seconds (`CODEBASE_KG_SPAWN_TIMEOUT`) first,
-because the first start after an update builds the venv.
+so a slow start does not make it start a second server.
 
 A session also survives a crashed shared server. The shim records the session's `initialize` request
 and `notifications/initialized`, and tracks which requests await a response. If the server hangs up
@@ -115,9 +114,44 @@ When the session closes its stdin, the shim exits and does not reconnect.
 | `CODEBASE_KG_SHARED=0` | Skip the shared server; run a private stdio server for this session. |
 | `CODEBASE_KG_SHARED_TIMEOUT` | Seconds the shim waits for the shared server before it falls back. Default 10. |
 | `CODEBASE_KG_IDLE_TIMEOUT` | Seconds the shared server stays up with no connections. Default 600. |
-| `CODEBASE_KG_CACHE_DIR` | Where the state, lock and log files live. |
+| `CODEBASE_KG_HTTP_IDLE_TIMEOUT` | Seconds a server that holds the HTTP port stays up with no request and no connection. Default 28800 (8 hours). |
+| `CODEBASE_KG_MAX_WORKERS` | Worker processes for tool calls, overriding the `max_workers` setting. Default 8; 0 runs calls in the server. |
+| `CODEBASE_KG_CALL_TIMEOUT` | Seconds a worker may take for one call before it is killed. Default 60. |
+| `CODEBASE_KG_PORT` | The HTTP port, overriding the `server_port` setting. 0 lets the OS pick. |
+| `CODEBASE_KG_CACHE_DIR` | Where the state, lock, token and log files live. |
 
-Run `codebase-kg` with no `--serve` to get the stdio server directly.
+`kg_cli.py server status` prints the build, pid and `max_workers` of the server on the HTTP port;
+`kg_cli.py server stop` stops it, so the next one reads the settings afresh. Run
+`python -m codebase_kg.daemon`, with `src` on the path and no `--serve`, to get a private stdio server.
+
+## The HTTP front
+
+`http_transport.py` serves MCP 2026-07-28 as Claude Code 2.1.293 sends it: one self-contained POST
+per request, no sessions. It answers `server/discover`, `tools/list`, `tools/call` and the empty
+prompt and resource lists; a notification gets 202. It advertises only the tools capability.
+
+| Request | Answer |
+|---|---|
+| Body is not JSON | 400, `-32700` |
+| Body is not one JSON-RPC message | 400, `-32600` |
+| `params._meta` lacks the protocol version or client capabilities | 400, `-32602` |
+| A header contradicts the body (`mcp-protocol-version`, `mcp-method`, `mcp-name`) | 400, `-32020` |
+| Any protocol version but 2026-07-28, including a classic `initialize` | 400, `-32022`, with the supported versions |
+| Unknown method | 404, `-32601` |
+| `GET /mcp` | 405 |
+| An `Accept` without JSON | 406 |
+| Body over 8 MB | 413 |
+| Wrong `Host`, foreign `Origin`, missing or wrong token | 403 |
+| Tool error or refused write | 200, a result with `isError: true` |
+
+The first tool call from an unseen client returns `resultType: "input_required"` with a roots
+request; the retry carries the roots in `inputResponses`. Request bodies may be chunked. A keep-alive
+connection idle for 60 s is closed.
+
+Arguments are checked against each tool's `inputSchema` in `core.py`, with pydantic's lax rules: an
+integral float or a numeric string is an integer, `"true"`, `"off"`, `1` and `0` are booleans, an
+unknown argument is refused, and a missing one takes its default. `tests/test_catalog.py` compares
+the outcome with fastmcp's for each such case.
 
 ## How it finds the graph
 
@@ -130,8 +164,9 @@ Path resolution order:
    is still accepted), else `knowledge/code_graph.db`. **No repo-root fallback.**
 
 The shared server applies the same order to each connection, using the session's CLI arg,
-`$CODEBASE_KG_PATH` and cwd from the handshake. It never reads its own cwd, environment or argv, so
-two sessions in two repos each see only their own graph.
+`$CODEBASE_KG_PATH` and cwd from the handshake, or an HTTP client's `X-Codebase-KG-Graph` header and
+roots. It never reads its own cwd, environment or argv, so two sessions in two repos each see only
+their own graph. `resolve.py` holds the order, for the server and for `server.py` alike.
 
 While unresolved, the path is re-resolved on every tool call, so a graph created after the server
 started (e.g. by `/codebase-kg:build`) is picked up without a restart. If the repo still has a
@@ -153,8 +188,15 @@ server was running.
 | `clean.py` | The `description` contract (no ticket refs, dates or change narrative) and its scrubber. |
 | `writer.py` | Transactional, deterministic build. Validates first; writes to a temp file and renames. |
 | `store.py` | `CodeGraph` — read-only query facade over one connection. |
-| `server.py` | The FastMCP tool registrations and graph path resolution, per process or per connection. |
-| `daemon.py` | `--serve`: the shared server — loopback listener, handshake, one MCP session per connection, idle exit. |
+| `server.py` | The fastmcp tool definitions `catalog.json` is generated from. Dev only: nothing at runtime imports it. |
+| `catalog.json` | The `tools/list` result and the server instructions the server sends. |
+| `daemon.py` | The server: `--serve` runs the shared one (state file, idle and orphan exit); without it, a private stdio server. |
+| `core.py` | The catalog, argument checks, and one tool call on the pool, for every transport. Writes to one graph run one at a time. |
+| `http_transport.py` | MCP over HTTP for Claude Code: Host, Origin and token checks, `/health`, `/shutdown`, roots binding, port claim and handover. |
+| `tcp_transport.py` | Classic MCP over lines: the shims' TCP listener and handshake, and the private stdio server. |
+| `pool.py` / `worker.py` | The elastic worker pool and the worker that runs read and write tools. |
+| `resolve.py` | Which graph a session's calls use. |
+| `control.py` | `kg_cli.py server status` and `server stop`. |
 | `shim.py` | What stdio clients launch: finds or starts the shared server and relays the session to it. Stdlib only. It also holds the HTTP port, token and `/health` helpers that the hooks and `kg_headers.py` load by path. |
 | `tools.py` | The read-only queries the MCP tools wrap. |
 | `edits.py` | Targeted writes: copy, mutate in one transaction, validate, swap in — or discard, leaving the committed file byte-identical. |
@@ -166,4 +208,5 @@ server was running.
 ```sh
 uv sync
 uv run pytest -q
+uv run python scripts/gen_catalog.py   # after changing a tool in server.py
 ```

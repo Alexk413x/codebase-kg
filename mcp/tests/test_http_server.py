@@ -4,7 +4,8 @@ Claude Code speaks MCP 2026-07-28 over HTTP: no sessions, and a headersHelper
 that cannot see the session's cwd. The server learns each client's cwd from its
 roots, asked for once through an `InputRequiredResult`, and must never cross
 two clients' graphs. These tests drive it with fastmcp's client, which answers
-that request the way Claude Code does.
+that request the way Claude Code does. `test_http_battery.py` covers the protocol
+surface request by request.
 """
 
 from __future__ import annotations
@@ -21,21 +22,20 @@ import sys
 import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Iterator, Sequence
 
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-from starlette.datastructures import Headers
 
-from codebase_kg import http_transport, shim
-from test_shared_server import BUILD, SRC, TIMEOUT, _graph, _raw, _repo, _stop
+from codebase_kg import core, http_transport, shim
+from test_shared_server import BUILD, TIMEOUT, _graph, _raw, _repo, _stop
 from test_shared_server import Client as LineClient
 
 ROOT = Path(__file__).resolve().parents[2]
 HOOK = ROOT / "hooks" / "kg_server_start.py"
 HEADERS = ROOT / "mcp" / "launch" / "kg_headers.py"
+SRC_SHIM = ROOT / "mcp" / "src" / "codebase_kg" / "shim.py"
 
 
 def _load(path: Path, name: str) -> Any:
@@ -54,9 +54,8 @@ def _free_port() -> int:
 
 def _start(cache: Path, cwd: Path, **env: str) -> subprocess.Popen[bytes]:
     full = {**os.environ, "CODEBASE_KG_CACHE_DIR": str(cache), "CODEBASE_KG_PORT": "0", **env}
-    full["PYTHONPATH"] = os.pathsep.join(filter(None, [str(SRC), full.get("PYTHONPATH")]))
     return subprocess.Popen(
-        [sys.executable, "-m", "codebase_kg.server", "--serve"],
+        shim.server_command("--serve"),
         cwd=cwd, env=full, stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
@@ -131,6 +130,8 @@ def _ids(result: Any) -> set[str]:
 
 
 ALL = ("kg_find_by_kind", {"kind": ""})
+CRLF = "\r\n"
+B_CRLF = CRLF.encode()
 
 
 # --- per-session graph binding over HTTP -----------------------------------
@@ -219,39 +220,109 @@ def test_a_server_without_workers_returns_what_the_pool_returns(
                                           [alpha], {"X-Codebase-KG-Client": "w0"}, calls))
     finally:
         _stop(proc)
-    assert _request(http_daemon["http_port"], "GET", "/health")[1]["max_workers"] == 4
+    assert _request(http_daemon["http_port"], "GET", "/health")[1]["max_workers"] == 8
     pooled = asyncio.run(_session(http_daemon, [alpha], {"X-Codebase-KG-Client": "w4"}, calls))
     for (name, _), here, there in zip(calls, in_process, pooled):
         assert not here.is_error and not there.is_error, name
         assert here.structured_content == there.structured_content, name
 
 
-def _ctx(protocol: str = http_transport.MODERN_PROTOCOL, params: dict[str, Any] | None = None) -> Any:
-    return SimpleNamespace(protocol_version=protocol, params=params or {})
+def _roots(path: Path) -> dict[str, Any]:
+    return {"inputResponses": {http_transport.ROOTS_REQUEST: {"roots": [{"uri": path.as_uri()}]}}}
 
 
 def test_a_client_is_asked_for_its_roots_once(tmp_path: Path) -> None:
-    binding = http_transport.SessionBinding()
-    headers = Headers({"x-codebase-kg-client": "c1"})
-    first = binding.connection(_ctx(), headers)
-    assert first.__class__.__name__ == "InputRequiredResult"
-    answer = {http_transport.ROOTS_REQUEST: {"roots": [{"uri": tmp_path.as_uri()}]}}
-    bound = binding.connection(_ctx(params={"inputResponses": answer}), headers)
+    clients = http_transport.Clients()
+    headers = {"x-codebase-kg-client": "c1"}
+    first = clients.connection(headers, {})
+    assert first == {"resultType": "input_required",
+                     "inputRequests": {http_transport.ROOTS_REQUEST: {"method": "roots/list"}}}
+    bound = clients.connection(headers, _roots(tmp_path))
     assert getattr(bound, "cwd") == tmp_path
-    assert binding.connection(_ctx(), headers) is bound
+    assert clients.connection(headers, {}) is bound
 
 
-def test_a_legacy_client_without_a_cwd_gets_an_error() -> None:
-    result = http_transport.SessionBinding().connection(_ctx("2025-06-18"), Headers({}))
-    assert getattr(result, "is_error") is True
+def test_a_root_that_is_not_a_local_file_is_asked_for_again(tmp_path: Path) -> None:
+    answer = {"inputResponses": {http_transport.ROOTS_REQUEST: {"roots": [{"uri": "https://x/"}]}}}
+    again = http_transport.Clients().connection({"x-codebase-kg-client": "c"}, answer)
+    assert isinstance(again, dict) and again["resultType"] == "input_required"
 
 
 def test_the_client_cache_is_bounded(tmp_path: Path) -> None:
-    binding = http_transport.SessionBinding(limit=2)
-    answer = {"inputResponses": {http_transport.ROOTS_REQUEST: {"roots": [{"uri": tmp_path.as_uri()}]}}}
+    clients = http_transport.Clients(limit=2)
     for client in ("a", "b", "c"):
-        binding.connection(_ctx(params=answer), Headers({"x-codebase-kg-client": client}))
-    assert [k[0] for k in binding.clients] == ["b", "c"]
+        clients.connection({"x-codebase-kg-client": client}, _roots(tmp_path))
+    assert [k[0] for k in clients.bound] == ["b", "c"]
+
+
+def _raw_http(port: int, payload: bytes, timeout: float = TIMEOUT) -> bytes:
+    with socket.create_connection(("127.0.0.1", port), timeout=timeout) as sock:
+        sock.sendall(payload)
+        out = b""
+        while chunk := sock.recv(65536):
+            out += chunk
+        return out
+
+
+def _list_request(port: int, token: str) -> tuple[bytes, bytes]:
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {}}}}).encode()
+    lines = [
+        "POST /mcp HTTP/1.1", f"Host: 127.0.0.1:{port}", f"Authorization: Bearer {token}",
+        "Content-Type: application/json", "Accept: application/json, text/event-stream",
+        "mcp-protocol-version: 2026-07-28", "mcp-method: tools/list", "Connection: close", "",
+    ]
+    return CRLF.join(lines).encode(), body
+
+
+def _chunk(data: bytes) -> bytes:
+    return f"{len(data):x}".encode() + B_CRLF + data + B_CRLF
+
+
+def test_a_chunked_request_body_is_read(http_daemon: dict[str, Any]) -> None:
+    port = http_daemon["http_port"]
+    head, body = _list_request(port, http_daemon["http_token"])
+    chunks = b"".join(_chunk(body[i:i + 7]) for i in range(0, len(body), 7))
+    reply = _raw_http(port, head + b"Transfer-Encoding: chunked" + B_CRLF * 2 + chunks + b"0" + B_CRLF * 2)
+    status, _, rest = reply.partition(B_CRLF)
+    assert status == b"HTTP/1.1 200 OK"
+    assert b'"name":"kg_search"' in rest
+
+
+def test_a_request_body_over_the_cap_is_refused(http_daemon: dict[str, Any]) -> None:
+    port = http_daemon["http_port"]
+    head, _ = _list_request(port, http_daemon["http_token"])
+    reply = _raw_http(port, head + f"Content-Length: {http_transport.MAX_BODY + 1}".encode() + B_CRLF * 2)
+    assert reply.startswith(b"HTTP/1.1 413")
+    head, _ = _list_request(port, http_daemon["http_token"])
+    big = f"{http_transport.MAX_BODY + 1:x}".encode() + B_CRLF + b"x" * 1024
+    reply = _raw_http(port, head + b"Transfer-Encoding: chunked" + B_CRLF * 2 + big)
+    assert reply.startswith(b"HTTP/1.1 413")
+
+
+def test_an_idle_keep_alive_connection_is_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(http_transport.Handler, "timeout", 0.5)
+    sock = http_transport.bind(0)
+    port = sock.getsockname()[1]
+    server = http_transport.HttpServer(sock, core.Core(None), "t", "s", {"service": "codebase-kg"},
+                                       on_request=lambda: None, on_shutdown=lambda: None)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=TIMEOUT)
+        try:
+            conn.request("GET", "/health", headers={"Host": f"127.0.0.1:{port}"})
+            response = conn.getresponse()
+            assert response.status == 200 and response.read() == b'{"service":"codebase-kg"}'
+            assert response.getheader("Connection") is None
+            idle = time.monotonic()
+            assert conn.sock is not None and conn.sock.recv(65536) == b""
+        finally:
+            conn.close()
+        assert time.monotonic() - idle < 5.0
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 # --- security ---------------------------------------------------------------
@@ -587,6 +658,80 @@ def test_the_helper_sends_no_token_to_a_squatter(tmp_path: Path) -> None:
 
 
 def test_the_helper_prints_json_with_no_server(tmp_path: Path) -> None:
+    started = time.monotonic()
     out = _helper({"CODEBASE_KG_CACHE_DIR": str(tmp_path),
                    "CLAUDE_CODE_MCP_SERVER_URL": f"http://127.0.0.1:{_free_port()}/mcp"})
     assert set(out) == {"X-Codebase-KG-Client"}
+    assert time.monotonic() - started < helper_module().WAIT + 5
+
+
+def helper_module() -> Any:
+    return _load(HEADERS, "kg_headers_under_test")
+
+
+def test_the_helper_waits_for_a_server_that_is_starting(tmp_path: Path) -> None:
+    """A request without the token gets 403, which Claude Code records as needing auth."""
+    cache = tmp_path / "cache"
+    port = _free_port()
+    full = {k: v for k, v in os.environ.items() if k != "CODEBASE_KG_PATH"}
+    helper = subprocess.Popen(
+        [sys.executable, str(HEADERS)], stdout=subprocess.PIPE, text=True,
+        env={**full, "CODEBASE_KG_CACHE_DIR": str(cache), "CLAUDE_CODE_MCP_SERVER_URL": f"http://127.0.0.1:{port}/mcp"},
+    )
+    time.sleep(0.5)
+    proc = _start(cache, tmp_path, CODEBASE_KG_PORT=str(port))
+    try:
+        out, _ = helper.communicate(timeout=TIMEOUT)
+        token = (cache / "http-token").read_text(encoding="utf-8").strip()
+        assert json.loads(out)["Authorization"] == f"Bearer {token}"
+    finally:
+        _stop(proc)
+
+
+def test_the_helper_does_not_wait_on_another_program(tmp_path: Path) -> None:
+    holder = _Holder(None, body=b"<html>not us</html>")
+    try:
+        started = time.monotonic()
+        assert helper_module().token(_load(SRC_SHIM, "shim_for_helper"), holder.port, wait=10.0) is None
+        assert time.monotonic() - started < 3.0
+    finally:
+        holder.close()
+
+
+# --- kg_cli.py server status|stop ----------------------------------------------
+CLI = ROOT / "mcp" / "launch" / "kg_cli.py"
+
+
+def _cli(cache: Path, *args: str) -> dict[str, Any]:
+    env = {**os.environ, "CODEBASE_KG_CACHE_DIR": str(cache)}
+    proc = subprocess.run([sys.executable, "-I", str(CLI), "server", *args], capture_output=True, text=True,
+                          env=env, timeout=TIMEOUT)
+    return json.loads(proc.stdout)
+
+
+def test_the_cli_reports_and_stops_the_server_on_the_port(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    proc = _start(cache, tmp_path, CODEBASE_KG_MAX_WORKERS="3")
+    try:
+        port = str(_state(cache)["http_port"])
+        assert _cli(cache, "status", "--port", port) == {
+            "ok": True, "port": int(port), "running": True, "build": BUILD, "pid": proc.pid, "max_workers": 3,
+        }
+        assert _cli(cache, "stop", "--port", port) == {"ok": True, "port": int(port), "running": False,
+                                                       "stopped": proc.pid}
+        assert proc.wait(timeout=TIMEOUT) == 0
+        assert _cli(cache, "status", "--port", port)["running"] is False
+    finally:
+        _stop(proc)
+
+
+def test_the_cli_sends_no_credential_to_a_squatter(cache: Path) -> None:
+    from codebase_kg import control
+
+    holder = _Holder(_older())
+    try:
+        out = control.stop(holder.port)
+    finally:
+        holder.close()
+    assert out["ok"] is False and "matches no state file" in str(out["error"])
+    assert holder.authorizations() == []

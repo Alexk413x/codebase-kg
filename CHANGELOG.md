@@ -6,11 +6,20 @@ All notable changes to the `codebase-kg` plugin.
 
 ### Changed
 
-- Claude Code reaches codebase-kg over Streamable HTTP at `http://127.0.0.1:47821/mcp` instead of
-  launching a stdio shim per session. Each open session cost a shim process whether or not it called
-  a tool: eight sessions held 317 MB across 18 processes. Over HTTP, eight sessions hold 94 MB in the
-  one server's two processes. `kg-shim` and the TCP path stay unchanged for Codex and other stdio
-  clients, in the same server process.
+- Claude Code reaches codebase-kg over HTTP at `http://127.0.0.1:47821/mcp` instead of launching a
+  stdio shim per session. Each open session cost a shim process whether or not it called a tool:
+  eight sessions held 317 MB across 18 processes. Over HTTP, an idle server holds 26 MB in one
+  process, however many sessions connect. `kg-shim` and the TCP path stay unchanged for Codex and
+  other stdio clients, in the same server process.
+- The server imports only the standard library. It runs on the base Python with `-I -S`, with no
+  venv and no `uv run`, starts in about 0.2 s instead of 2.2-2.4 s, and holds 26 MB idle instead of
+  83 MB. It serves MCP 2026-07-28 over HTTP and classic MCP to the shims from one core, and refuses
+  any older protocol version over HTTP with `-32022`. Single calls take 4-6 ms instead of 10-12 ms,
+  and with 16 agents calling at once the median call is 81-115 ms instead of 147-161 ms.
+- `fastmcp` is a dev dependency only. `server.py` keeps the tool definitions;
+  `mcp/scripts/gen_catalog.py` writes them to `src/codebase_kg/catalog.json`, which the server sends,
+  and a test fails when the two differ. The server checks arguments with pydantic's lax rules, and a
+  test compares 79 argument cases with fastmcp's validation.
 - The server learns each Claude Code session's repo by asking for its roots on the first tool call,
   and caches the answer per connection. The `headersHelper` runs in the plugin folder and cannot see
   the session's cwd. `CODEBASE_KG_PATH` still names a graph, and a relative one resolves against the
@@ -23,29 +32,41 @@ All notable changes to the `codebase-kg` plugin.
 
 ### Added
 
-- Plugin settings `server_port` (default 47821) and `max_workers` (default 4).
+- Plugin settings `server_port` (default 47821) and `max_workers` (default 8, no upper limit).
   `CODEBASE_KG_PORT` overrides the port for any client, and `CODEBASE_KG_MAX_WORKERS` the pool size.
-- The shared server runs read tool calls on an elastic pool of worker processes, for HTTP and shim
-  sessions alike. A worker is a plain Python process of about 24 MB that imports no MCP code. The
-  pool starts a worker when a call finds none idle, up to `max_workers`, queues calls beyond that,
-  and stops a worker after 60 s with no call. With 16 agents calling at once over HTTP, the median
-  call fell from 323-329 ms to 147-161 ms; through the shim, from 222-228 ms to 81-83 ms. A worker
-  that crashes or exceeds `CODEBASE_KG_CALL_TIMEOUT` (default 60 s) fails only that call.
-  `max_workers` 0 runs calls in the server process. Writes stay in the server process. A private
-  stdio server, which `kg-shim` falls back to, has no pool.
+  A running server keeps the `max_workers` it started with; the README says how to apply a change.
+- The shared server runs tool calls on an elastic pool of worker processes, for HTTP and shim
+  sessions alike. A worker is a plain Python process of about 21 MB. The pool starts a worker when a
+  call finds none idle, up to `max_workers`, queues calls beyond that, and stops a worker after 60 s
+  with no call. A worker that crashes or exceeds `CODEBASE_KG_CALL_TIMEOUT` (default 60 s) fails
+  only that call. Writes run on the workers too, one at a time per graph, and keep their refusal
+  answer and `written` flag. `max_workers` 0 runs calls in the server process. A private stdio
+  server, which `kg-shim` falls back to, has no pool.
+- `kg_cli.py server status` prints the build, pid and `max_workers` of the server on the port, and
+  `kg_cli.py server stop` stops it, so the next one reads the settings afresh.
 - `hooks/kg_server_start.py`, a `SessionStart` hook that starts the server when nothing answers
   `GET /health`, or an older build does, and waits up to 3 s. It prints one line only when the port
   belongs to another program or the server does not come up.
-- `mcp/launch/kg_headers.py`, the `headersHelper`.
+- `mcp/launch/kg_headers.py`, the `headersHelper`. While nothing listens on the port it waits up to
+  3 s for the server the hook starts. A request without the token gets 403, and Claude Code then
+  records the server as needing auth and stops connecting to it.
 - `GET /health` reports the service, build, pid and `max_workers`. `POST /shutdown` stops the
   server; it takes that server's own state-file token. A newer build asks an older one on the port
   to stop and takes the port; an older build leaves a newer one running and serves only shims.
+
+### Removed
+
+- The server's venv (`venv-<key>` in `CLAUDE_PLUGIN_DATA` or the cache dir), `CODEBASE_KG_DATA_DIR`,
+  and the server's `uv run` launch. Venvs earlier builds made stay on disk; delete them to reclaim
+  the space.
+- uvicorn, starlette and the `mcp` package from the server process.
 
 ### Security
 
 - The HTTP server binds `127.0.0.1` only, refuses a request whose `Host` is not its loopback address
   or whose `Origin` is foreign, and requires a per-user bearer token. It answers a missing or wrong
-  token with 403, not 401, which would start Claude Code's OAuth flow.
+  token with 403, not 401, which would start Claude Code's OAuth flow. A request body may be at most
+  8 MB, and a keep-alive connection idle for 60 s is closed.
 - The helper and the takeover send a credential only to a server whose pid and port match a live
   state file of this user. A build name from `/health` must match the format a build has, so a
   reply cannot point the check at a file outside the cache dir.

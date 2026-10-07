@@ -30,8 +30,8 @@
     "max_workers": {
       "type": "number",
       "title": "Maximum workers",
-      "description": "Most worker processes the server runs read tool calls on at once. 0 runs every call in the server process. A running server keeps the value it started with.",
-      "default": 4
+      "description": "Most worker processes the server runs tool calls on at once, with no upper limit. 0 runs every call in the server process. A running server keeps the value it started with: to apply a change, run \"mcp/launch/kg_cli.py server stop\" from the plugin folder, then restart Claude Code. See the README, section Changing max_workers.",
+      "default": 8
     }
   }
 }

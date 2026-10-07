@@ -1,8 +1,9 @@
 """The shared server's elastic worker pool: grow, queue, shrink, crash, hang, and parity.
 
 Lifecycle tests drive `Pool` with a stand-in worker that sleeps, crashes or
-hangs on request. Parity tests use the real worker and compare every read tool
-with the in-process result through the registered MCP surface.
+hangs on request. Parity tests use the real worker and compare every tool's
+result through `core.Core` with a pool, without one, and from the fastmcp
+reference in `server.py`.
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from typing import Any, Iterator
 
 import pytest
 
+from codebase_kg import core, resolve, server, shim
 from codebase_kg import pool as pool_mod
-from codebase_kg import server, shim
 from codebase_kg.pool import CallError, Pool, WorkerError
 from test_query_cli import _calls
 
@@ -183,62 +184,107 @@ def test_close_stops_every_worker(fake: list[str]) -> None:
 def test_the_max_workers_setting(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CODEBASE_KG_MAX_WORKERS", raising=False)
     monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_MAX_WORKERS", raising=False)
-    assert pool_mod.max_workers() == 4
+    assert pool_mod.max_workers() == 8
     monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MAX_WORKERS", "2")
     assert pool_mod.max_workers() == 2
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MAX_WORKERS", "64")
+    assert pool_mod.max_workers() == 64
     monkeypatch.setenv("CODEBASE_KG_MAX_WORKERS", "0")
     assert pool_mod.max_workers() == 0
     monkeypatch.setenv("CODEBASE_KG_MAX_WORKERS", "lots")
-    assert pool_mod.max_workers() == 2
+    assert pool_mod.max_workers() == 64
     with pytest.raises(ValueError):
         Pool(0)
 
 
-# --- the real worker, through the registered tools ----------------------------
+# --- the real worker, through the core ---------------------------------------
 @pytest.fixture
-def bound(built_fixtures: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    graph = built_fixtures / "android" / "code_graph.db"
-    monkeypatch.setattr("sys.argv", ["codebase-kg"])
-    token = server.bind_connection(server.Connection(cwd=graph.parent, explicit=graph))
-    try:
-        yield graph
-    finally:
-        server.unbind_connection(token)
-        server.use_pool(None)
+def bound(built_fixtures: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    graph = tmp_path / "android" / "code_graph.db"
+    graph.parent.mkdir()
+    graph.write_bytes((built_fixtures / "android" / "code_graph.db").read_bytes())
+    monkeypatch.setattr("sys.argv", ["codebase-kg", str(graph)])
+    monkeypatch.setattr(server, "_graph_path", None)
+    return graph
 
 
-def _through_mcp(tool: str, args: dict[str, Any]) -> Any:
+def _conn(graph: Path) -> resolve.Connection:
+    return resolve.Connection(cwd=graph.parent, explicit=graph)
+
+
+def _data(engine: core.Core, graph: Path, tool: str, args: dict[str, Any]) -> Any:
+    result = engine.call_tool(_conn(graph), tool, args)
+    assert not result["isError"], (tool, result)
+    return result["structuredContent"]
+
+
+def _reference(tool: str, args: dict[str, Any]) -> Any:
     result = asyncio.run(server.mcp.call_tool(tool, args))
     return json.loads(json.dumps(result.structured_content))
 
 
 def test_every_read_tool_returns_the_same_json_from_a_worker(bound: Path, pools: list[Pool]) -> None:
     calls = _calls(bound)
-    server.use_pool(None)
-    in_process = [_through_mcp(tool, args) for tool, args in calls]
     p = _pool(pools, 2)
-    server.use_pool(p)
-    pooled = [_through_mcp(tool, args) for tool, args in calls]
+    for tool, args in calls:
+        expected = _reference(tool, args)
+        assert _data(core.Core(None), bound, tool, args) == expected, tool
+        assert _data(core.Core(p), bound, tool, args) == expected, tool
     assert p.size() >= 1
-    for (tool, _), here, there in zip(calls, in_process, pooled):
-        assert here == there, tool
 
 
-def test_a_tool_error_reads_the_same_from_a_worker(bound: Path, pools: list[Pool], tmp_path: Path) -> None:
+def test_every_write_tool_returns_the_same_json_from_a_worker(bound: Path, pools: list[Pool]) -> None:
+    node = _calls(bound)[1][1]["id"]
+    writes = [
+        ("kg_upsert_node", {"nodes": [{"id": node, "section": "REVISED"}]}),
+        ("kg_add_link", {"node_id": node, "target": "cartographer_graph.db#home", "kind": "presented-by"}),
+        ("kg_remove_link", {"node_id": node, "target": "cartographer_graph.db#home"}),
+        ("kg_add_reference", {"node_id": node, "url": "https://example.com/spec", "kind": "spec"}),
+        ("kg_remove_reference", {"node_id": node, "url": "https://example.com/spec"}),
+        ("kg_delete_node", {"ids": [node]}),
+    ]
+    original = bound.read_bytes()
+    reference = [_reference(tool, args) for tool, args in writes]
+    for engine in (core.Core(None), core.Core(_pool(pools, 2))):
+        bound.write_bytes(original)
+        for (tool, args), expected in zip(writes, reference):
+            assert _data(engine, bound, tool, args) == expected, tool
+
+
+def test_a_refused_write_is_the_same_error_from_a_worker(bound: Path, pools: list[Pool]) -> None:
+    node = _calls(bound)[1][1]["id"]
+    args = {"nodes": [{"id": node, "description": "Fixes ACME-431."}]}
+    before = bound.read_bytes()
+    reference = asyncio.run(server.mcp.call_tool("kg_upsert_node", args))
+    for engine in (core.Core(None), core.Core(_pool(pools, 1))):
+        result = engine.call_tool(_conn(bound), "kg_upsert_node", args)
+        assert result["isError"] is True
+        assert result["structuredContent"] == reference.structured_content
+        assert result["structuredContent"]["written"] is False
+        assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
+    assert bound.read_bytes() == before
+
+
+def test_writes_to_one_graph_run_one_at_a_time(bound: Path, pools: list[Pool]) -> None:
+    listed = _data(core.Core(None), bound, "kg_find_by_kind", {"kind": "", "limit": 6})["nodes"]
+    ids = [n["id"] for n in listed]
+    engine = core.Core(_pool(pools, 6))
+    with ThreadPoolExecutor(len(ids)) as ex:
+        results = list(ex.map(lambda i: engine.call_tool(
+            _conn(bound), "kg_upsert_node", {"nodes": [{"id": i, "section": f"S-{i}"}]}), ids))
+    assert all(r["structuredContent"]["written"] is True for r in results), results
+    sections = {i: _data(engine, bound, "kg_node", {"id": i})["section"] for i in ids}
+    assert sections == {i: f"S-{i}" for i in ids}
+
+
+def test_a_tool_error_reads_the_same_from_a_worker(pools: list[Pool], tmp_path: Path) -> None:
     broken = tmp_path / "knowledge" / "code_graph.db"
     broken.parent.mkdir()
     broken.write_bytes(b"not a database at all" * 100)
-    token = server.bind_connection(server.Connection(cwd=tmp_path, explicit=broken))
-    try:
-        server.use_pool(None)
-        with pytest.raises(Exception) as here:
-            server._read("kg_stats", {})
-        server.use_pool(_pool(pools, 1))
-        with pytest.raises(CallError) as there:
-            server._read("kg_stats", {})
-    finally:
-        server.unbind_connection(token)
-    assert str(there.value) == str(here.value)
+    here = core.Core(None).call_tool(_conn(broken), "kg_stats", {})
+    there = core.Core(_pool(pools, 1)).call_tool(_conn(broken), "kg_stats", {})
+    assert here["isError"] is True and here == there
+    assert here["content"][0]["text"].startswith("Error calling tool 'kg_stats': ")
 
 
 def test_zero_workers_run_calls_in_process(bound: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -246,16 +292,16 @@ def test_zero_workers_run_calls_in_process(bound: Path, monkeypatch: pytest.Monk
         raise AssertionError("a worker started with max_workers 0")
 
     monkeypatch.setattr(pool_mod, "_Worker", refuse)
-    server.use_pool(None)
-    assert _through_mcp("kg_stats", {})["nodes"] > 0
+    assert _data(core.Core(None), bound, "kg_stats", {})["nodes"] > 0
 
 
 def test_the_worker_imports_no_fastmcp() -> None:
     python, *flags, _, _, src = pool_mod.worker_command()
-    probe = "import sys, json; sys.path.insert(0, sys.argv[1]); import codebase_kg.worker; print(json.dumps(sorted(sys.modules)))"
+    probe = ("import sys, json; sys.path.insert(0, sys.argv[1]); from codebase_kg import worker; "
+             "worker._writes(); print(json.dumps(sorted(sys.modules)))")
     out = subprocess.run([python, *flags, "-c", probe, src], capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     modules = json.loads(out.stdout)
-    assert "codebase_kg.query" in modules
+    assert "codebase_kg.query" in modules and "codebase_kg.edits" in modules
     assert not [m for m in modules if m.split(".")[0] in {"fastmcp", "mcp", "pydantic", "starlette", "anyio"}]
     assert Path(src) == Path(server.__file__).resolve().parents[1]

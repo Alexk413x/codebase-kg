@@ -245,21 +245,19 @@ wheels = [
 name = "codebase-kg"
 version = "0.12.0"
 source = { editable = "." }
-dependencies = [
-    { name = "fastmcp" },
-]
 
 [package.dev-dependencies]
 dev = [
+    { name = "fastmcp" },
     { name = "pyright" },
     { name = "pytest" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "fastmcp", specifier = ">=4.0.3,<5" }]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "fastmcp", specifier = ">=4.0.3,<5" },
     { name = "pyright", specifier = ">=1.1.400" },
     { name = "pytest", specifier = ">=8,<10" },
 ]

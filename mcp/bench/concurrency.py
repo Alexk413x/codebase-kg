@@ -1,7 +1,7 @@
 """N agents at once, each running the nine lookup calls of loop10.py in order: CLI against MCP.
 
 Each MCP agent is its own session through the shim to the shared server. Each HTTP agent is its
-own client over Streamable HTTP to one shared server, as Claude Code connects: `http` runs the read
+own client over Streamable HTTP to one shared server, as Claude Code connects: `http` runs the
 tools on the server's worker pool (`--max-workers`, default the server's default), `http0` runs them
 in the server process. Each CLI agent runs one process per call. Reports wall time, per-call latency
 and the whole machine's CPU load for each N.

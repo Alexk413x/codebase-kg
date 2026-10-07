@@ -1,6 +1,7 @@
 # Shared HTTP server: plan
 
-Status: Phases 0, 1 and 2 done on `feat/push-refresh`, 2026-10-07; Phase 3 not started.
+Status: Phases 0, 1 and 2 and the lean front done on `feat/push-refresh`, 2026-10-07; Phase 3 not
+started.
 Written 2026-10-07. Companion to `cli-plan.md`, whose benchmarks this plan builds on.
 
 ## Goal
@@ -35,7 +36,9 @@ The tool work itself is small: one plain-Python process making 30 calls peaks at
 | Other clients (Codex, sentinel-swarm role sessions, any stdio client) | Keep `kg-shim` and the TCP daemon path unchanged |
 | Lookups (`kg_search`, `kg_node`, `kg_neighborhood`, `kg_find_by_kind`, `kg_find_by_path`, `kg_find_by_link`, `kg_find_by_reference`) | Stay on MCP |
 | Start and end tools (`kg_stats`, `kg_validate`, `kg_parity_gaps`) and writes (`kg_upsert_node`, `kg_delete_node`, `kg_add_link`, `kg_remove_link`, `kg_add_reference`, `kg_remove_reference`) | Move to `kg_cli.py`, called from skills and hooks |
-| Worker pool | Elastic: 0 workers when idle, up to `max_workers` (setting, default 4), a worker exits after 60 s idle |
+| Worker pool | Elastic: 0 workers when idle, up to `max_workers` (setting, default 8, no upper limit), a worker exits after 60 s idle |
+| Server process | Standard library only, on the base Python with no venv (see Lean front) |
+| A worker budget shared across plugins | Later option. If several plugins get pools, one machine-wide budget could cap their workers together; today each server caps only its own. |
 
 ### Ports
 
@@ -294,6 +297,88 @@ The `mcp` package is the largest single cost, and most of it is protocol models 
 does not use. An 80 MB target with 8 sessions needs a server that does not import `mcp` and
 `fastmcp`, which is a rewrite of the HTTP front, outside Phase 2.
 
+## Lean front
+
+Phase 2 left the server at 83 MB idle, most of it the `mcp` and `fastmcp` imports, and its HTTP front
+as the limit under load. A prototype front built on the standard library alone, run against commit
+c028aeb, held 25 MB idle and served Claude Code 2.1.293's captured traffic with the same answers. This
+section builds it into the server.
+
+### What was built
+
+| Part | Module |
+|---|---|
+| The tool catalog: the `tools/list` result and the instructions, generated from the fastmcp registrations in `server.py` by `mcp/scripts/gen_catalog.py` | `catalog.json` |
+| Argument checks against each `inputSchema`, with pydantic's lax coercion, and one tool call on the pool; writes to one graph one at a time | `core.py` |
+| MCP 2026-07-28 over HTTP: `server/discover`, `tools/list`, `tools/call`, the roots `input_required` round trip, the empty lists, 202 for a notification; Host, Origin and token checks; `/health`, `/shutdown`; port claim and verified handover; 8 MB body cap; chunked bodies; 60 s keep-alive idle timeout | `http_transport.py` |
+| Classic MCP over lines: the shims' TCP handshake and session, and the private stdio server | `tcp_transport.py` |
+| The process: state file written private, idle exit (8 h for the HTTP holder), orphan exit within 5 s, `--serve` or private | `daemon.py` |
+| Graph-path resolution, shared by the server and `server.py` | `resolve.py` |
+| The six write tools, beside the read tools | `worker.py` |
+| `kg_cli.py server status` and `server stop` | `control.py` |
+
+The server is the base interpreter running `daemon.py` with `-I -S` (`shim.server_command`). It
+imports no third-party package, so the plugin no longer builds a venv to run it. `fastmcp` moved to
+the dev dependencies: `server.py` keeps the tool definitions for the catalog and for the tests that
+compare fastmcp's handling of a call with the core's.
+
+### Deviations
+
+| Change | Why |
+|---|---|
+| The fastmcp runtime path is gone: no `uv run` launch, no server venv (`venv-<key>`, `CODEBASE_KG_DATA_DIR`), no uvicorn or starlette. The private fallback server is the same stdlib server on stdio. | Nothing at runtime needed fastmcp once the private server ran on the core. |
+| The writes run on the workers, not in the server. `core.Core` holds one lock per graph path around each write. | The always-on process imports no `edits` module, and a write still never runs beside another write to the same file. `edits` replaces the file from a copy, so two at once would lose one. |
+| `max_workers` defaults to 8 and has no upper limit. | The setting's default and `pool.DEFAULT_MAX_WORKERS` must agree: Claude Code 2.1.293 exports no `CLAUDE_PLUGIN_OPTION_*` for a setting the user never set (checked by dumping the hook's environment), so the server falls back to the code default. |
+| The headers helper waits up to 3 s for a server while nothing listens on the port. | The server now starts in 0.2 s, inside the helper's 0.3 s run, so a connect attempt could send no token to a server that had just come up. Claude Code 2.1.293 answered that 403 by marking the server "needs auth" in `~/.claude/mcp-needs-auth-cache.json` and stopped connecting, for later sessions too. Found in the live check; the slow fastmcp start never hit it. |
+| `kg_cli.py server status` and `server stop`. | A changed `max_workers` applies when the server next starts; `stop` is the way to make that happen without finding the pid. |
+| The catalog drops fastmcp's own `_meta` (`{"fastmcp": {"tags": []}}`). | Claude Code ignores it, and it named a package the server no longer has. |
+| The server's own request errors (a client that resets its connection) do not print a traceback to the log. | The live check's log filled with `ConnectionResetError` from Claude Code closing keep-alive sockets. |
+
+### Results
+
+Measured 2026-10-07 on Windows 11, 16 CPUs, cartographer's graph (1.14 MB), `max_workers` 8,
+`concurrency.py --modes http` and `cli_vs_mcp.py --modes http`, each twice; ranges cover both runs.
+The machine was shared: CPU load before the runs was 22-47 %. "Phase 2" is the fastmcp server with a
+pool of 4, from the Phase 2 results above.
+
+| Measure | Phase 2 | Prototype (pool of 4) | Lean front (pool of 8) |
+|---|---|---|---|
+| Server start, spawn to state file | 2.2-2.4 s | 0.16-0.18 s | 0.18 s (4 starts) |
+| Memory, server alone before any call | 82.8 MB, 2 processes | 25.2 MB, 1 process | 26.3-26.4 MB, 1 process |
+| Memory, 1 session, after its calls | 107.7-107.9 MB, 3 processes | 47.3 MB, 2 processes | 47.0-47.1 MB, 2 processes |
+| Memory, 8 sessions, after their calls | 163.3-163.9 MB, 6 processes | 110.8 MB, 5 processes | 170.3-189.7 MB, 8-9 processes |
+| Memory, 70 s after the last call | 91.3-91.8 MB, 2 processes | 26.2 MB, 1 process | 26.8-27.0 MB, 1 process |
+| Connect | 101 ms (Phase 1) | | 69-73 ms |
+| Warm call, one session (`kg_search`, `kg_node`, `kg_neighborhood`) | 10.0-12.3 ms | | 3.7-6.2 ms |
+| Call median, 1 agent | 16.7-17.4 ms | 5-7 ms | 7.8-8.9 ms |
+| Call median, 4 agents | 34-44 ms | | 12.8-13.9 ms |
+| Call median, 8 agents | 83-88 ms | | 24.9-29.6 ms |
+| Call median, 16 agents | 147-161 ms | 48-66 ms | 80.6-115.0 ms |
+| Slowest call, 16 agents | 520-581 ms | | 382-499 ms |
+| CPU load during the 16-agent run | 29-53 % | | 47-67 % |
+| Calls that failed | 0 | 0 | 0 |
+
+- **Memory meets the 80 MB target while idle and with one session**, and falls back to 27 MB once
+  the workers idle out. With 8 sessions calling at once, 8 workers start, so the total is about
+  26 MB plus 20-21 MB per worker. A pool of 4 holds that peak near 110 MB.
+- **The 16-agent median is below the 150 ms target in both runs.** It is higher than the
+  prototype's, with the machine more loaded. One run with `--max-workers 4` at 13 % load before it
+  gave medians of 8.1, 9.8, 19.8 and 49.9 ms at 1, 4, 8 and 16 agents; on this machine 8 workers
+  did not beat 4. The default stays 8, as decided, and the setting has no upper limit.
+- The first call after the pool shrank pays a worker start: 149-173 ms.
+
+### Verification
+
+- Tests: `test_http_battery.py` turns the prototype's 44-case battery into permanent cases (status
+  codes and JSON shapes). `test_catalog.py` checks the catalog against the registrations and 79
+  argument cases against fastmcp's validation. `test_pool.py` checks every read and write tool's
+  result from a worker, from the core without a pool, and from fastmcp, and that concurrent writes
+  to one graph all land. The shim tests run classic `initialize`, `tools/list` and `tools/call`
+  through the unchanged shim.
+- Live: a copy of this repo renamed `kgx`, on port 47890, loaded with `claude -p --plugin-dir
+  --model haiku` in sentinel-swarm. The hook started the server cold, Claude Code connected, answered
+  the roots request, and `kg_search` for "ledger" returned `ledger_core` first.
+
 ## Phase 3: start and end tools to the CLI
 
 1. `kg_cli.py query` already runs `kg_stats`, `kg_validate` and `kg_parity_gaps`. Add `kg_cli.py edit
@@ -329,4 +414,5 @@ does not use. An 80 MB target with 8 sessions needs a server that does not impor
 | 0 | Phase 0 checks, answers recorded here | Docs |
 | 1 | HTTP transport, security, health, start hook, `userConfig`, `.mcp.json` | 0.12.0 |
 | 2 | Worker pool | 0.12.0 |
+| 2b | Lean front: stdlib server, no venv, writes on the workers | 0.12.0 |
 | 3 | CLI `edit`, skills on the CLI, nine tools off the HTTP registration | 0.13.0 |

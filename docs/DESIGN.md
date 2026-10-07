@@ -97,15 +97,28 @@ found weeks later. Renaming `codebase-kg` would repeat that across three repos p
 
 ## One server, two transports
 
-A server per session cost about 116 MB and four processes for each open session. One
-`codebase-kg --serve` process per machine and build now serves every session, over two transports
-in the same process with the same tool registrations:
+A server per session cost about 116 MB and four processes for each open session. One server
+process per machine and build now serves every session, over two transports in the same process,
+from one tool catalog and one call path (`core.py`):
 
-- **Streamable HTTP for Claude Code**, at `http://127.0.0.1:<server_port>/mcp`. The server holds
-  about 90 MB however many sessions connect, plus about 24 MB per busy worker, against 317 MB for
-  eight shim sessions (`http-server-plan.md`).
-- **A loopback TCP socket for stdio clients**, through `kg-shim`, which Codex and sentinel-swarm's
-  role sessions launch. Unchanged.
+- **MCP 2026-07-28 over HTTP for Claude Code**, at `http://127.0.0.1:<server_port>/mcp`. The
+  server holds about 26 MB however many sessions connect, plus about 21 MB per busy worker, against
+  317 MB for eight shim sessions (`http-server-plan.md`).
+- **Classic MCP over a loopback TCP socket for stdio clients**, through `kg-shim`, which Codex and
+  sentinel-swarm's role sessions launch. Unchanged for them.
+
+### A server on the standard library
+
+The server imports only the standard library and runs on the base Python with `-I -S`. fastmcp,
+the `mcp` package and the HTTP stack beneath them made up about 55 of its 83 MB and 2 s of its
+start, for a protocol surface of a few methods. So the tool definitions stay fastmcp registrations
+in `server.py`, which nothing at runtime imports, and a generator writes them to `catalog.json`. The
+server sends that catalog and checks arguments against it with pydantic's lax rules. Two tests guard
+the split: the catalog must equal what the registrations produce, and each of 79 argument cases
+must pass, fail or coerce in the core as it does in fastmcp.
+
+With no third-party import there is no venv to build on the first start after an update, which
+used to outlast Claude Code's 7 s connect window. The server starts in about 0.2 s.
 
 The server has no cwd of its own that means anything, so each session tells it which repo it is in.
 A shim sends its cwd in a handshake. Claude Code speaks MCP 2026-07-28 over HTTP, which has no
@@ -128,16 +141,16 @@ got at connect and sends them to a server that restarted since. It is sent only 
 pid and port match a state file only this user can read, and a takeover authenticates with the old
 server's own state-file token, so a program squatting on the port never receives a credential.
 
-### Read tools on a worker pool
+### Tool calls on a worker pool
 
 One interpreter running every session's calls made 16 agents at once wait about 320 ms per call.
-So the shared server sends each read tool call to a worker process (`pool.py`, `worker.py`), for
-HTTP and shim sessions alike:
+So the shared server sends each tool call to a worker process (`pool.py`, `worker.py`), for HTTP and
+shim sessions alike:
 
-- **A worker imports no MCP code.** It is the base Python interpreter, run with `-I -S`, importing
-  only `query`, `tools` and the standard library: about 24 MB, against the server's 83 MB. It
-  dispatches through `query.TOOLS`, the table `kg_cli.py query` uses, so the CLI, a worker and the
-  in-process server return the same JSON.
+- **A worker is the base Python interpreter, run with `-I -S`.** A worker that only reads imports
+  `query`, `tools` and the standard library, about 21 MB; `edits` loads on its first write. Reads
+  dispatch through `query.TOOLS`, the table `kg_cli.py query` uses, so the CLI, a worker and the
+  in-process path return the same JSON.
 - **The server resolves the graph, never the worker.** The server binds each call to its session as
   before, resolves the graph path, and sends the absolute path with the call. The worker opens the
   graph for that call and closes it, as the server does.
@@ -147,11 +160,13 @@ HTTP and shim sessions alike:
   worker exits at stdin EOF, so it never outlives the server.
 - **Failure stays with one call.** A worker that exits during a call, or exceeds the call timeout,
   is killed and dropped; that call returns a tool error and the next call starts a fresh worker.
-- **Writes stay in the server**, and `max_workers` 0 runs every call there.
+- **One writer per graph.** Writes run on workers too, but the server holds a lock per graph path
+  around each one. `edits` replaces the file from a private copy, so two writes at once would lose
+  one. A refused write comes back as `{ok: false, written: false, error}` with `isError`, as before.
+- `max_workers` (default 8, no upper limit) caps the pool; 0 runs every call in the server.
 
-Measured (`http-server-plan.md`, Phase 2): with 16 agents the HTTP median fell from 323-329 ms to
-147-161 ms, and 8 workers did no better than 4. What remains is the server's HTTP front, about
-10-14 ms of CPU per call in one interpreter.
+Measured (`http-server-plan.md`): with 16 agents the HTTP median fell from 323-329 ms with one
+interpreter to 147-161 ms with the pool behind fastmcp, and to 81-115 ms with the stdlib front.
 
 ## The gate that measured the wrong thing
 

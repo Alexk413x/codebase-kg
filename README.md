@@ -104,14 +104,15 @@ the committed graph **byte-identical** — not rolled back, never opened for wri
 
 ## The server
 
-One `codebase-kg --serve` process per machine and build serves every session. Claude Code reaches it
-over Streamable HTTP at `http://127.0.0.1:47821/mcp`; other MCP clients (Codex, any stdio client)
-launch `mcp/launch/kg-shim`, which relays stdio to the same process over a loopback socket.
+One server process per machine and build serves every session. Claude Code reaches it over HTTP at
+`http://127.0.0.1:47821/mcp`; other MCP clients (Codex, any stdio client) launch
+`mcp/launch/kg-shim`, which relays stdio to the same process over a loopback socket. The server
+imports only the Python standard library: it runs on your Python 3.10 or later with no venv, starts
+in about 0.2 s and holds about 25 MB while idle.
 
 - **Starting it.** A `SessionStart` hook starts the server when nothing answers `GET /health` on the
   port, and waits up to 3 s. Claude Code retries the connection for about 7 s after a session starts,
-  then gives up for that session. The first start after an update builds the server's venv and can
-  take longer; the next session then connects.
+  then gives up for that session.
 - **Which repo.** The server asks Claude Code for the session's roots on the first tool call and
   resolves the graph from the first root, as a shim resolves it from its cwd. `CODEBASE_KG_PATH`
   still names a graph explicitly.
@@ -124,16 +125,32 @@ launch `mcp/launch/kg-shim`, which relays stdio to the same process over a loopb
   proves, through its state file, to be yours.
 - **Lifetime.** A server that holds the HTTP port exits after 8 hours with no request; a shim-only
   server exits after 10 minutes with no connection.
-- **Workers.** The server runs each read tool on a worker process: a plain Python interpreter of
-  about 24 MB that imports no MCP code. A call that finds no idle worker starts one, up to the
-  `max_workers` setting (default 4); later calls wait for a free one. A worker exits after 60 s with
-  no call, so an idle server holds only its own process. A worker that crashes, or takes longer than
-  60 s (`CODEBASE_KG_CALL_TIMEOUT`), fails that call alone, and the next call starts a fresh one.
-  The writes run in the server process. `max_workers` 0 runs every call there, as before 0.12.0.
-- **Changing `max_workers`.** The server reads the setting when it starts and keeps it while it
-  runs, so a change applies to the next server. To apply it at once, end the server process (its pid
-  is in `GET /health`, with the `max_workers` it runs); the next session starts a new one.
-  `CODEBASE_KG_MAX_WORKERS` overrides the setting.
+- **Workers.** The server runs each tool call on a worker process: a plain Python interpreter of
+  about 21-24 MB. A call that finds no idle worker starts one, up to the `max_workers` setting
+  (default 8); later calls wait for a free one. A worker exits after 60 s with no call, so an idle
+  server holds only its own process. A worker that crashes, or takes longer than 60 s
+  (`CODEBASE_KG_CALL_TIMEOUT`), fails that call alone, and the next call starts a fresh one. Writes
+  to one graph run one at a time. `max_workers` 0 runs every call in the server process.
+
+### Changing `max_workers`
+
+`max_workers` has no upper limit. Raise it when many agents query at once on a machine with spare
+cores and memory; lower it, or set 0, on a machine short of memory.
+
+1. Set the value with `/plugin configure codebase-kg`, the plugin's row in `/config`, or
+   `claude plugin configure`.
+2. Stop the running server. It reads the setting only when it starts:
+
+   ```sh
+   uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" server stop
+   ```
+
+   `kg_cli.py server status` shows the server's pid and the `max_workers` it runs.
+3. Restart Claude Code. The `SessionStart` hook starts a new server with the new value. Sessions that
+   stay open reach the new server without reconnecting.
+
+`CODEBASE_KG_MAX_WORKERS` overrides the setting. A server that a stdio shim starts, rather than the
+hook, does not see the plugin setting and uses `CODEBASE_KG_MAX_WORKERS`, else 8.
 
 ## Migrating from `KNOWLEDGE_GRAPH.md`
 

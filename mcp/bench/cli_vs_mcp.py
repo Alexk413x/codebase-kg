@@ -6,7 +6,7 @@ Run from mcp/ with the dev venv (it needs fastmcp for the MCP client):
 
 The `mcp` mode is one stdio shim per session; the `http` mode is one shared
 server reached over Streamable HTTP, started the way the SessionStart hook
-starts it but with its own cache dir and an OS-picked port. Its read tools run
+starts it but with its own cache dir and an OS-picked port. Its tool calls run
 on the worker pool (`--max-workers`, default the server's own default; 0 runs
 them in the server process). HTTP memory is read before the first call, after
 the calls, and again `--idle-wait` seconds after the last session closes, when
