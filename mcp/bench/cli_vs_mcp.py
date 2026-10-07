@@ -6,9 +6,14 @@ Run from mcp/ with the dev venv (it needs fastmcp for the MCP client):
 
 The `mcp` mode is one stdio shim per session; the `http` mode is one shared
 server reached over Streamable HTTP, started the way the SessionStart hook
-starts it but with its own cache dir and an OS-picked port.
+starts it but with its own cache dir and an OS-picked port. Its read tools run
+on the worker pool (`--max-workers`, default the server's own default; 0 runs
+them in the server process). HTTP memory is read before the first call, after
+the calls, and again `--idle-wait` seconds after the last session closes, when
+the pool has shrunk.
 
-Memory figures are Windows working sets, read through the Win32 API.
+Memory figures are Windows working sets, read through the Win32 API. `cpu_pct`
+is the whole machine's CPU load over a run, other programs included.
 """
 
 from __future__ import annotations
@@ -68,6 +73,38 @@ def _counters(handle: int) -> _Counters:
     c.cb = ctypes.sizeof(c)
     ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(c), c.cb)
     return c
+
+
+class _FileTime(ctypes.Structure):
+    _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+
+def _system_times() -> tuple[int, int]:
+    """Idle and total CPU ticks since boot, summed over every CPU."""
+    idle, kernel, user = _FileTime(), _FileTime(), _FileTime()
+    ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user))
+    ticks = [(t.high << 32) | t.low for t in (idle, kernel, user)]
+    return ticks[0], ticks[1] + ticks[2]
+
+
+class CpuMeter:
+    """Whole-machine CPU load between `__enter__` and `__exit__`, in percent."""
+
+    pct: float = 0.0
+
+    def __enter__(self) -> CpuMeter:
+        self._start = _system_times()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        idle, total = (b - a for a, b in zip(self._start, _system_times()))
+        self.pct = round(100.0 * (1 - idle / total), 1) if total else 0.0
+
+
+def cpu_load(seconds: float = 3.0) -> float:
+    with CpuMeter() as meter:
+        time.sleep(seconds)
+    return meter.pct
 
 
 def _stats(ms: list[float]) -> dict[str, float]:
@@ -178,11 +215,14 @@ async def bench_mcp(graph: str, reps: int, sessions: int) -> dict:
 
 
 @contextlib.contextmanager
-def http_server() -> Iterator[dict[str, Any]]:
+def http_server(max_workers: int | None = None) -> Iterator[dict[str, Any]]:
     """A shared HTTP server for this run only: its own cache dir and an OS-picked port."""
-    saved = {k: os.environ.get(k) for k in ("CODEBASE_KG_CACHE_DIR", "CODEBASE_KG_PORT")}
+    names = ("CODEBASE_KG_CACHE_DIR", "CODEBASE_KG_PORT", "CODEBASE_KG_MAX_WORKERS")
+    saved = {k: os.environ.get(k) for k in names}
     os.environ["CODEBASE_KG_CACHE_DIR"] = tempfile.mkdtemp(prefix="kg-bench-")
     os.environ["CODEBASE_KG_PORT"] = "0"
+    if max_workers is not None:
+        os.environ["CODEBASE_KG_MAX_WORKERS"] = str(max_workers)
     build = shim.server_build()
     shim.cache_dir().mkdir(parents=True, exist_ok=True)
     before = frozenset(_process_mb("codebase_kg")["pids"])
@@ -227,12 +267,13 @@ def http_client(server: dict[str, Any], graph: str, client_id: str) -> Client:
     return Client(transport, roots=[Path(graph).parents[1].as_uri()])
 
 
-async def bench_http(graph: str, reps: int, sessions: int, server: dict[str, Any]) -> dict:
+async def bench_http(graph: str, reps: int, sessions: int, server: dict[str, Any], idle_wait: float) -> dict:
     result: dict = {}
     before = server["before"]
     t = time.perf_counter()
     async with http_client(server, graph, "one") as c:
         result["connect_ms"] = round((time.perf_counter() - t) * 1000, 1)
+        result["memory_before_calls"] = _process_mb("codebase_kg", before)
         t = time.perf_counter()
         await c.call_tool(CALLS[0][2], CALLS[0][3])
         result["first_call_ms"] = round((time.perf_counter() - t) * 1000, 1)
@@ -257,6 +298,9 @@ async def bench_http(graph: str, reps: int, sessions: int, server: dict[str, Any
     finally:
         for c in clients:
             await c.__aexit__(None, None, None)
+    if idle_wait > 0:
+        await asyncio.sleep(idle_wait)
+        result[f"memory_after_{idle_wait:g}s_idle"] = _process_mb("codebase_kg", before)
     return result
 
 
@@ -277,23 +321,35 @@ def main() -> int:
     ap.add_argument("--reps", type=int, default=15)
     ap.add_argument("--sessions", type=int, default=8)
     ap.add_argument("--python", default="python", help="interpreter for the CLI (default: python on PATH)")
+    ap.add_argument("--max-workers", type=int, help="the HTTP server's pool size (default: its own default)")
+    ap.add_argument("--idle-wait", type=float, default=70.0, help="seconds idle before the last HTTP memory reading")
+    ap.add_argument("--modes", default="cli,mcp,http")
     ap.add_argument("--out")
     args = ap.parse_args()
     graph = str(Path(args.graph).resolve())
+    modes = args.modes.split(",")
 
-    report = {
+    report: dict[str, Any] = {
         "date": time.strftime("%Y-%m-%d %H:%M"),
         "machine": f"{platform.system()} {platform.release()} {platform.machine()}",
+        "cpus": os.cpu_count(),
+        "cpu_pct_before": cpu_load(),
         "graph": graph,
         "graph_mb": round(Path(graph).stat().st_size / 2**20, 2),
         "parity": asyncio.run(parity(graph)),
-        "cli_python": bench_cli(args.python, graph, args.reps),
-        "cli_uv": bench_cli("uv", graph, max(5, args.reps // 3)),
-        "cli_concurrent": bench_cli_concurrent(args.python, graph, args.sessions),
-        "mcp": asyncio.run(bench_mcp(graph, args.reps, args.sessions)),
     }
-    with http_server() as server:
-        report["http"] = asyncio.run(bench_http(graph, args.reps, args.sessions, server))
+    if "cli" in modes:
+        report["cli_python"] = bench_cli(args.python, graph, args.reps)
+        report["cli_uv"] = bench_cli("uv", graph, max(5, args.reps // 3))
+        report["cli_concurrent"] = bench_cli_concurrent(args.python, graph, args.sessions)
+    if "mcp" in modes:
+        with CpuMeter() as meter:
+            report["mcp"] = asyncio.run(bench_mcp(graph, args.reps, args.sessions))
+        report["mcp"]["cpu_pct"] = meter.pct
+    if "http" in modes:
+        with http_server(args.max_workers) as server, CpuMeter() as meter:
+            report["http"] = asyncio.run(bench_http(graph, args.reps, args.sessions, server, args.idle_wait))
+        report["http"]["cpu_pct"] = meter.pct
     text = json.dumps(report, indent=2)
     print(text)
     if args.out:

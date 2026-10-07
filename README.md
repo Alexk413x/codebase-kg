@@ -124,7 +124,16 @@ launch `mcp/launch/kg-shim`, which relays stdio to the same process over a loopb
   proves, through its state file, to be yours.
 - **Lifetime.** A server that holds the HTTP port exits after 8 hours with no request; a shim-only
   server exits after 10 minutes with no connection.
-- **`max_workers`** is declared for the planned worker pool and does nothing yet.
+- **Workers.** The server runs each read tool on a worker process: a plain Python interpreter of
+  about 24 MB that imports no MCP code. A call that finds no idle worker starts one, up to the
+  `max_workers` setting (default 4); later calls wait for a free one. A worker exits after 60 s with
+  no call, so an idle server holds only its own process. A worker that crashes, or takes longer than
+  60 s (`CODEBASE_KG_CALL_TIMEOUT`), fails that call alone, and the next call starts a fresh one.
+  The writes run in the server process. `max_workers` 0 runs every call there, as before 0.12.0.
+- **Changing `max_workers`.** The server reads the setting when it starts and keeps it while it
+  runs, so a change applies to the next server. To apply it at once, end the server process (its pid
+  is in `GET /health`, with the `max_workers` it runs); the next session starts a new one.
+  `CODEBASE_KG_MAX_WORKERS` overrides the setting.
 
 ## Migrating from `KNOWLEDGE_GRAPH.md`
 

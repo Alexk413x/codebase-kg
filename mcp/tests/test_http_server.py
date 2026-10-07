@@ -203,6 +203,29 @@ def test_lookups_return_the_same_json_over_http_and_the_shim(http_daemon: dict[s
         assert h.structured_content == s["structuredContent"], name
 
 
+def test_a_server_without_workers_returns_what_the_pool_returns(
+    http_daemon: dict[str, Any], tmp_path: Path,
+) -> None:
+    alpha = _repo(tmp_path / "alpha", "alpha")
+    calls = [("kg_search", {"query": "widget"}), ("kg_node", {"id": "alpha_widget"}), ALL,
+             ("kg_stats", {}), ("kg_validate", {}), ("kg_parity_gaps", {})]
+    cache = tmp_path / "cache"
+    proc = _start(cache, tmp_path, CODEBASE_KG_MAX_WORKERS="0")
+    try:
+        state = _state(cache)
+        assert _request(state["http_port"], "GET", "/health")[1]["max_workers"] == 0
+        token = (cache / "http-token").read_text(encoding="utf-8").strip()
+        in_process = asyncio.run(_session({"http_port": state["http_port"], "http_token": token},
+                                          [alpha], {"X-Codebase-KG-Client": "w0"}, calls))
+    finally:
+        _stop(proc)
+    assert _request(http_daemon["http_port"], "GET", "/health")[1]["max_workers"] == 4
+    pooled = asyncio.run(_session(http_daemon, [alpha], {"X-Codebase-KG-Client": "w4"}, calls))
+    for (name, _), here, there in zip(calls, in_process, pooled):
+        assert not here.is_error and not there.is_error, name
+        assert here.structured_content == there.structured_content, name
+
+
 def _ctx(protocol: str = http_transport.MODERN_PROTOCOL, params: dict[str, Any] | None = None) -> Any:
     return SimpleNamespace(protocol_version=protocol, params=params or {})
 

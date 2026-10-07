@@ -919,3 +919,29 @@ def test_a_shim_that_spawned_the_server_waits_past_the_connect_budget(
         lambda build, hello: ready if time.monotonic() - started > 0.6 else None,
     )
     assert shim.shared_connection("0.0.0+000000000000", {}, budget=0.3) is ready
+
+
+def test_a_server_whose_state_file_is_gone_or_replaced_is_orphaned(tmp_path: Path) -> None:
+    from codebase_kg.daemon import Daemon
+
+    d = Daemon("0.0.0+000000000000", "mine", 600.0)
+    assert not d.orphaned()
+    d.state = tmp_path / "server.json"
+    assert d.orphaned()
+    d.state.write_text(json.dumps({"token": "other"}), encoding="utf-8")
+    assert d.orphaned()
+    d.state.write_text(json.dumps({"token": "mine"}), encoding="utf-8")
+    assert not d.orphaned()
+
+
+def test_an_orphaned_server_stops_watching(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import anyio
+
+    from codebase_kg import daemon
+
+    monkeypatch.setattr(daemon, "ORPHAN_CHECK_INTERVAL", 0.0)
+    d = daemon.Daemon("0.0.0+000000000000", "mine", 600.0)
+    d.state = tmp_path / "server.json"
+    started = time.monotonic()
+    anyio.run(d.watch_idle)
+    assert time.monotonic() - started < 5.0

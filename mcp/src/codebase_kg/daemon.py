@@ -27,6 +27,11 @@ request and no shim connection. One without it exits after
 `CODEBASE_KG_IDLE_TIMEOUT` seconds (default 600) with no shim connection.
 `POST /shutdown` with the server's own state-file token stops it at once.
 Either way it removes its state file.
+
+Read tool calls from every session, HTTP and shim alike, run on the elastic
+worker pool in `pool.py`, sized by `pool.max_workers()` as read at start. A
+running server keeps its size until it exits, so a changed `max_workers`
+setting takes effect at the next server start. With 0 the calls run here.
 """
 
 from __future__ import annotations
@@ -51,6 +56,7 @@ from mcp.shared.message import SessionMessage
 from mcp.types import jsonrpc_message_adapter
 
 from . import http_transport, server, shim
+from .pool import Pool, call_timeout, max_workers
 
 logger = logging.getLogger("codebase_kg.daemon")
 
@@ -58,6 +64,7 @@ DEFAULT_IDLE_TIMEOUT = 600.0
 DEFAULT_HTTP_IDLE_TIMEOUT = 8 * 3600.0
 HANDSHAKE_TIMEOUT = 5.0
 HTTP_STOP_TIMEOUT = 5.0
+ORPHAN_CHECK_INTERVAL = 5.0
 MAX_HANDSHAKE = 64 * 1024
 MAX_MESSAGE = 64 * 1024 * 1024
 
@@ -104,6 +111,7 @@ class Daemon:
         self.active = 0
         self.last_seen = time.monotonic()
         self.stopping = False
+        self.state: Path | None = None
 
     def touch(self) -> None:
         self.last_seen = time.monotonic()
@@ -162,12 +170,33 @@ class Daemon:
             self.active -= 1
             self.last_seen = time.monotonic()
 
+    def orphaned(self) -> bool:
+        """True once this server's state file is gone or names another server.
+
+        Nothing can verify an orphan, so it would hold the HTTP port with every
+        session refused until its idle limit.
+        """
+        if self.state is None:
+            return False
+        try:
+            return json.loads(self.state.read_text(encoding="utf-8")).get("token") != self.token
+        except FileNotFoundError:
+            return True
+        except (OSError, ValueError, AttributeError):
+            return False
+
     async def watch_idle(self) -> None:
         limit = self.http_timeout if self.http_port is not None else self.timeout
+        checked = time.monotonic()
         while not self.stopping:
             await anyio.sleep(min(0.25, limit / 4))
             if self.active == 0 and time.monotonic() - self.last_seen >= limit:
                 return
+            if time.monotonic() - checked >= ORPHAN_CHECK_INTERVAL:
+                checked = time.monotonic()
+                if self.orphaned():
+                    logger.warning("state file %s is gone or not ours; exiting", self.state)
+                    return
 
 
 def _line(obj: dict[str, Any]) -> bytes:
@@ -238,6 +267,7 @@ async def _serve(daemon: Daemon, http_sock: socket.socket | None, info: dict[str
     port = listener.extra(SocketAttribute.local_port)
     state = shim.state_path(daemon.version)
     state.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    daemon.state = state
     _write_private(state, json.dumps({
         "version": daemon.version, "port": port, "pid": os.getpid(), "token": daemon.token,
         "http_port": daemon.http_port,
@@ -293,4 +323,14 @@ def serve() -> None:
         http_port=http_sock.getsockname()[1] if http_sock is not None else None,
         http_timeout=idle_timeout("CODEBASE_KG_HTTP_IDLE_TIMEOUT", DEFAULT_HTTP_IDLE_TIMEOUT),
     )
-    anyio.run(_serve, daemon, http_sock, info)
+    limit = max_workers()
+    pool = Pool(limit, timeout=call_timeout()) if limit > 0 else None
+    server.use_pool(pool)
+    logger.info("read tools run on up to %d worker processes", limit)
+    info = {**info, "max_workers": limit}
+    try:
+        anyio.run(_serve, daemon, http_sock, info)
+    finally:
+        server.use_pool(None)
+        if pool is not None:
+            pool.close()

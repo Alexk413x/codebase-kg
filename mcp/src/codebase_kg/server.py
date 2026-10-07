@@ -25,6 +25,11 @@ each HTTP client's headers and roots carry the same (see `http_transport.py`).
 that session resolves from, in the same order. The resolved path is cached per
 session, never process-wide.
 
+Under `--serve` the read tools also leave the server's interpreter: each one
+resolves its graph here, from the session's binding, and sends the path to a
+worker process from `pool.Pool`. The writes still run here. Both paths, and
+`kg_cli.py query`, dispatch reads through `query.TOOLS`.
+
 **The graph is opened per tool call and closed again.** That is affordable
 precisely because opening a store is constant-time (~1 ms) rather than a parse
 whose cost grows with the graph — there is nothing to amortize. It also matters
@@ -52,7 +57,9 @@ from typing_extensions import Required, TypedDict
 
 from . import cli as _cli
 from . import edits as _edits
+from . import query as _query
 from . import tools as _tools
+from .pool import Pool
 from .store import CodeGraph, StoreError
 
 GRAPH_FILENAME = "code_graph.db"
@@ -110,11 +117,17 @@ class Connection:
 
 _connection: ContextVar[Connection | None] = ContextVar("codebase_kg_connection", default=None)
 _serving = False
+_pool: Pool | None = None
 
 
 def enter_serve_mode() -> None:
     global _serving
     _serving = True
+
+
+def use_pool(pool: Pool | None) -> None:
+    global _pool
+    _pool = pool
 
 
 def bind_connection(conn: Connection) -> Token[Connection | None]:
@@ -247,6 +260,18 @@ def _open_graph() -> Iterator[CodeGraph]:
         g.close()
 
 
+def _read(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Run one read tool from `query.TOOLS`: on a pool worker under `--serve`, else here."""
+    path = _graph_file()
+    if _pool is not None:
+        return _pool.call(tool, args, str(path))
+    g = CodeGraph(path)
+    try:
+        return _query.TOOLS[tool](g, args)
+    finally:
+        g.close()
+
+
 def _write(fn: Any, *args: Any, **kwargs: Any) -> dict[str, Any] | ToolResult:
     """Run one write tool, turning a refusal into an answer rather than a crash.
 
@@ -279,8 +304,7 @@ def kg_search(
     10 results, each with its `path#Symbol` anchors so you can go straight to the
     code. CamelCase identifiers are matched in split form, so "video playback"
     finds `VideoPlaybackService`."""
-    with _open_graph() as g:
-        return _tools.kg_search(g, query, kind)
+    return _read("kg_search", {"query": query, "kind": kind})
 
 
 @mcp.tool(annotations=_QUERY)
@@ -297,8 +321,7 @@ def kg_node(
     Not for finding a node by concept; use `kg_search`. It does not return the
     neighbours' details or any source text; use `kg_neighborhood` for the nodes
     around it."""
-    with _open_graph() as g:
-        return _tools.kg_node(g, id)
+    return _read("kg_node", {"id": id})
 
 
 @mcp.tool(annotations=_QUERY)
@@ -315,8 +338,7 @@ def kg_neighborhood(
     (who depends on it), and counterpart — expanded `depth` hops. Use to
     understand what surrounds a node before changing it. Neighbors come nearest
     first and are paged by `limit`; a truncated result says how to narrow."""
-    with _open_graph() as g:
-        return _tools.kg_neighborhood(g, id, depth, limit, offset)
+    return _read("kg_neighborhood", {"id": id, "depth": depth, "limit": limit, "offset": offset})
 
 
 @mcp.tool(annotations=_QUERY)
@@ -335,8 +357,7 @@ def kg_find_by_kind(
     Not for a concept or a name; use `kg_search`, because `kind` is free text
     and one category can be spelled several ways. Returns id, kind, description
     and anchors per node, not edges; call `kg_node` for those."""
-    with _open_graph() as g:
-        return _tools.kg_find_by_kind(g, kind, limit, offset)
+    return _read("kg_find_by_kind", {"kind": kind, "limit": limit, "offset": offset})
 
 
 @mcp.tool(annotations=_QUERY)
@@ -351,8 +372,7 @@ def kg_find_by_path(
     """Reverse lookup: given a source file, which node(s) own it, and what do
     they connect to. Use when you have a file open and want its place in the map.
     Accepts a repo-relative path or a bare filename (matched as a suffix)."""
-    with _open_graph() as g:
-        return _tools.kg_find_by_path(g, path, limit, offset)
+    return _read("kg_find_by_path", {"path": path, "limit": limit, "offset": offset})
 
 
 @mcp.tool(annotations=_QUERY)
@@ -368,8 +388,7 @@ def kg_find_by_link(
     Use when you have a screen and want the code behind it. Accepts a full
     `<db-file>#<node-id>` target or a bare peer node id. See cartographer's
     docs/GRAPH-LINKS.md for the convention."""
-    with _open_graph() as g:
-        return _tools.kg_find_by_link(g, target)
+    return _read("kg_find_by_link", {"target": target})
 
 
 @mcp.tool(annotations=_QUERY)
@@ -389,8 +408,7 @@ def kg_find_by_reference(
     or spec moves and you need every place the code relies on it.
 
     Each hit carries the `path` / `symbol` it narrows to, when it has one."""
-    with _open_graph() as g:
-        return _tools.kg_find_by_reference(g, query, kind, limit, offset)
+    return _read("kg_find_by_reference", {"query": query, "kind": kind, "limit": limit, "offset": offset})
 
 
 @mcp.tool(annotations=_QUERY)
@@ -405,8 +423,7 @@ def kg_parity_gaps(
     """The cross-codebase gap report, as a query. Lists nodes flagged
     `divergent` or `<codebase>-only`, with their counterpart + divergence line.
     `by_status` counts every gap, including any past `limit`."""
-    with _open_graph() as g:
-        return _tools.kg_parity_gaps(g, status, limit, offset)
+    return _read("kg_parity_gaps", {"status": status, "limit": limit, "offset": offset})
 
 
 @mcp.tool(annotations=_QUERY)
@@ -418,8 +435,7 @@ def kg_stats() -> dict[str, Any]:
     that describe them. Read `staleness.stale_files` before trusting a
     description: non-zero means part of this map is out of date, and
     `/codebase-kg:audit` says which part."""
-    with _open_graph() as g:
-        return _tools.kg_stats(g)
+    return _read("kg_stats", {})
 
 
 @mcp.tool(annotations=_QUERY)
@@ -439,8 +455,7 @@ def kg_validate(
     integrity — unique ids, no dangling edges, consistent parity — is guaranteed
     by the store and reported rather than checked. Each issue list is capped at
     `limit`, and `changed_since_built` and `coverage.gaps` at 50."""
-    with _open_graph() as g, _tools.open_peer(g) as peer:
-        return _tools.cap_issues(_tools.kg_validate(g, peer), limit)
+    return _read("kg_validate", {"limit": limit})
 
 
 class LinkSpec(TypedDict, total=False):

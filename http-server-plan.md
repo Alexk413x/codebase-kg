@@ -1,6 +1,6 @@
 # Shared HTTP server: plan
 
-Status: Phase 0 and Phase 1 done on `feat/push-refresh`, 2026-10-07; Phases 2 and 3 not started.
+Status: Phases 0, 1 and 2 done on `feat/push-refresh`, 2026-10-07; Phase 3 not started.
 Written 2026-10-07. Companion to `cli-plan.md`, whose benchmarks this plan builds on.
 
 ## Goal
@@ -219,6 +219,81 @@ both runs.
    little memory, and the path for tests.
 5. Writes go through the CLI (Phase 3), so workers only read, and SQLite serves concurrent readers.
 
+## Phase 2 results
+
+Built as steps 1-5 describe, in `mcp/src/codebase_kg/pool.py` and `worker.py`, with these changes:
+
+| Change | Why |
+|---|---|
+| The server still runs the six write tools, and resolves each read call's graph before it sends the call. | Writes move to the CLI in Phase 3. The graph comes from the session's binding (roots, headers or shim handshake), which only the server holds; the worker gets the absolute path and never looks for a graph. |
+| Shim sessions use the pool too. A private stdio server (the shim's fallback, or `CODEBASE_KG_SHARED=0`) has none. | Shim and HTTP sessions share one server process and one set of tool registrations. A private server serves one session, so it has nothing to spread. |
+| A worker is the base interpreter (`sys._base_executable`) with `-I -S`, not the venv's `python`. | On Windows a venv's `python.exe` is a launcher that starts the base interpreter as a second process. The worker imports nothing from the venv. |
+| The server, not the worker, ends an idle worker: after 60 s idle it closes the worker's stdin, and the worker exits at EOF. | A worker that timed itself out could exit just as the server sent it a call. Exiting at EOF also ends every worker when the server dies. |
+| Each call has a timeout, `CODEBASE_KG_CALL_TIMEOUT`, default 60 s. A worker that misses it is killed; the call returns a tool error. A queued call has no separate timeout. | `kg_validate` walks the source tree and takes seconds on a large repo. A queued call waits at most until the calls ahead of it finish or time out. |
+| `max_workers` comes from `CODEBASE_KG_MAX_WORKERS`, else `CLAUDE_PLUGIN_OPTION_MAX_WORKERS`, read once at server start. `GET /health` reports it. | The `SessionStart` hook has the plugin option in its environment, and `shim.spawn_server` passes the environment on, so the hook needs no change. A running server keeps its value; a changed setting applies when the next server starts (after the 8-hour idle exit, a newer build's takeover, or ending the process). A server a shim starts sees no plugin option and uses 4. |
+| A worker holds about 24 MB, not 21. | Measured: working set after `kg_stats`, `kg_search`, `kg_neighborhood` and `kg_validate`, median of 8. |
+
+Tests: `mcp/tests/test_pool.py` (grow, queue at the cap, shrink after idle, a crashed worker, a hung
+worker, a tool error, a worker that cannot start, `close`, the setting, every read tool equal to the
+in-process result through `mcp.call_tool`, error text equal, `max_workers` 0, a worker imports no
+fastmcp, mcp, pydantic, starlette or anyio). `test_http_server.py` compares a `max_workers` 0 server
+with a pooled one over HTTP.
+
+### Benchmarks
+
+`concurrency.py` gained an `http0` mode (`max_workers` 0) beside `http` (the pool, default 4) and a
+`--max-workers` option; both scripts report the whole machine's CPU load. `cli_vs_mcp.py` reads HTTP
+memory before the first call, after the calls, and again after `--idle-wait` (70 s). Cartographer's
+graph, Windows 11, 16 CPUs. The machine was shared: CPU load before the runs was 66 % and 28 %
+(`concurrency.py`), 27 % and 41 % (`cli_vs_mcp.py`), and 29-53 % during them. Ranges cover two runs.
+
+| Measure | Phase 1 HTTP | `http0` (no pool) | `http` (pool of 4) | Target |
+|---|---|---|---|---|
+| Call median, 1 agent | 14.4-17.2 ms | 17.1-18.5 ms | 16.7-17.4 ms | no slower than 22-25 ms: **met** |
+| Call median, 4 agents | 48-51 ms | 60-64 ms | 34-44 ms | |
+| Call median, 8 agents | 136-148 ms | 145-152 ms | 83-88 ms | |
+| Call median, 16 agents | 306-325 ms | 323-329 ms | 147-161 ms | below 150 ms: **met once, missed once** |
+| Slowest call, 16 agents | 1,656-1,712 ms | 1,645-1,672 ms | 520-581 ms | |
+| Call median, 16 agents, shim | 222-228 ms | | 81-83 ms | |
+| Warm call, one session | 7.8-9.1 ms | | 10.0-12.3 ms | |
+| Memory, server alone before any call | | | 82.8 MB, 2 processes | |
+| Memory, 1 session, after its calls | 90 MB | | 107.7-107.9 MB, 3 processes | |
+| Memory, 8 sessions, after their calls | 94 MB | | 163.3-163.9 MB, 6 processes | below 80 MB: **missed** |
+| Memory, 70 s after the last call | | | 91.3-91.8 MB, 2 processes | back to the server's own: **met** |
+
+- **The pool halves the latency under load and removes the long tail.** No call failed in any mode.
+- **The HTTP front is the limit now.** With `--max-workers 8` the 16-agent median was 160 ms, no
+  better than 4 workers. Over 16 agents' 144 calls, the server process used about 1.5-2.0 s of CPU
+  (10-14 ms per call) with the pool, against 9.6 s without it; the benchmark's client used 0.9 s.
+  The shim path, with the same pool and cheaper framing, reaches 81-83 ms.
+- **A single call costs 2-3 ms more** (a pipe round trip and one JSON parse), still inside the target.
+  The first call after the pool shrank pays a worker start: 200-270 ms, median 222 ms.
+- **Memory under load is higher than Phase 1** by about 24 MB per busy worker, and falls back once
+  the workers idle out. The server keeps about 8 MB it grew while serving (82.8 MB before the first
+  call, 91-92 MB after).
+
+### What the server's 83 MB is
+
+Working set as each import is added in order, in one process, venv Python 3.12, two runs within
+0.3 MB:
+
+| Import | MB |
+|---|---|
+| Python start-up | 15.3 |
+| `codebase_kg.query` (sqlite3, argparse, the tools) | 6.1 |
+| `pydantic` | 2.1 |
+| `anyio` | 4.1 |
+| `starlette` | 3.4 |
+| `uvicorn` | 4.0 |
+| `mcp` (its `__init__` imports `mcp.client` and both `mcp.types` and `mcp_types`: the protocol's pydantic models) | 27.9 |
+| `fastmcp` | 4.3 |
+| `codebase_kg.server` (16 tool registrations, their pydantic schemas) | 9.4 |
+| Total, 863 modules | 77.2 |
+
+The `mcp` package is the largest single cost, and most of it is protocol models a server of this size
+does not use. An 80 MB target with 8 sessions needs a server that does not import `mcp` and
+`fastmcp`, which is a rewrite of the HTTP front, outside Phase 2.
+
 ## Phase 3: start and end tools to the CLI
 
 1. `kg_cli.py query` already runs `kg_stats`, `kg_validate` and `kg_parity_gaps`. Add `kg_cli.py edit
@@ -253,5 +328,5 @@ both runs.
 |---|---|---|
 | 0 | Phase 0 checks, answers recorded here | Docs |
 | 1 | HTTP transport, security, health, start hook, `userConfig`, `.mcp.json` | 0.12.0 |
-| 2 | Worker pool | 0.12.0 or 0.13.0, after its benchmark |
+| 2 | Worker pool | 0.12.0 |
 | 3 | CLI `edit`, skills on the CLI, nine tools off the HTTP registration | 0.13.0 |

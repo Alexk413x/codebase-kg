@@ -1,8 +1,10 @@
 """N agents at once, each running the nine lookup calls of loop10.py in order: CLI against MCP.
 
 Each MCP agent is its own session through the shim to the shared server. Each HTTP agent is its
-own client over Streamable HTTP to one shared server, as Claude Code connects. Each CLI agent runs
-one process per call. Reports wall time and per-call latency for each N.
+own client over Streamable HTTP to one shared server, as Claude Code connects: `http` runs the read
+tools on the server's worker pool (`--max-workers`, default the server's default), `http0` runs them
+in the server process. Each CLI agent runs one process per call. Reports wall time, per-call latency
+and the whole machine's CPU load for each N.
 
     uv run --project <codebase-kg>/mcp python <codebase-kg>/mcp/bench/concurrency.py --graph knowledge/code_graph.db
 """
@@ -17,6 +19,7 @@ import statistics
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -24,7 +27,7 @@ from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cli_vs_mcp import http_client, http_server  # noqa: E402
+from cli_vs_mcp import CpuMeter, cpu_load, http_client, http_server  # noqa: E402
 from loop10 import CALLS, RUNNER, SHIM  # noqa: E402
 
 LOOKUPS = [c for c in CALLS if c[0] != "kg_validate"]
@@ -97,22 +100,31 @@ def main() -> int:
     ap.add_argument("--agents", default="1,4,8,16")
     ap.add_argument("--python", default="python")
     ap.add_argument("--modes", default="cli,mcp,http")
+    ap.add_argument("--max-workers", type=int, help="the pool size for the http mode (default: the server's)")
     ap.add_argument("--out")
     a = ap.parse_args()
     graph = str(Path(a.graph).resolve())
     modes = a.modes.split(",")
     report: dict = {"graph": graph, "calls_per_agent": len(LOOKUPS), "cpus": os.cpu_count(),
-                    **{m: {} for m in modes}}
+                    "cpu_pct_before": cpu_load(), **{m: {} for m in modes}}
     agents = [int(x) for x in a.agents.split(",")]
+
+    def timed(mode: str, n: int, run: Callable[[], dict]) -> None:
+        with CpuMeter() as meter:
+            report[mode][n] = run()
+        report[mode][n]["cpu_pct"] = meter.pct
+
     for n in agents:
         if "cli" in modes:
-            report["cli"][n] = cli_agents(n, graph, a.python)
+            timed("cli", n, lambda: cli_agents(n, graph, a.python))
         if "mcp" in modes:
-            report["mcp"][n] = asyncio.run(mcp_agents(n, graph))
-    if "http" in modes:
-        with http_server() as server:
+            timed("mcp", n, lambda: asyncio.run(mcp_agents(n, graph)))
+    for mode, workers in (("http", a.max_workers), ("http0", 0)):
+        if mode not in modes:
+            continue
+        with http_server(workers) as server:
             for n in agents:
-                report["http"][n] = asyncio.run(mcp_agents(n, graph, server))
+                timed(mode, n, lambda: asyncio.run(mcp_agents(n, graph, server)))
     text = json.dumps(report, indent=2)
     print(text)
     if a.out:

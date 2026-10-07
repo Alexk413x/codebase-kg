@@ -283,4 +283,4 @@ def claim_port(port: int, mine: dict[str, Any]) -> socket.socket | None:
 
 def health_reply(info: dict[str, Any], pid: int) -> dict[str, Any]:
     return {"service": shim.OURS, "build": info["build"], "version": info["version"],
-            "built": info["built"], "pid": pid}
+            "built": info["built"], "pid": pid, "max_workers": info.get("max_workers")}

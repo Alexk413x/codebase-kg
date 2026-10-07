@@ -18,18 +18,28 @@ All notable changes to the `codebase-kg` plugin.
 - A server that holds the HTTP port exits after 8 hours with no request
   (`CODEBASE_KG_HTTP_IDLE_TIMEOUT`), not 10 minutes. Claude Code never restarts a server that stopped
   mid-session, so an idle exit would leave the session with failing tools.
+- A server exits within 5 s once its state file is gone or names another server. Nothing can
+  verify such an orphan, so it would otherwise hold the port with every session refused.
 
 ### Added
 
-- Plugin settings `server_port` (default 47821) and `max_workers` (default 4, reserved for the
-  worker pool). `CODEBASE_KG_PORT` overrides the port for any client.
+- Plugin settings `server_port` (default 47821) and `max_workers` (default 4).
+  `CODEBASE_KG_PORT` overrides the port for any client, and `CODEBASE_KG_MAX_WORKERS` the pool size.
+- The shared server runs read tool calls on an elastic pool of worker processes, for HTTP and shim
+  sessions alike. A worker is a plain Python process of about 24 MB that imports no MCP code. The
+  pool starts a worker when a call finds none idle, up to `max_workers`, queues calls beyond that,
+  and stops a worker after 60 s with no call. With 16 agents calling at once over HTTP, the median
+  call fell from 323-329 ms to 147-161 ms; through the shim, from 222-228 ms to 81-83 ms. A worker
+  that crashes or exceeds `CODEBASE_KG_CALL_TIMEOUT` (default 60 s) fails only that call.
+  `max_workers` 0 runs calls in the server process. Writes stay in the server process. A private
+  stdio server, which `kg-shim` falls back to, has no pool.
 - `hooks/kg_server_start.py`, a `SessionStart` hook that starts the server when nothing answers
   `GET /health`, or an older build does, and waits up to 3 s. It prints one line only when the port
   belongs to another program or the server does not come up.
 - `mcp/launch/kg_headers.py`, the `headersHelper`.
-- `GET /health` reports the service, build and pid. `POST /shutdown` stops the server; it takes that
-  server's own state-file token. A newer build asks an older one on the port to stop and takes the
-  port; an older build leaves a newer one running and serves only shims.
+- `GET /health` reports the service, build, pid and `max_workers`. `POST /shutdown` stops the
+  server; it takes that server's own state-file token. A newer build asks an older one on the port
+  to stop and takes the port; an older build leaves a newer one running and serves only shims.
 
 ### Security
 

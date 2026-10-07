@@ -30,7 +30,7 @@
     "max_workers": {
       "type": "number",
       "title": "Maximum workers",
-      "description": "Most worker processes the server runs tool calls on at once. Reserved; the server does not use it yet.",
+      "description": "Most worker processes the server runs read tool calls on at once. 0 runs every call in the server process. A running server keeps the value it started with.",
       "default": 4
     }
   }

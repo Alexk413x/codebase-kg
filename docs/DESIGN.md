@@ -101,8 +101,9 @@ A server per session cost about 116 MB and four processes for each open session.
 `codebase-kg --serve` process per machine and build now serves every session, over two transports
 in the same process with the same tool registrations:
 
-- **Streamable HTTP for Claude Code**, at `http://127.0.0.1:<server_port>/mcp`. It holds about
-  90 MB however many sessions connect, against 317 MB for eight shim sessions (`http-server-plan.md`).
+- **Streamable HTTP for Claude Code**, at `http://127.0.0.1:<server_port>/mcp`. The server holds
+  about 90 MB however many sessions connect, plus about 24 MB per busy worker, against 317 MB for
+  eight shim sessions (`http-server-plan.md`).
 - **A loopback TCP socket for stdio clients**, through `kg-shim`, which Codex and sentinel-swarm's
   role sessions launch. Unchanged.
 
@@ -126,6 +127,31 @@ The bearer token is one per user and outlives each server, because Claude Code k
 got at connect and sends them to a server that restarted since. It is sent only to a server whose
 pid and port match a state file only this user can read, and a takeover authenticates with the old
 server's own state-file token, so a program squatting on the port never receives a credential.
+
+### Read tools on a worker pool
+
+One interpreter running every session's calls made 16 agents at once wait about 320 ms per call.
+So the shared server sends each read tool call to a worker process (`pool.py`, `worker.py`), for
+HTTP and shim sessions alike:
+
+- **A worker imports no MCP code.** It is the base Python interpreter, run with `-I -S`, importing
+  only `query`, `tools` and the standard library: about 24 MB, against the server's 83 MB. It
+  dispatches through `query.TOOLS`, the table `kg_cli.py query` uses, so the CLI, a worker and the
+  in-process server return the same JSON.
+- **The server resolves the graph, never the worker.** The server binds each call to its session as
+  before, resolves the graph path, and sends the absolute path with the call. The worker opens the
+  graph for that call and closes it, as the server does.
+- **Elastic.** A call takes an idle worker, else starts one (about 200-270 ms) while fewer than
+  `max_workers` run, else waits. A worker idle for 60 s is told to exit, so an idle server holds only
+  its own process. Requests and replies are one JSON line each on the worker's stdin and stdout; a
+  worker exits at stdin EOF, so it never outlives the server.
+- **Failure stays with one call.** A worker that exits during a call, or exceeds the call timeout,
+  is killed and dropped; that call returns a tool error and the next call starts a fresh worker.
+- **Writes stay in the server**, and `max_workers` 0 runs every call there.
+
+Measured (`http-server-plan.md`, Phase 2): with 16 agents the HTTP median fell from 323-329 ms to
+147-161 ms, and 8 workers did no better than 4. What remains is the server's HTTP front, about
+10-14 ms of CPU per call in one interpreter.
 
 ## The gate that measured the wrong thing
 
