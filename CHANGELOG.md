@@ -4,6 +4,12 @@ All notable changes to the `codebase-kg` plugin.
 
 ## [0.11.0] — 2026-10-07 — pre-push blocks on every stale file
 
+### Added
+
+- `mcp/launch/kg_cli.py query <tool> [json-args]` runs any of the ten read tools from a shell and
+  prints the same JSON as the MCP tool. It needs only the standard library. `mcp/bench/` compares it
+  with the MCP server; `cli-plan.md` has the results.
+
 ### Changed
 
 - The `pre-push` hook blocks on every stale mapped file, including files the
