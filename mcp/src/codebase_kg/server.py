@@ -44,11 +44,10 @@ from __future__ import annotations
 import os
 import re
 import sys
-from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Iterator
+from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from fastmcp.tools import ToolResult
@@ -248,16 +247,6 @@ def _graph_file() -> Path:
     if path is None or not path.is_file():
         raise _missing_graph_error()
     return path
-
-
-@contextmanager
-def _open_graph() -> Iterator[CodeGraph]:
-    """Open the graph for one tool call, then close it."""
-    g = CodeGraph(_graph_file())
-    try:
-        yield g
-    finally:
-        g.close()
 
 
 def _read(tool: str, args: dict[str, Any]) -> dict[str, Any]:

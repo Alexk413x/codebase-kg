@@ -11,7 +11,7 @@ touches the code — which is exactly what happened (the live Android graph
 carried 171 ticket refs and sentences like "ACME-433 removed the feed's
 lifecycle ON_PAUSE pause entirely").
 
-`check()` is the gate — the writer refuses a description that violates it.
+`problems()` is the gate — the writer refuses a description it reports on.
 `scrub()` is the best-effort repair used by migration, which strips what it can
 prove is history and reports whatever it cannot fix so an agent rewrites it.
 """
@@ -62,15 +62,11 @@ _ORPHAN_PUNCT = re.compile(
 )
 
 
-class DescriptionError(ValueError):
-    """A description violates the contract and the writer must not store it."""
-
-
 def problems(text: str) -> list[str]:
     """Every contract violation in `text`, as human-readable reasons.
 
-    Empty list == the description is acceptable. Used by `check()` and reported
-    verbatim by migration and `kg_validate`.
+    Empty list == the description is acceptable. Reported verbatim by migration
+    and `kg_validate`.
     """
     issues: list[str] = []
     if len(text) > MAX_DESCRIPTION:
@@ -84,13 +80,6 @@ def problems(text: str) -> list[str]:
         if hits:
             issues.append(f"{label}: " + ", ".join(hits))
     return issues
-
-
-def check(text: str) -> None:
-    """Raise `DescriptionError` if `text` violates the contract."""
-    issues = problems(text)
-    if issues:
-        raise DescriptionError("; ".join(issues))
 
 
 def node_problems(node: object) -> list[str]:

@@ -180,10 +180,6 @@ class Pool:
         with self._cond:
             return len(self._idle) + len(self._busy) + self._starting
 
-    def pids(self) -> list[int]:
-        with self._cond:
-            return sorted(w.pid for w in (*self._idle, *self._busy))
-
     def call(self, tool: str, args: dict[str, Any], graph: str) -> dict[str, Any]:
         request = json.dumps({"id": next(self._ids), "tool": tool, "args": args, "graph": graph})
         worker = self._acquire()

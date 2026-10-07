@@ -648,7 +648,7 @@ def test_cd_back_into_the_repo_is_still_gated(scoped: Path) -> None:
 
 
 def test_a_command_that_is_not_a_search_returns_none(scoped: Path) -> None:
-    assert gate.shell_search_targets("git status", scoped) is None
+    assert gate.parse_shell_search("git status", scoped) is None
 
 
 def test_an_unparseable_command_does_not_raise(scoped: Path) -> None:

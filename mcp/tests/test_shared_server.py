@@ -5,7 +5,7 @@ own cwd, environment and argv belong to whichever session started it. The
 contamination tests start it from inside a repo that has a graph, with
 `CODEBASE_KG_PATH` pointing at that graph, and prove no connection ever sees it.
 
-The end-to-end tests launch `shim.py` the way `.mcp.json` does and need `uv` on
+The end-to-end tests launch `shim.py` the way a stdio client does and need `uv` on
 PATH; they skip without it.
 """
 
@@ -358,7 +358,7 @@ def test_idle_exit_removes_the_state_file(tmp_path: Path) -> None:
         _stop(proc)
 
 
-# --- the shim, launched as .mcp.json launches it ------------------------------
+# --- the shim, launched as a stdio client launches it ------------------------------
 def _shim(cwd: Path, cache: Path, **env: str) -> subprocess.Popen[bytes]:
     full = {k: v for k, v in os.environ.items()
             if k not in {"CODEBASE_KG_PATH", "CODEBASE_KG_SHARED", "VIRTUAL_ENV"}}

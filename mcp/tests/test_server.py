@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -10,6 +11,7 @@ import pytest
 
 from codebase_kg import migrate, server, tools
 from codebase_kg.models import Meta, Node
+from codebase_kg.store import CodeGraph
 from codebase_kg.writer import build
 
 FIX = Path(__file__).resolve().parent / "fixtures"
@@ -30,6 +32,15 @@ def _repo(tmp_path: Path) -> Path:
     knowledge.mkdir()
     migrate.convert(tmp_path / "android" / "KNOWLEDGE_GRAPH.md", knowledge / "code_graph.db")
     return tmp_path
+
+
+@contextmanager
+def _graph() -> Iterator[CodeGraph]:
+    g = CodeGraph(server._graph_file())
+    try:
+        yield g
+    finally:
+        g.close()
 
 
 # --- path resolution ---------------------------------------------------------
@@ -141,11 +152,9 @@ def test_a_rebuild_while_the_server_runs_succeeds(
     repo = _repo(tmp_path)
     db = repo / "knowledge" / "code_graph.db"
     monkeypatch.setattr("sys.argv", ["server", str(db)])
-    with server._open_graph() as g:
-        assert g.counts()["nodes"] == 4
+    assert server._read("kg_stats", {})["nodes"] == 4
     build(db, Meta(codebase="rebuilt", root="src"), [Node(id="only", kind="K")])
-    with server._open_graph() as g:
-        assert g.meta.codebase == "rebuilt"
+    assert server._read("kg_stats", {})["codebase"] == "rebuilt"
 
 
 def test_every_call_sees_the_current_file(
@@ -155,8 +164,7 @@ def test_every_call_sees_the_current_file(
     db = repo / "knowledge" / "code_graph.db"
     monkeypatch.setattr("sys.argv", ["server", str(db)])
     build(db, Meta(codebase="second", root="src"), [Node(id="only", kind="K")])
-    with server._open_graph() as g:
-        assert g.counts()["nodes"] == 1
+    assert server._read("kg_stats", {})["nodes"] == 1
 
 
 def test_peer_is_none_without_a_counterpart(
@@ -165,7 +173,7 @@ def test_peer_is_none_without_a_counterpart(
     db = tmp_path / "code_graph.db"
     build(db, Meta(codebase="solo", root="src"), [Node(id="a", kind="K")])
     monkeypatch.setattr("sys.argv", ["server", str(db)])
-    with server._open_graph() as g, tools.open_peer(g) as peer:
+    with _graph() as g, tools.open_peer(g) as peer:
         assert peer is None
 
 
@@ -174,7 +182,7 @@ def test_peer_resolves_relative_to_the_graph(
 ) -> None:
     db = built_fixtures / "android" / "code_graph.db"
     monkeypatch.setattr("sys.argv", ["server", str(db)])
-    with server._open_graph() as g, tools.open_peer(g) as peer:
+    with _graph() as g, tools.open_peer(g) as peer:
         assert peer is not None and peer.meta.codebase == "ios"
 
 
@@ -185,7 +193,7 @@ def test_missing_peer_file_degrades_quietly(
     build(db, Meta(codebase="x", root="src", counterpart="../gone/code_graph.db"),
           [Node(id="a", kind="K")])
     monkeypatch.setattr("sys.argv", ["server", str(db)])
-    with server._open_graph() as g, tools.open_peer(g) as peer:
+    with _graph() as g, tools.open_peer(g) as peer:
         assert peer is None
 
 

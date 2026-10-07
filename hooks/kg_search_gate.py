@@ -670,16 +670,6 @@ def parse_shell_search(command: str, proj: Path) -> ShellSearch | None:
     return out if found_search else None
 
 
-def shell_search_targets(command: str, proj: Path) -> list[Path] | None:
-    """The paths a shell search is aimed at, or None if it is not one.
-
-    An empty list means "a search with no path operand": `grep foo` reads stdin
-    and is not a tree search, so the caller treats it as nothing to gate.
-    """
-    parsed = parse_shell_search(command, proj)
-    return None if parsed is None else parsed.targets
-
-
 def _name_ext(name: str) -> str:
     """The extension a file-name filter pins, or "" when it pins none.
 

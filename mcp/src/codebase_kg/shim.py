@@ -1,8 +1,9 @@
-"""The process `.mcp.json` launches for each session: a pipe to one shared server.
+"""The process a stdio client launches for each session: a pipe to one shared server.
 
-A server per session costs four processes — `uv`, the console-script launcher,
-the venv trampoline and the interpreter, about 140 MB together on Windows — for
-every open session. The shim is one small process instead. It connects to one
+Codex and other stdio clients launch it as `mcp/launch/kg-shim`. A server per
+session costs four processes — `uv`, the console-script launcher, the venv
+trampoline and the interpreter, about 140 MB together on Windows — for every
+open session. The shim is one small process instead. It connects to one
 `codebase-kg --serve` process per machine and server build, starting it on
 first use, and relays newline-delimited JSON-RPC between the session's stdio and
 that server's socket.
@@ -43,8 +44,8 @@ editable install points at. The server runs as `python -c`, not through the
 `codebase-kg` console script: a running script's `.exe` is locked on Windows,
 and another build's sync would fail to replace it.
 
-Claude Code does not use the shim: it reaches the same server over HTTP (see
-`http_transport.py`). The HTTP port, the per-user HTTP token, `/health` and the
+Claude Code does not use the shim: `.mcp.json` points it at the same server over
+HTTP (see `http_transport.py`). The HTTP port, the per-user HTTP token, `/health` and the
 check that a port's holder is this user's server live here too, because the
 SessionStart hook and `mcp/launch/kg_headers.py` load this file by path.
 
@@ -826,7 +827,7 @@ class Relay:
 
 
 def run_private(args: list[str]) -> int:
-    """Today's per-session stdio server, sharing this process's stdin and stdout."""
+    """A per-session stdio server, sharing this process's stdin and stdout."""
     try:
         return subprocess.call(uv_command(*args), env=server_env())
     except OSError as exc:

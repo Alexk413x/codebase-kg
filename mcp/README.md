@@ -1,7 +1,7 @@
 # codebase-kg MCP server
 
 A local MCP server over one repo's committed `knowledge/code_graph.db` (see
-[`../SCHEMA.md`](../SCHEMA.md)), exposing **nine typed queries and four targeted writes** — so an
+[`../SCHEMA.md`](../SCHEMA.md)), exposing **ten typed queries and six targeted writes** — so an
 agent answers "where does X live / what depends on it / what diverges from the peer" in one tool
 call instead of re-grepping every session, and fixes one wrong description without regenerating the
 whole artifact.
@@ -65,10 +65,11 @@ rm .kg-export.json                                                # a snapshot, 
 
 ## How it runs
 
-One server process per machine and server build serves every Claude Code session. A build is the
+One server process per machine and server build serves every session. A build is the
 plugin version plus a short digest of the path, size and mtime of every `*.py` in the server package,
 so a dev checkout and an installed copy at the same version never share a server.
-`.mcp.json` launches `mcp/launch/kg-shim` for each session, which runs `shim.py` with the system Python:
+Claude Code reaches it over Streamable HTTP (`.mcp.json`, `http_transport.py`). Stdio clients such as
+Codex launch `mcp/launch/kg-shim`, which runs `shim.py` with the system Python:
 `python3`, else `python`, on macOS and Linux, and `py -3`, else `python`, on Windows (`kg-shim.cmd`),
 where a stock install has no `python3.exe` and both names may be Microsoft Store stubs. The shim is
 stdlib only and does three things:
@@ -154,7 +155,7 @@ server was running.
 | `store.py` | `CodeGraph` — read-only query facade over one connection. |
 | `server.py` | The FastMCP tool registrations and graph path resolution, per process or per connection. |
 | `daemon.py` | `--serve`: the shared server — loopback listener, handshake, one MCP session per connection, idle exit. |
-| `shim.py` | What `.mcp.json` launches: finds or starts the shared server and relays the session to it. Stdlib only. |
+| `shim.py` | What stdio clients launch: finds or starts the shared server and relays the session to it. Stdlib only. It also holds the HTTP port, token and `/health` helpers that the hooks and `kg_headers.py` load by path. |
 | `tools.py` | The read-only queries the MCP tools wrap. |
 | `edits.py` | Targeted writes: copy, mutate in one transaction, validate, swap in — or discard, leaving the committed file byte-identical. |
 | `codec.py` | The JSON interchange shape shared by `build` and `export`. |
