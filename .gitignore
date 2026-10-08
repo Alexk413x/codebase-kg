@@ -35,3 +35,6 @@ htmlcov/
 
 # claude plugin eval run output
 evals/results/
+
+# Agent worktrees
+.claude/worktrees/

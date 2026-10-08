@@ -48,7 +48,7 @@ These are locked — change them only with a deliberate reason.
 | **Human readability** | Explicitly a non-goal | The artifact is AI-consumed. It is not read raw and not reviewed in diffs. |
 | **Plugin name** | `codebase-kg` | Unchanged **on purpose** — see "The rename we didn't do". Skills `/codebase-kg:query\|build\|refresh\|audit\|link\|validate`, plus `setup`, which only the user invokes; MCP server `codebase-kg`. |
 | **MCP tool names** | `kg_*` | Unchanged, same reason. |
-| **Repo layout** | Standalone plugin at root | `.claude-plugin/plugin.json` + a thin `.claude-plugin/marketplace.json` so it installs from this repo. |
+| **Repo layout** | Standalone plugin at root | `.claude-plugin/plugin.json`. It installs from the `alexk413x` marketplace (`Alexk413x/marketplace`), which reads this repo's `release` branch. |
 | **Graph location** | Per-repo `knowledge/code_graph.db` | Always `knowledge/` (no repo-root fallback); override per clone via `graph_path` in `.local.md`. |
 | **Refresh engine** | Agent-driven first | The agent reads source and emits nodes — keeps it language-agnostic. Add static parsers later for speed; never as the only path. |
 | **Search index** | FTS5, persisted in the file | An in-memory index was deferred because building it landed on the load path. Persisting it removes that objection entirely: built once at write time, free on open. |

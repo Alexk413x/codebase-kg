@@ -55,6 +55,11 @@ Never report "the graph has nothing" without having run `kg_search` with more th
 
 ## Workflow
 
+### 0. Confirm the repo has a graph
+`Glob` for `**/code_graph.db`. If `.claude/codebase-kg.local.md` sets `graph_path`, check that path
+instead. With no graph, call no `kg_*` tool and no `kg_cli.py` command: they can only fail. Answer
+with `Grep`, `Glob` and `Read`, and say in one line that `/codebase-kg:build` maps the repo.
+
 ### 1. Locate
 Start with **`kg_search`** — a persisted FTS5 index over ids, kinds, descriptions and anchors, with
 CamelCase split, so `video playback` finds `VideoPlaybackService`. Search the concept, not the

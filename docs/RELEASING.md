@@ -35,8 +35,11 @@ nothing when a textconv command cannot resolve — it falls back silently.
    uv run pytest -q
    cd ..
    claude plugin validate --strict .
-   claude plugin eval .
+   claude plugin eval . --scaffold
    ```
+
+   `--scaffold` runs each case's `scaffold.sh`. Without it the query cases have no graph to query,
+   and the query skill correctly skips the graph tools.
 
    `claude plugin eval` refuses the hard links in `mcp/.venv`. Run it on a copy made with
    `git ls-files -co --exclude-standard`, which leaves `.venv` out.
@@ -44,16 +47,11 @@ nothing when a textconv command cannot resolve — it falls back silently.
 4. **Open a PR and merge to main.** Tags point at the *merge* commit, which does
    not exist until then.
 
-5. **Tag the merge commit and push:**
-
-   ```sh
-   git checkout main && git pull
-   claude plugin tag --push -m "codebase-kg %s — <one line>"
-   ```
-
-   `claude plugin tag` builds `codebase-kg--v<version>` from `plugin.json`,
-   checks it against the enclosing marketplace entry, and refuses on a dirty
-   tree. Use it rather than `git tag` by hand.
+5. **Check the tag.** On every push to `main`, `.github/workflows/release.yml`
+   tags the commit `codebase-kg--v<version>` from `plugin.json` when that tag is
+   missing. The annotation is the title of the version's changelog entry. Confirm
+   it with `git ls-remote --tags origin`. To tag by hand, use
+   `claude plugin tag --push -m "codebase-kg %s — <one line>"` on a clean `main`.
 
 6. **Verify the tag resolves**, which is the only step that proves the release
    works. A tag listing does not — it shows the ref exists, not that the pinned
@@ -80,9 +78,6 @@ nothing when a textconv command cannot resolve — it falls back silently.
    workflow to finish before you update. Check that the `codebase-kg@alexk413x` entry in
    `~/.claude/plugins/installed_plugins.json` names the new version. A session
    loads the plugin cache, not the branch you merged.
-
-   This repo's own `.claude-plugin/marketplace.json` installs from `main` and serves
-   `claude plugin tag` and local development. The release build leaves it out.
 
 8. **Restart the server.** A running server keeps the build it started with.
    A newer build takes the port from an older one when it starts, so restart
