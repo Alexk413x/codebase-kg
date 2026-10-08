@@ -1,7 +1,0 @@
-# Copy to .codex/config.toml (gitignored) and set the absolute path to your checkout.
-# Codex does not set CLAUDE_PLUGIN_ROOT, and the skills call their scripts through it.
-[shell_environment_policy]
-inherit = "core"
-
-[shell_environment_policy.set]
-CLAUDE_PLUGIN_ROOT = '/absolute/path/to/codebase-kg'
