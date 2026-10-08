@@ -80,7 +80,7 @@ def _split_list(value: str) -> list[str]:
         tok = _strip_backticks(raw)
         if not tok or tok in {"—", "-", "–"}:
             continue
-        if tok.startswith("(") or tok.startswith("*"):
+        if tok.startswith(("(", "*")):
             continue
         out.append(tok)
     return out

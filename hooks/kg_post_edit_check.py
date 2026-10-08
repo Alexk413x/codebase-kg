@@ -26,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _config import (  # noqa: E402
+from _config import (
     find_graph,
     graph_meta,
     is_anchored,
@@ -183,7 +183,7 @@ def main() -> None:
         data = json.loads(raw) if raw.strip() else {}
         if isinstance(data, dict):
             _run(data)
-    except Exception:
+    except Exception:  # noqa: BLE001
         # An advisory hook must never break an edit. Swallow everything.
         return
 

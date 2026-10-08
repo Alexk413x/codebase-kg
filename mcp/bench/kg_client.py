@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from codebase_kg import shim  # noqa: E402
+from codebase_kg import shim
 
 
 def _send(sock, message: dict) -> None:

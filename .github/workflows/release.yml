@@ -16,11 +16,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag the version if its tag is missing
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          version=$(python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['version'])")
+          tag="codebase-kg--v$version"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag exists"
+            exit 0
+          fi
+          title=$(sed -n "s/^## \[$version\] — [0-9-]* — //p" CHANGELOG.md | head -n 1)
+          git tag -a "$tag" -m "codebase-kg $version${title:+ — $title}"
+          git push origin "$tag"
       - name: Build the release branch without development files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B release
-          git rm -r -q .codex .github .gitignore .claude-plugin/marketplace.json docs evals mcp/tests mcp/bench mcp/scripts
+          git rm -r -q .codex .github .gitignore ruff.toml docs evals mcp/tests mcp/bench mcp/scripts
           git commit -q -m "Release build of ${GITHUB_SHA::7}"
           git push -f origin release

@@ -92,13 +92,13 @@ def answer(line: bytes) -> bytes:
     try:
         request = json.loads(line)
         if not isinstance(request, dict):
-            raise ValueError("a request must be a JSON object")
+            raise ValueError("a request must be a JSON object")  # noqa: TRY004 - the except below catches ValueError
     except ValueError as exc:
         reply: dict[str, Any] = {"id": None, "ok": False, "error": f"malformed request: {exc}"}
     else:
         try:
             reply = run(request)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - a tool error must not kill the worker
             reply = {"ok": False, "error": str(exc)}
         reply["id"] = request.get("id")
     try:

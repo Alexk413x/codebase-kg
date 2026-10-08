@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from codebase_kg import core, migrate, query, resolve
 
 FIX = Path(__file__).resolve().parent / "fixtures"

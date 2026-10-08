@@ -21,11 +21,11 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import IO, Any, Iterator
+from typing import IO, Any
 
 import pytest
-
 from codebase_kg import pool, resolve, shim
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.store import CodeGraph
@@ -562,7 +562,7 @@ def test_the_shim_run_as_a_file_skips_its_own_folder_on_sys_path(tmp_path: Path)
     env["CODEBASE_KG_SHARED"] = "0"
     done = subprocess.run(
         [shutil.which("python3") or sys.executable, str(folder / "shim.py")], cwd=tmp_path,
-        env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=TIMEOUT,
+        env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=TIMEOUT, check=False
     )
     assert b"shadowed the stdlib" not in done.stderr, done.stderr.decode("utf-8", "replace")
 
@@ -851,7 +851,7 @@ def test_the_server_imports_only_the_standard_library() -> None:
              "import codebase_kg.daemon; print(json.dumps(sorted(sys.modules)))")
     python = shim.server_command()[0]
     out = subprocess.run([python, "-I", "-S", "-c", probe, str(SRC)], capture_output=True, text=True,
-                         timeout=TIMEOUT)
+                         timeout=TIMEOUT, check=False)
     assert out.returncode == 0, out.stderr
     modules = json.loads(out.stdout)
     assert "codebase_kg.http_transport" in modules and "codebase_kg.tcp_transport" in modules

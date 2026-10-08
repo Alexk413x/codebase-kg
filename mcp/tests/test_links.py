@@ -17,7 +17,6 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-
 from codebase_kg import codec, links, tools, upgrade
 from codebase_kg.links import ExternalLink, LinkError, Resolution
 from codebase_kg.models import Anchor, Meta, Node

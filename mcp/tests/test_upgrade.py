@@ -11,7 +11,6 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-
 from codebase_kg import upgrade
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.schema import SCHEMA_VERSION

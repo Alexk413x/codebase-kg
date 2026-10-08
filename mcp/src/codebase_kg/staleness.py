@@ -138,8 +138,8 @@ def unchecked(reason: str) -> dict[str, Any]:
 
 
 __all__ = [
-    "SAMPLE",
     "REFRESH_HINT",
+    "SAMPLE",
     "Staleness",
     "classify",
     "digest_tree",

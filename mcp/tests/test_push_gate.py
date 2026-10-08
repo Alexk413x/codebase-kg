@@ -15,14 +15,13 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.writer import build
 
 HOOKS = Path(__file__).resolve().parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS))
 
-import kg_push_gate as gate  # noqa: E402
+import kg_push_gate as gate
 
 KNOWN = "ui/Known.kt"
 RANKER = "domain/Ranker.kt"

@@ -56,7 +56,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _config import (  # noqa: E402
+from _config import (
     DEFAULTS,
     IGNORE_DIRS,
     find_graph,
@@ -122,7 +122,7 @@ def _norm(p: Path) -> str:
 
 
 def _state_path(proj: Path, session: str) -> Path:
-    key = f"{_norm(proj)}\0{session}".encode("utf-8")
+    key = f"{_norm(proj)}\0{session}".encode()
     d = Path(tempfile.gettempdir()) / "codebase-kg-gate"
     d.mkdir(parents=True, exist_ok=True)
     return d / f"{hashlib.sha1(key).hexdigest()[:16]}.json"
@@ -952,9 +952,8 @@ def _run(data: dict[str, object]) -> None:
             return
 
     tool_use_id = data.get("tool_use_id")
-    if tool in _SHELL_TOOLS and isinstance(tool_use_id, str) and tool_use_id:
-        if not _claim_call(tool_use_id):
-            return
+    if tool in _SHELL_TOOLS and isinstance(tool_use_id, str) and tool_use_id and not _claim_call(tool_use_id):
+        return
 
     state = _read_state(proj, session)
     keys = [search_key(tool, tool_input)]
@@ -1003,7 +1002,7 @@ def main() -> None:
         data = json.loads(raw) if raw.strip() else {}
         if isinstance(data, dict):
             _run(data)
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Fail open. A gate that errors must let the search through, never
         # strand the agent.
         return

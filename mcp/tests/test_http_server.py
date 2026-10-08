@@ -21,14 +21,14 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any
 
 import pytest
+from codebase_kg import core, http_transport, shim
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-
-from codebase_kg import core, http_transport, shim
 from test_shared_server import BUILD, TIMEOUT, _graph, _raw, _repo, _stop
 from test_shared_server import Client as LineClient
 
@@ -238,7 +238,7 @@ def test_a_client_is_asked_for_its_roots_once(tmp_path: Path) -> None:
     assert first == {"resultType": "input_required",
                      "inputRequests": {http_transport.ROOTS_REQUEST: {"method": "roots/list"}}}
     bound = clients.connection(headers, _roots(tmp_path))
-    assert getattr(bound, "cwd") == tmp_path
+    assert getattr(bound, "cwd") == tmp_path  # noqa: B009 - pyright rejects `.cwd` on the dict arm of the union
     assert clients.connection(headers, {}) is bound
 
 
@@ -612,7 +612,7 @@ def test_the_hook_runs_silently_and_exits_zero_when_a_server_answers(http_daemon
     env = {**os.environ, "CODEBASE_KG_CACHE_DIR": str(http_daemon["cache"]),
            "CODEBASE_KG_PORT": str(http_daemon["http_port"])}
     proc = subprocess.run([sys.executable, str(HOOK)], input="{}", capture_output=True, text=True,
-                          env=env, timeout=TIMEOUT)
+                          env=env, timeout=TIMEOUT, check=False)
     assert proc.returncode == 0
     assert proc.stdout == ""
 
@@ -628,7 +628,7 @@ def test_the_hook_is_registered_for_session_start() -> None:
 def _helper(env: dict[str, str]) -> dict[str, str]:
     full = {k: v for k, v in os.environ.items() if k != "CODEBASE_KG_PATH"}
     proc = subprocess.run([sys.executable, str(HEADERS)], capture_output=True, text=True,
-                          env={**full, **env}, timeout=TIMEOUT)
+                          env={**full, **env}, timeout=TIMEOUT, check=False)
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
 
@@ -705,7 +705,7 @@ CLI = ROOT / "mcp" / "launch" / "kg_cli.py"
 def _cli(cache: Path, *args: str) -> dict[str, Any]:
     env = {**os.environ, "CODEBASE_KG_CACHE_DIR": str(cache)}
     proc = subprocess.run([sys.executable, "-I", str(CLI), "server", *args], capture_output=True, text=True,
-                          env=env, timeout=TIMEOUT)
+                          env=env, timeout=TIMEOUT, check=False)
     return json.loads(proc.stdout)
 
 

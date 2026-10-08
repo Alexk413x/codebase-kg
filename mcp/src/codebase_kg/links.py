@@ -134,8 +134,7 @@ def normalize_target(target: str) -> str:
     """
     out = str(target).replace("\\", "/").strip()
     prefix = KNOWLEDGE_DIR + "/"
-    if out.startswith(prefix):
-        out = out[len(prefix) :]
+    out = out.removeprefix(prefix)
     return out
 
 
@@ -187,7 +186,7 @@ class ExternalLink:
         return {"target": self.target, "kind": self.kind}
 
     @classmethod
-    def parse(cls, raw: object) -> "ExternalLink":
+    def parse(cls, raw: object) -> ExternalLink:
         """Accept either `"db#id"` or `{"target": ..., "kind": ...}`.
 
         A bare string is the shape hand-authored JSON reaches for, and rejecting
@@ -395,7 +394,7 @@ def resolve(knowledge_dir: str | Path, target: str) -> Resolution:
         if table is None:
             return Resolution.PEER_UNREADABLE
         row = con.execute(
-            f"SELECT 1 FROM {table} WHERE id = ?",  # noqa: S608 - name from the peer's own schema
+            f"SELECT 1 FROM {table} WHERE id = ?",  # name from the peer's own schema
             (node_id,),
         ).fetchone()
     except sqlite3.Error:

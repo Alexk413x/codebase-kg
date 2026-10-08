@@ -126,8 +126,8 @@ def _object(schema: dict[str, Any], value: dict[str, Any], where: str, shallow: 
             out[key] = _check(sub, value[key], _join(where, key), shallow)
         elif "default" in sub:
             out[key] = sub["default"]
-    for key in value:
-        out.setdefault(key, value[key])
+    for key, item in value.items():
+        out.setdefault(key, item)
     return out
 
 
@@ -136,7 +136,7 @@ def validate(name: str, args: Any) -> dict[str, Any]:
     if args is None:
         args = {}
     if not isinstance(args, dict):
-        raise ValueError("arguments: input should be an object")
+        raise ValueError("arguments: input should be an object")  # noqa: TRY004 - callers catch ValueError
     return _object(TOOLS[name]["inputSchema"], args, "", shallow=name in worker.WRITE_TOOLS)
 
 

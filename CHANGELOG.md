@@ -2,6 +2,24 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.14.1] — 2026-10-08 — the query skill leaves a repo with no graph alone
+
+### Fixed
+
+- The `query` skill called `kg_search` before it checked that the repo had a graph, so every
+  question in an unmapped repo cost a failed tool call. The skill now globs for `code_graph.db`
+  (or the `graph_path` setting) first and answers with `Grep`, `Glob` and `Read` when there is none.
+  The `no-graph-negative` eval scored 0.50 with the plugin and now scores 1.00.
+
+### Changed
+
+- The self-hosted `.claude-plugin/marketplace.json` is removed. Install from the `alexk413x`
+  marketplace: `claude plugin install codebase-kg@alexk413x`.
+- The release workflow tags `codebase-kg--v<version>` when a push to `main` carries a version
+  with no tag.
+- `ruff.toml` pins the lint rules and Python 3.9 as the target, and the code passes them. The one
+  behavior-neutral refactor: `_word_pattern` uses `functools.cache` in place of a mutable default.
+
 ## [0.14.0] — 2026-10-08 — public release
 
 ### Changed

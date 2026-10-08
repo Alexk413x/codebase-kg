@@ -35,7 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _config import find_graph, load_config, project_dir  # noqa: E402
+from _config import find_graph, load_config, project_dir
 
 DEFAULT_HOOKS_DIR = ".githooks"
 PLUGIN_MANIFEST = Path(__file__).resolve().parents[1] / ".claude-plugin" / "plugin.json"
@@ -168,7 +168,7 @@ def main() -> None:
         message = advice(project_dir(cwd if isinstance(cwd, str) else None))
         if message:
             print(json.dumps({"systemMessage": message}))
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Advisory. A session must never fail to start because of this.
         return
 

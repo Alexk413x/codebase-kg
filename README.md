@@ -207,8 +207,7 @@ Every node, anchor and edge is preserved verbatim; the upgrade only adds what v3
 ```
 codebase-kg/
 ├── .claude-plugin/
-│   ├── plugin.json           # plugin manifest (name: codebase-kg)
-│   └── marketplace.json      # thin marketplace so it's installable standalone
+│   └── plugin.json           # plugin manifest (name: codebase-kg)
 ├── SCHEMA.md                 # ← the spec: node shape, anchors, parity, the description contract
 ├── README.md
 ├── docs/

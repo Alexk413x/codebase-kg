@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from codebase_kg import build as build_cli
 from codebase_kg import codec, export
 from codebase_kg.models import Anchor, Meta, Node

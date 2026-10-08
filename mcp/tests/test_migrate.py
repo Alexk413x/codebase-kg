@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from codebase_kg import markdown, migrate
 from codebase_kg.models import Node
 from codebase_kg.store import CodeGraph

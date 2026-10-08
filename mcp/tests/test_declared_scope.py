@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from codebase_kg.coverage import classify, declared_roots
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.store import CodeGraph
@@ -27,7 +26,7 @@ from codebase_kg.writer import build
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "git-hooks"))
 
-import kg_pre_push  # noqa: E402
+import kg_pre_push
 
 
 # --- which directories a pattern names ---------------------------------------

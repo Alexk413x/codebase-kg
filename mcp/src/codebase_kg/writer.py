@@ -21,15 +21,21 @@ import os
 import sqlite3
 import tempfile
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Literal
 
 from . import clean, links
 from .coverage import COVERS_KEY, EXEMPT_KEY, format_patterns
 from .models import Meta, Node
 from .schema import (
-    APPLICATION_ID, DDL, NODE_TABLE, PAGE_SIZE, REFERENCE_TABLE, SCHEMA_VERSION,
+    APPLICATION_ID,
+    DDL,
+    NODE_TABLE,
+    PAGE_SIZE,
+    REFERENCE_TABLE,
+    SCHEMA_VERSION,
     split_identifier,
 )
 

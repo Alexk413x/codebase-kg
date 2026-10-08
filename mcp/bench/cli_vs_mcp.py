@@ -35,16 +35,19 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
+
+if TYPE_CHECKING:
+    from typing_extensions import Self
 
 MCP_DIR = Path(__file__).resolve().parents[1]
 RUNNER = MCP_DIR / "launch" / "kg_cli.py"
 SHIM = MCP_DIR / "src" / "codebase_kg" / "shim.py"
 sys.path.insert(0, str(MCP_DIR / "src"))
-from codebase_kg import shim  # noqa: E402
+from codebase_kg import shim
 
 CALLS = [
     ("search", ["kg_search", '{"query": "ledger"}'], "kg_search", {"query": "ledger"}),
@@ -92,7 +95,7 @@ class CpuMeter:
 
     pct: float = 0.0
 
-    def __enter__(self) -> CpuMeter:
+    def __enter__(self) -> Self:
         self._start = _system_times()
         return self
 
@@ -169,7 +172,7 @@ def _process_mb(match: str, exclude: frozenset[int] = frozenset()) -> dict:
         "ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; mb = [math]::Round($_.WorkingSetSize / 1MB, 1) } } | "
         "ConvertTo-Json -Compress"
     )
-    out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True).stdout.strip()
+    out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, check=False).stdout.strip()
     rows = json.loads(out) if out else []
     rows = rows if isinstance(rows, list) else [rows]
     rows = [r for r in rows if r["pid"] not in exclude]
@@ -178,7 +181,7 @@ def _process_mb(match: str, exclude: frozenset[int] = frozenset()) -> dict:
 
 async def bench_mcp(graph: str, reps: int, sessions: int) -> dict:
     env = dict(os.environ, CODEBASE_KG_PATH=graph)
-    transport = lambda: StdioTransport(command=sys.executable, args=[str(SHIM)], env=env)  # noqa: E731
+    transport = lambda: StdioTransport(command=sys.executable, args=[str(SHIM)], env=env)
     result: dict = {}
     before = frozenset(_process_mb("codebase_kg")["pids"])
     result["preexisting_processes"] = len(before)

@@ -200,8 +200,10 @@ def _render(report: MigrationReport) -> str:
         f"  edges    {r.edges}",
         f"  anchors  {r.anchors}",
         "",
-        f"  descriptions scrubbed  {r.descriptions_scrubbed}"
-        f"  ({r.chars_removed:,} chars of ticket refs / dates / change narrative removed)",
+        (
+            f"  descriptions scrubbed  {r.descriptions_scrubbed}"
+            f"  ({r.chars_removed:,} chars of ticket refs / dates / change narrative removed)"
+        ),
     ]
     if r.dropped_edges:
         lines.append(f"  dangling edges dropped {len(r.dropped_edges)}")
