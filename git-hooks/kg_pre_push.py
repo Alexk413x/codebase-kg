@@ -425,9 +425,7 @@ def is_source(rel: str, root: str, graph_rel: str | None, covers=None, exempt=No
     if {p.lower() for p in parts[:-1]} & _IGNORE_LOWER:
         return False
     suffix = ("." + rel.rsplit(".", 1)[1].lower()) if "." in parts[-1] else ""
-    if suffix in EXCLUDE_EXT:
-        return False
-    return True
+    return suffix not in EXCLUDE_EXT
 
 
 class Graph(NamedTuple):

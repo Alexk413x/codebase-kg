@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
-
 from codebase_kg import tools
 from codebase_kg.models import Anchor
 from codebase_kg.store import CodeGraph
@@ -157,7 +157,7 @@ def test_parity_gaps_excludes_matched(android_graph: CodeGraph) -> None:
 
 
 def test_parity_gaps_status_filter(android_graph: CodeGraph) -> None:
-    only = lambda s: [g["id"] for g in tools.kg_parity_gaps(android_graph, s)["gaps"]]  # noqa: E731
+    only = lambda s: [g["id"] for g in tools.kg_parity_gaps(android_graph, s)["gaps"]]
     assert only("divergent") == ["feed_ranker"]
     assert only("only") == ["night_digest"]
     assert only("android-only") == ["night_digest"]

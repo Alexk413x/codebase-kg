@@ -26,9 +26,9 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "git-hooks"))
 sys.path.insert(0, str(ROOT / "hooks"))
 
-import _config  # noqa: E402
-import kg_post_edit_check  # noqa: E402
-import kg_pre_push  # noqa: E402
+import _config
+import kg_post_edit_check
+import kg_pre_push
 from codebase_kg import writer
 
 # DEFAULTS is dict[str, object]; the extension list is the one entry

@@ -14,7 +14,6 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-
 from codebase_kg import edits, tools
 from codebase_kg.links import ExternalLink
 from codebase_kg.models import Anchor, Meta, Node

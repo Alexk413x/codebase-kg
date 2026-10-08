@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import shutil
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
-
 from codebase_kg import migrate, resolve, server, tools
 from codebase_kg.models import Meta, Node
 from codebase_kg.store import CodeGraph

@@ -19,7 +19,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from codebase_kg import cli
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.writer import build

@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import pytest
 
@@ -13,10 +13,10 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from codebase_kg import migrate  # noqa: E402
-from codebase_kg.models import Anchor, Meta, Node  # noqa: E402
-from codebase_kg.store import CodeGraph  # noqa: E402
-from codebase_kg.writer import build  # noqa: E402
+from codebase_kg import migrate
+from codebase_kg.models import Anchor, Meta, Node
+from codebase_kg.store import CodeGraph
+from codebase_kg.writer import build
 
 FIX = Path(__file__).resolve().parent / "fixtures"
 

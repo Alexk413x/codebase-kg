@@ -74,7 +74,7 @@ def main() -> None:
     try:
         sys.stdin.read()
         message = ensure_server(_shim())
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - the hook reports any failure as a message
         message = f"codebase-kg: could not start the server: {exc}"
     if message:
         print(json.dumps({"systemMessage": message}))

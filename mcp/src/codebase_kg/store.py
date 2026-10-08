@@ -21,8 +21,12 @@ from .coverage import COVERS_KEY, EXEMPT_KEY, parse_patterns
 from .links import ExternalLink
 from .models import Anchor, Meta, Node, Reference
 from .schema import (
-    MIN_READABLE_VERSION, READ_PRAGMAS, REFERENCE_TABLE, SCHEMA_VERSION,
-    has_reference_table, split_identifier,
+    MIN_READABLE_VERSION,
+    READ_PRAGMAS,
+    REFERENCE_TABLE,
+    SCHEMA_VERSION,
+    has_reference_table,
+    split_identifier,
 )
 
 _WORD = re.compile(r"[A-Za-z0-9]+")

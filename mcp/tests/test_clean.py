@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from codebase_kg import clean
 from codebase_kg.schema import MAX_DESCRIPTION
 

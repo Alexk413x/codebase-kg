@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from codebase_kg import edits, staleness, tools
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.store import CodeGraph
@@ -26,8 +25,8 @@ from codebase_kg.writer import build, content_sha
 HOOKS = Path(__file__).resolve().parent.parent.parent / "git-hooks"
 sys.path.insert(0, str(HOOKS))
 
-import kg_pre_commit as c  # noqa: E402
-import kg_pre_push as g  # noqa: E402
+import kg_pre_commit as c
+import kg_pre_push as g
 
 KNOWN = "ui/Known.kt"
 RANKER = "domain/Ranker.kt"

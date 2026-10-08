@@ -65,7 +65,7 @@ def headers(wait: float = WAIT) -> dict[str, str]:
     try:
         shim = _shim()
         found = token(shim, port(shim), wait)
-    except Exception:
+    except Exception:  # noqa: BLE001 - any failure means no token header
         found = None
     if found:
         out["Authorization"] = f"Bearer {found}"

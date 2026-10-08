@@ -168,6 +168,4 @@ def is_source_file(path: Path, proj: Path, cfg: dict[str, object]) -> bool:
     # has no .suffix, but ".gitignore" itself is the extension to exclude.
     name = path.name.lower()
     suffix = ("." + name.rsplit(".", 1)[1]) if "." in name else ""
-    if suffix in excl:
-        return False
-    return True
+    return suffix not in excl

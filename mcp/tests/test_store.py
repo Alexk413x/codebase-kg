@@ -6,7 +6,6 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.store import CodeGraph, StoreError, tokenize
 from codebase_kg.writer import build

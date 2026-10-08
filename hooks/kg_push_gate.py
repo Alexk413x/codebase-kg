@@ -47,7 +47,7 @@ class Push(NamedTuple):
 
 def _program(token: str) -> str:
     name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return name[:-4] if name.endswith(".exe") else name
+    return name.removesuffix(".exe")
 
 
 def _segments(command: str) -> list[list[str]]:
@@ -108,9 +108,9 @@ def find_pushes(
             if _ASSIGN.match(token):
                 name, _, value = token.partition("=")
                 prefix[name] = value
-            elif _program(token) in _WRAPPERS:
-                pass
-            elif token.startswith("-") and i > 0 and _program(seg[i - 1]) == "env":
+            elif _program(token) in _WRAPPERS or (
+                token.startswith("-") and i > 0 and _program(seg[i - 1]) == "env"
+            ):
                 pass
             else:
                 break
@@ -258,7 +258,7 @@ def main() -> None:
         data = json.loads(raw) if raw.strip() else {}
         if isinstance(data, dict):
             _run(data)
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Fail open: a gate that errors must let the push through to the git hook.
         return
 

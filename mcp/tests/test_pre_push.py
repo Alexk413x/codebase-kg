@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.writer import build
 
@@ -18,7 +17,7 @@ from codebase_kg.writer import build
 HOOKS = Path(__file__).resolve().parent.parent.parent / "git-hooks"
 sys.path.insert(0, str(HOOKS))
 
-import kg_pre_push as g  # noqa: E402
+import kg_pre_push as g
 
 ZEROS = "0" * 40
 
