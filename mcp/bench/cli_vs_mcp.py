@@ -35,11 +35,13 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
-from typing_extensions import Self
+
+if TYPE_CHECKING:
+    from typing_extensions import Self
 
 MCP_DIR = Path(__file__).resolve().parents[1]
 RUNNER = MCP_DIR / "launch" / "kg_cli.py"
