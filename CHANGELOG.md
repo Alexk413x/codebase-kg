@@ -2,6 +2,16 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.14.0] — 2026-10-08 — public release
+
+### Changed
+
+- The plugin is public and installs from the `alexk413x` marketplace:
+  `claude plugin install codebase-kg@alexk413x`. That marketplace installs from the `release`
+  branch, which `.github/workflows/release.yml` builds from `main` without development files.
+- The licence changes from proprietary to the no-resale licence: Apache 2.0 terms plus the
+  no-resale and prohibited-use conditions. `EULA.md` is removed.
+
 ## [0.13.0] — 2026-10-07 — start and end tools move to the CLI
 
 ### Changed
