@@ -9,7 +9,7 @@ cd <repo>
 uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" migrate knowledge/KNOWLEDGE_GRAPH.md
 ```
 
-Add `--dry-run` first if you want the report without the file.
+To see the report without writing the file, add `--dry-run`.
 
 It **converts rather than regenerates**. Ids, kinds, anchors, edges, sections and parity come across
 verbatim — that structure is real work and there is no reason to re-derive it. Regeneration would
@@ -36,27 +36,32 @@ Anything the scrubber cannot clean automatically is left empty and named under `
 1. **Check the report.** Node/edge/anchor counts should match what the markdown held. Dropped edges
    and normalized fields are listed individually — skim them; they are usually real defects the old
    format tolerated.
-2. **Verify with the tools:** `kg_stats` for the shape, `kg_validate` for anchors vs source.
-3. **Mark it binary** in `.gitattributes`:
+2. **Verify with the CLI.** `kg_stats` shows the shape, and `kg_validate` checks anchors against
+   source:
+   ```sh
+   uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" query kg_stats
+   uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" query kg_validate
+   ```
+3. **Mark it binary** in `.gitattributes`, routed to the textconv driver:
    ```gitattributes
-   knowledge/code_graph.db binary
+   knowledge/code_graph.db binary diff=codegraph
    ```
 4. **Commit the `.db`.**
 5. **Delete `knowledge/KNOWLEDGE_GRAPH.md`** once you're satisfied. Migration leaves it untouched, so
    there is no hurry — but two artifacts is exactly the state this rewrite exists to avoid, and the
    MCP server only reads the `.db`.
-6. **Re-run `/codebase-kg:setup`** if the repo had the old blocking pre-push gate. The new
-   check is advisory and content-based; the old one blocked on a date.
+6. **Run `/codebase-kg:setup`.** It wires the pre-commit and pre-push checks and the textconv
+   driver. If the repo's `pre-push` has the old date-based freshness block, setup replaces that
+   block with a call to the content-based check.
 
 ## If the repo has a wide-table graph
 
 Some graphs use a wide, one-row-per-node table (`| id | kind | anchors | summary | edges | … |`)
 rather than the vertical key/value form. The migration parser handles both.
 
-This is worth knowing because the **pre-0.2 MCP loader did not**: it read every row of a wide table
-as a node called `kind`, so a wide graph loaded as a single useless node and every `kg_*` tool
-returned nothing for that repo. If a repo's graph never seemed to work, this was probably why, and
-migrating fixes it.
+Plugin versions before 0.2 read every row of a wide table as a node called `kind`, so every `kg_*`
+tool returned nothing for that repo. If a repo's markdown graph never worked with the tools, this is
+the likely cause, and migrating fixes it.
 
 ## Rollback
 

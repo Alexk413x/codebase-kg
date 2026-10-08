@@ -96,7 +96,7 @@ All notable changes to the `codebase-kg` plugin.
 
 - `mcp/launch/kg_cli.py query <tool> [json-args]` runs any of the ten read tools from a shell and
   prints the same JSON as the MCP tool. It needs only the standard library. `mcp/bench/` compares it
-  with the MCP server; `cli-plan.md` has the results.
+  with the MCP server.
 
 ### Changed
 
