@@ -1,12 +1,12 @@
 {
   "name": "codebase-kg",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Builds, maintains, and serves a per-repo code graph — a committed SQLite map of any codebase (nodes = components, symbol anchors = where they live, edges = relationships) so an agent can orient and find code without re-deriving the map every session. Constant-time load and indexed full-text search at any size; dangling edges and inconsistent data are impossible to write, not merely reported. Language-agnostic. Cross-codebase parity linking tracks feature gaps between paired repos (e.g. an iOS app and its Android port). A search gate points the agent at the graph before it greps; the commit check advises, and the push check blocks only on stale mapped files.",
   "author": {
     "name": "Alexk413x",
     "email": "alexk413x@gmail.com"
   },
-  "license": "LicenseRef-Proprietary",
+  "license": "LicenseRef-No-Resale-1.0",
   "homepage": "https://github.com/Alexk413x/codebase-kg",
   "repository": "https://github.com/Alexk413x/codebase-kg",
   "keywords": [

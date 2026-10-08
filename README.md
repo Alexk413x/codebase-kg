@@ -25,6 +25,13 @@ The graph is **descriptive** (a mirror of current code), **source-derived** (nev
 history-derived), and **point-don't-copy** (references symbols, never pastes code). It is a tool
 that reflects code state to reduce search cost. Nothing more.
 
+## Install
+
+```sh
+claude plugin marketplace add Alexk413x/marketplace
+claude plugin install codebase-kg@alexk413x
+```
+
 ## How it works
 
 Each repo gets a committed `knowledge/code_graph.db`. A node is a row:
@@ -305,5 +312,6 @@ MCP query server, generalized past accessibility to *any* codebase.
 
 ## License
 
-Proprietary. All rights reserved — see [`LICENSE`](LICENSE) and [`EULA.md`](EULA.md).
-No license to use is granted without a written agreement.
+Free to use, including at work, and free to fork and share. You may not sell it, a fork
+of it, or paid setup or hosting of it, and you may not use it for fraud or scams. See
+[LICENSE](LICENSE) for the full terms.

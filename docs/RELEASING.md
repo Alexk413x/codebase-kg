@@ -71,14 +71,18 @@ nothing when a textconv command cannot resolve — it falls back silently.
 7. **Refresh the install:**
 
    ```sh
-   claude plugin marketplace update codebase-kg
-   claude plugin update codebase-kg@codebase-kg
+   claude plugin marketplace update alexk413x
+   claude plugin update codebase-kg@alexk413x
    ```
 
-   The `codebase-kg` marketplace is this repo's `.claude-plugin/marketplace.json`,
-   and it installs from `main`. Check that the `codebase-kg@codebase-kg` entry in
+   The `alexk413x` marketplace installs from the `release` branch, which
+   `.github/workflows/release.yml` rebuilds from `main` on every push. Wait for that
+   workflow to finish before you update. Check that the `codebase-kg@alexk413x` entry in
    `~/.claude/plugins/installed_plugins.json` names the new version. A session
    loads the plugin cache, not the branch you merged.
+
+   This repo's own `.claude-plugin/marketplace.json` installs from `main` and serves
+   `claude plugin tag` and local development. The release build leaves it out.
 
 8. **Restart the server.** A running server keeps the build it started with.
    A newer build takes the port from an older one when it starts, so restart
