@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from codebase_kg import cli, tools
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.store import CodeGraph
@@ -69,7 +68,7 @@ def test_the_runner_runs_every_cli_without_a_venv(name: str) -> None:
     """The skills call the runner with any Python; the CLIs must need nothing else."""
     proc = subprocess.run(
         [sys.executable, "-I", str(RUNNER), name, "--help"],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, check=False
     )
     assert proc.returncode == 0, proc.stderr
     assert "usage" in proc.stdout.lower()
@@ -77,7 +76,7 @@ def test_the_runner_runs_every_cli_without_a_venv(name: str) -> None:
 
 def test_the_runner_refuses_an_unknown_command() -> None:
     proc = subprocess.run(
-        [sys.executable, "-I", str(RUNNER), "serve"], capture_output=True, text=True, timeout=60
+        [sys.executable, "-I", str(RUNNER), "serve"], capture_output=True, text=True, timeout=60, check=False
     )
     assert proc.returncode != 0
     assert "usage" in proc.stderr

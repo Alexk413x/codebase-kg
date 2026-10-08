@@ -14,9 +14,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastmcp import Client
-
 from codebase_kg import core, resolve, server
+from fastmcp import Client
 
 ROOT = Path(__file__).resolve().parents[2]
 

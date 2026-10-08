@@ -12,11 +12,11 @@ import http.client
 import json
 import os
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
-
 from codebase_kg import core, shim
 from test_http_server import _start, _state
 from test_shared_server import TIMEOUT, _repo, _stop

@@ -17,6 +17,7 @@ import re
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -416,17 +417,15 @@ def _resolve_source_base(graph: CodeGraph, repo_root: str | None) -> Path | None
     )
 
 
-def _word_pattern(segment: str, _cache: dict[str, re.Pattern[str]] = {}) -> re.Pattern[str]:
+@cache
+def _word_pattern(segment: str) -> re.Pattern[str]:
     """A compiled `\\bsegment\\b` matcher, memoized.
 
     `re`'s internal cache holds 512 patterns; a graph with more distinct symbols
     than that recompiles on every anchor. An explicit memo keeps the hot loop of
     `kg_validate` compiling each symbol once.
     """
-    pattern = _cache.get(segment)
-    if pattern is None:
-        pattern = _cache[segment] = re.compile(r"\b" + re.escape(segment) + r"\b")
-    return pattern
+    return re.compile(r"\b" + re.escape(segment) + r"\b")
 
 
 def _symbol_in_source(symbol: str, src: str) -> bool:
@@ -834,20 +833,20 @@ def _check_counterpart(
 
 
 __all__ = [
-    "open_peer",
-    "kg_search",
-    "kg_node",
-    "kg_neighborhood",
+    "Anchor",
+    "cap_issues",
+    "coverage_report",
     "kg_find_by_kind",
-    "kg_find_by_path",
     "kg_find_by_link",
+    "kg_find_by_path",
     "kg_find_by_reference",
+    "kg_neighborhood",
+    "kg_node",
     "kg_parity_gaps",
+    "kg_search",
     "kg_stats",
     "kg_validate",
-    "cap_issues",
+    "open_peer",
     "repo_staleness",
-    "coverage_report",
     "walk_sources",
-    "Anchor",
 ]

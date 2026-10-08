@@ -43,9 +43,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from kg_pre_push import (  # noqa: E402
-    _emit, _git, analyze, digests_for, drift_candidates, find_graph_rel,
-    load_config, norm_root, read_graph, repo_staleness, stale_nodes, standing_line,
+from kg_pre_push import (
+    _emit,
+    _git,
+    analyze,
+    digests_for,
+    drift_candidates,
+    find_graph_rel,
+    load_config,
+    norm_root,
+    read_graph,
+    repo_staleness,
+    stale_nodes,
+    standing_line,
 )
 
 

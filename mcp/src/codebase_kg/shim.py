@@ -132,7 +132,7 @@ def build_info(package: Path = PACKAGE_DIR) -> dict[str, Any]:
             stat = path.stat()
         except OSError:
             continue
-        digest.update(f"{path}|{stat.st_size}|{stat.st_mtime_ns}\n".encode("utf-8"))
+        digest.update(f"{path}|{stat.st_size}|{stat.st_mtime_ns}\n".encode())
         built = max(built, stat.st_mtime)
     version = package_version()
     return {"build": f"{version}+{digest.hexdigest()[:12]}", "version": version, "built": built}

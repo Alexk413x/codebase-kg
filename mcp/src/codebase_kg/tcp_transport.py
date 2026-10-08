@@ -21,8 +21,8 @@ import socket
 import socketserver
 import threading
 from collections.abc import Callable
-from pathlib import Path
 from io import BufferedIOBase
+from pathlib import Path
 from typing import IO, Any, cast
 
 from . import core, resolve
@@ -92,7 +92,7 @@ def accept(line: bytes, token: str, version: str) -> resolve.Connection:
     except ValueError as exc:
         raise ValueError(f"malformed handshake: {exc}") from None
     if not isinstance(hello, dict):
-        raise ValueError("malformed handshake")
+        raise ValueError("malformed handshake")  # noqa: TRY004 - callers catch ValueError
     offered = hello.get("token")
     if not isinstance(offered, str) or not hmac.compare_digest(offered, token):
         raise ValueError("bad token")

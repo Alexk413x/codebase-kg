@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from codebase_kg import query, tools
 from codebase_kg.store import CodeGraph
 
@@ -17,7 +16,7 @@ RUNNER = Path(tools.__file__).resolve().parents[2] / "launch" / "kg_cli.py"
 def _run(graph: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     env = {k: v for k, v in os.environ.items() if k != "CODEBASE_KG_PATH"}
     return subprocess.run(
-        [sys.executable, "-I", str(RUNNER), "query", "--graph", str(graph), *args], capture_output=True, env=env
+        [sys.executable, "-I", str(RUNNER), "query", "--graph", str(graph), *args], capture_output=True, env=env, check=False
     )
 
 
@@ -65,7 +64,7 @@ def test_arguments_on_stdin(graph_file: Path) -> None:
     env = {k: v for k, v in os.environ.items() if k != "CODEBASE_KG_PATH"}
     p = subprocess.run(
         [sys.executable, "-I", str(RUNNER), "query", "--graph", str(graph_file), "kg_stats"],
-        input=b"{}", capture_output=True, env=env,
+        input=b"{}", capture_output=True, env=env, check=False
     )
     assert p.returncode == 0
     assert "nodes" in json.loads(p.stdout)

@@ -985,14 +985,14 @@ def remove_reference(
 
 
 __all__ = [
-    "EditError",
     "Change",
-    "apply",
-    "upsert_node",
-    "delete_node",
-    "add_link",
-    "remove_link",
-    "add_reference",
-    "remove_reference",
+    "EditError",
     "StoreError",
+    "add_link",
+    "add_reference",
+    "apply",
+    "delete_node",
+    "remove_link",
+    "remove_reference",
+    "upsert_node",
 ]

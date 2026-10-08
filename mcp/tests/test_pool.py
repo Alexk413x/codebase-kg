@@ -14,12 +14,12 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
-
 from codebase_kg import core, resolve, server, shim
 from codebase_kg import pool as pool_mod
 from codebase_kg.pool import CallError, Pool, WorkerError
@@ -300,7 +300,7 @@ def test_the_worker_imports_no_fastmcp() -> None:
     python, *flags, _, _, src = pool_mod.worker_command()
     probe = ("import sys, json; sys.path.insert(0, sys.argv[1]); from codebase_kg import worker; "
              "worker._writes(); print(json.dumps(sorted(sys.modules)))")
-    out = subprocess.run([python, *flags, "-c", probe, src], capture_output=True, text=True, timeout=30)
+    out = subprocess.run([python, *flags, "-c", probe, src], capture_output=True, text=True, timeout=30, check=False)
     assert out.returncode == 0, out.stderr
     modules = json.loads(out.stdout)
     assert "codebase_kg.query" in modules and "codebase_kg.edits" in modules

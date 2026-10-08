@@ -19,7 +19,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.writer import build
 
@@ -27,7 +26,7 @@ HOOKS = Path(__file__).resolve().parent.parent.parent / "hooks"
 GIT_HOOKS = Path(__file__).resolve().parent.parent.parent / "git-hooks"
 sys.path.insert(0, str(HOOKS))
 
-import kg_session_start as hook  # noqa: E402
+import kg_session_start as hook
 
 pytestmark = pytest.mark.skipif(
     shutil.which("git") is None, reason="git is not installed"
@@ -191,7 +190,7 @@ def test_skip_kg_silences_it(repo: Path, monkeypatch: pytest.MonkeyPatch,
 
     class _Stdin:
         def read(self) -> str:
-            return '{"cwd": %r}' % str(repo)
+            return f'{{"cwd": {str(repo)!r}}}'
 
     old = sys.stdin
     sys.stdin = _Stdin()  # type: ignore[assignment]

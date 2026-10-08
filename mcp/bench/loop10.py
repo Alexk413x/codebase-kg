@@ -29,9 +29,9 @@ from fastmcp.client.transports import StdioTransport
 MCP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(MCP_DIR / "src"))
 sys.path.insert(0, str(MCP_DIR / "bench"))
-from codebase_kg import query  # noqa: E402
-from cli_vs_mcp import _counters, _process_mb  # noqa: E402
-from codebase_kg.store import CodeGraph  # noqa: E402
+from cli_vs_mcp import _counters, _process_mb
+from codebase_kg import query
+from codebase_kg.store import CodeGraph
 
 RUNNER = MCP_DIR / "launch" / "kg_cli.py"
 CLIENT = MCP_DIR / "bench" / "kg_client.py"

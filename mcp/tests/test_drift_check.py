@@ -26,15 +26,14 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.writer import build
 
 HOOKS = Path(__file__).resolve().parent.parent.parent / "git-hooks"
 sys.path.insert(0, str(HOOKS))
 
-import kg_pre_commit as commit_hook  # noqa: E402
-import kg_pre_push as g  # noqa: E402
+import kg_pre_commit as commit_hook
+import kg_pre_push as g
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 

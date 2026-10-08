@@ -12,7 +12,6 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.schema import APPLICATION_ID, SCHEMA_VERSION
 from codebase_kg.writer import BuildError, build

@@ -8,10 +8,9 @@ validation, shows the file itself rejects them.
 from __future__ import annotations
 
 import sqlite3
-from typing import Iterator
+from collections.abc import Iterator
 
 import pytest
-
 from codebase_kg.schema import DDL
 
 

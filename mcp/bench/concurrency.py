@@ -27,8 +27,8 @@ from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cli_vs_mcp import CpuMeter, cpu_load, http_client, http_server  # noqa: E402
-from loop10 import CALLS, RUNNER, SHIM  # noqa: E402
+from cli_vs_mcp import CpuMeter, cpu_load, http_client, http_server
+from loop10 import CALLS, RUNNER, SHIM
 
 LOOKUPS = CALLS
 
@@ -51,7 +51,7 @@ def cli_agents(n: int, graph: str, python: str) -> dict:
         times, errors = [], 0
         for tool, args in LOOKUPS:
             t = time.perf_counter()
-            p = subprocess.run([python, "-I", str(RUNNER), "query", tool, json.dumps(args)], capture_output=True, env=env)
+            p = subprocess.run([python, "-I", str(RUNNER), "query", tool, json.dumps(args)], capture_output=True, env=env, check=False)
             times.append((time.perf_counter() - t) * 1000)
             errors += p.returncode != 0
         return times, errors
@@ -116,15 +116,15 @@ def main() -> int:
 
     for n in agents:
         if "cli" in modes:
-            timed("cli", n, lambda: cli_agents(n, graph, a.python))
+            timed("cli", n, lambda n=n: cli_agents(n, graph, a.python))
         if "mcp" in modes:
-            timed("mcp", n, lambda: asyncio.run(mcp_agents(n, graph)))
+            timed("mcp", n, lambda n=n: asyncio.run(mcp_agents(n, graph)))
     for mode, workers in (("http", a.max_workers), ("http0", 0)):
         if mode not in modes:
             continue
         with http_server(workers) as server:
             for n in agents:
-                timed(mode, n, lambda: asyncio.run(mcp_agents(n, graph, server)))
+                timed(mode, n, lambda n=n: asyncio.run(mcp_agents(n, graph, server)))
     text = json.dumps(report, indent=2)
     print(text)
     if a.out:

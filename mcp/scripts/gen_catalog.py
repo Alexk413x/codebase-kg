@@ -16,7 +16,7 @@ from pathlib import Path
 MCP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(MCP / "src"))
 
-from codebase_kg import server  # noqa: E402
+from codebase_kg import server
 
 CATALOG = MCP / "src" / "codebase_kg" / "catalog.json"
 EVAL_TOOLS = MCP.parent / "evals" / "mocks" / "codebase-kg" / "_tools.json"

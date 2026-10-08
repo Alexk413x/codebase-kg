@@ -18,14 +18,13 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.writer import build
 
 HOOKS = Path(__file__).resolve().parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS))
 
-import _config as c  # noqa: E402
+import _config as c
 
 
 @pytest.fixture
@@ -57,7 +56,7 @@ def test_project_dir_falls_back_to_cwd_then_dot(
 ) -> None:
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     assert c.project_dir(str(tmp_path)) == tmp_path.resolve()
-    assert c.project_dir(None) == Path(".").resolve()
+    assert c.project_dir(None) == Path.cwd()
 
 
 # --- load_config -------------------------------------------------------------
