@@ -44,11 +44,6 @@
       "annotations": {
         "readOnlyHint": true,
         "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
       }
     },
     {
@@ -75,11 +70,6 @@
       "annotations": {
         "readOnlyHint": true,
         "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
       }
     },
     {
@@ -124,11 +114,6 @@
       "annotations": {
         "readOnlyHint": true,
         "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
       }
     },
     {
@@ -168,11 +153,6 @@
       "annotations": {
         "readOnlyHint": true,
         "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
       }
     },
     {
@@ -212,11 +192,6 @@
       "annotations": {
         "readOnlyHint": true,
         "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
       }
     },
     {
@@ -243,11 +218,6 @@
       "annotations": {
         "readOnlyHint": true,
         "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
       }
     },
     {
@@ -304,114 +274,6 @@
       "annotations": {
         "readOnlyHint": true,
         "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
-      }
-    },
-    {
-      "name": "kg_parity_gaps",
-      "title": "Kg Parity Gaps",
-      "description": "The cross-codebase gap report, as a query. Lists nodes flagged\n`divergent` or `<codebase>-only`, with their counterpart + divergence line.\n`by_status` counts every gap, including any past `limit`.",
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Optional filter: 'divergent', 'only' (any *-only), or an exact flag like 'android-only'."
-          },
-          "limit": {
-            "default": 50,
-            "description": "Most items to return. The result's `total` counts every match and `truncated` says whether more remain.",
-            "maximum": 1000,
-            "minimum": 1,
-            "type": "integer"
-          },
-          "offset": {
-            "default": 0,
-            "description": "Items to skip, for the next page: the previous result's `next_offset`.",
-            "minimum": 0,
-            "type": "integer"
-          }
-        }
-      },
-      "outputSchema": {
-        "additionalProperties": true,
-        "type": "object"
-      },
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
-      }
-    },
-    {
-      "name": "kg_stats",
-      "title": "Kg Stats",
-      "description": "Counts and health for cold start: node/edge/anchor totals, breakdown by\nkind and section, parity breakdown, isolated nodes, when the graph was\ngenerated, and `staleness` — the repo-wide count of mapped files whose\ncontents no longer match what the graph was built against, plus the nodes\nthat describe them. Read `staleness.stale_files` before trusting a\ndescription: non-zero means part of this map is out of date, and\n`/codebase-kg:audit` says which part.",
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {}
-      },
-      "outputSchema": {
-        "additionalProperties": true,
-        "type": "object"
-      },
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
-      }
-    },
-    {
-      "name": "kg_validate",
-      "title": "Kg Validate",
-      "description": "Advisory drift check against real source (never blocks). Reports anchors\nwhose file or symbol no longer exists, source files under the root that no\nnode covers, and counterpart problems vs the peer graph. Structural\nintegrity — unique ids, no dangling edges, consistent parity — is guaranteed\nby the store and reported rather than checked. Each issue list is capped at\n`limit`, and `changed_since_built` and `coverage.gaps` at 50.",
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "limit": {
-            "default": 50,
-            "description": "Most entries per issue list. `issue_counts` has each list's full length.",
-            "maximum": 1000,
-            "minimum": 1,
-            "type": "integer"
-          }
-        }
-      },
-      "outputSchema": {
-        "additionalProperties": true,
-        "type": "object"
-      },
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
       }
     },
     {
@@ -545,7 +407,7 @@
                   "type": "array"
                 },
                 "rebaseline": {
-                  "description": "`true` records that you checked this node against its source now. It re-hashes every file the node anchors, so those files leave `changed_since_built` and the pre-push backlog. The baseline belongs to the file, not the node: it clears every node anchored to that file, the same as `build --rebaseline`. Set it only after you have checked every node that anchors those files. Without it, a recorded baseline never changes, so a description edit alone cannot hide drift.",
+                  "description": "`true` records that you checked this node against its source now. It re-hashes every file the node anchors, so those files leave `changed_since_built` and the pre-push stale-file list. The baseline belongs to the file, not the node: it clears every node anchored to that file, the same as `build --rebaseline`. Set it only after you have checked every node that anchors those files. Without it, a recorded baseline never changes, so a description edit alone cannot hide drift.",
                   "type": "boolean"
                 }
               },
@@ -570,11 +432,6 @@
         "destructiveHint": false,
         "idempotentHint": true,
         "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
       }
     },
     {
@@ -615,11 +472,6 @@
         "readOnlyHint": false,
         "destructiveHint": true,
         "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
       }
     },
     {
@@ -656,11 +508,6 @@
       "annotations": {
         "readOnlyHint": false,
         "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
       }
     },
     {
@@ -693,11 +540,6 @@
         "readOnlyHint": false,
         "destructiveHint": true,
         "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
       }
     },
     {
@@ -763,11 +605,6 @@
       "annotations": {
         "readOnlyHint": false,
         "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
       }
     },
     {
@@ -824,11 +661,6 @@
         "readOnlyHint": false,
         "destructiveHint": true,
         "openWorldHint": false
-      },
-      "_meta": {
-        "fastmcp": {
-          "tags": []
-        }
       }
     }
   ],

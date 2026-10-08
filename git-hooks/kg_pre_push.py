@@ -17,27 +17,29 @@ status `M`, and a check that reads only `A` and `D` is silent through exactly
 the drift that accumulates: on one repo it let a graph fall 48 commits behind,
 of which two thirds were modifications it never mentioned.
 
-All three are scoped to the change set, and are advisory. That scoping is right
-for per-commit noise and wrong for a backlog: a file that drifts and is never
-re-derived is reported once, in the commit that touched it, and never again. One
-consumer repo carried 47 stale files for months with every one of these checks
-passing. So this hook also asks the repo-wide question — every anchored file
-against its baseline — and **the backlog is the one thing it blocks on**.
+The first three findings are scoped to the change set and are advisory. That
+scoping is right for per-commit noise and wrong for a standing gap: a file that
+drifts and is never re-derived is reported once, in the commit that touched it,
+and never again. One consumer repo carried 47 stale files for months with every
+one of these checks passing. So this hook also asks the repo-wide question —
+every anchored file against its baseline — and **blocks on any stale mapped
+file**.
 
-The backlog is repo-wide staleness minus whatever this push itself touches. That
-split is what keeps the gate from becoming wallpaper: drift you are introducing
-right now is reported and let through, because the commit-time check already
-named it and you are plainly still working on it; drift you walked away from and
-never came back to is what stops the push. In a repo that is kept current the
-backlog is zero and this hook is silent, so there is nothing to develop a habit
-of bypassing — which was the standing argument against gating here, and is
-answered by narrowing what gates rather than by not gating.
+The gate covers every stale file, including the ones this push touches. A push
+is publication: it records the code on the remote, and a graph that lags the
+code at that point stays wrong for everyone who reads it. Refresh the graph
+before you push, or acknowledge the drift explicitly. In a repo that is kept
+current no file is stale and this hook is silent.
+
+When the gate blocks, the message tells the Claude session or the person
+pushing to run `/codebase-kg:refresh`, commit the graph and push again. The
+hook itself never runs a model.
 
 The escape hatches are deliberate and all explicit:
 
-  * `KG_STALE_ACK=<n>` where `<n>` is the backlog count this run reports. It
-    names the number on purpose — it stops matching the moment the backlog
-    moves, so it cannot be set once in a shell profile and forgotten.
+  * `KG_STALE_ACK=<n>` where `<n>` is the total stale-file count this run
+    reports. It names the number on purpose — it stops matching the moment the
+    count moves, so it cannot be set once in a shell profile and forgotten.
   * `SKIP_KG=1` skips the check entirely, as it does at commit time.
   * `git push --no-verify` skips every hook.
 
@@ -528,7 +530,7 @@ def repo_staleness(graph: Graph, root: str, revs: list[str]) -> Staleness:
 
     The question neither hook was asking. `analyze` compares a change set, so a
     file that drifts and is never re-derived is named once and then never again;
-    this compares the whole map, so a backlog cannot go quiet by being old.
+    this compares the whole map, so stale files cannot go quiet by being old.
 
     Read from `revs` rather than the working tree for the same reason the change
     set is: a push of a branch that is not checked out would otherwise be
@@ -553,7 +555,7 @@ def standing_line(stale: list[str], nodes: list[str], graph_rel: str) -> str:
     """The repo-wide total as one line, shared by both hooks.
 
     One line on purpose. The change-set report is already scoped and worth
-    reading; the standing backlog only needs to stop being invisible, and a
+    reading; the repo-wide total only needs to stop being invisible, and a
     second block at every commit would make people stop reading the first.
     """
     return (
@@ -663,7 +665,7 @@ def _emit(
 
     `blocked` suppresses the two advisory lines for the same reason. These
     findings are still advisory when a push is blocked — the block comes from the
-    backlog, reported separately below them — but a header promising the push is
+    stale files, reported separately below them — but a header promising the push is
     going through, three lines above one saying it is not, is the same defect.
     """
     unmapped, deleted, drifted = findings
@@ -691,21 +693,14 @@ def _emit(
     sys.stderr.write("\n".join(msg) + "\n")
 
 
-def _emit_backlog(
+def _emit_stale(
     stale: list[str],
-    backlog: list[str],
     nodes: list[str],
     graph_rel: str,
     root: str,
     blocked: bool,
 ) -> None:
-    """Report the repo-wide total, and the verdict on the backlog.
-
-    `stale` is every mapped file that has drifted; `backlog` is the part of it
-    this push does not touch. The distinction is the whole design: drift you are
-    making now was already reported at commit time and you are still working on
-    it, while drift you left behind is what no change set will ever mention
-    again.
+    """Report the repo-wide total, list every stale file, and give the verdict.
 
     Paths are converted back to repo-relative for display. They arrive relative
     to the graph's `root`, which is what the comparison needs and is not what
@@ -714,15 +709,13 @@ def _emit_backlog(
     files.
     """
     msg = ["[codebase-kg]", standing_line(stale, nodes, graph_rel)]
-    if backlog:
-        msg.append("[codebase-kg]")
-        _block(
-            msg,
-            [_root_to_rel(p, root) for p in backlog],
-            f"{len(backlog)} of those are untouched by this push - a standing "
-            "backlog no change set will report again:",
-            "~",
-        )
+    msg.append("[codebase-kg]")
+    _block(
+        msg,
+        [_root_to_rel(p, root) for p in stale],
+        f"{len(stale)} mapped file(s) no longer match the graph:",
+        "~",
+    )
     if not blocked:
         # `_block` closes with a separator for whatever follows it. Nothing does.
         while msg and msg[-1] == "[codebase-kg]":
@@ -731,20 +724,20 @@ def _emit_backlog(
         return
     msg += [
         "[codebase-kg] PUSH BLOCKED. A commit is provisional; a push is publication,",
-        "[codebase-kg] and this drift is leaving your local branch unrecorded.",
+        "[codebase-kg] and the graph no longer matches the code you are publishing.",
         "[codebase-kg]",
-        "[codebase-kg]   Fix it:         /codebase-kg:audit, then /codebase-kg:refresh",
-        f"[codebase-kg]   Accept it once: KG_STALE_ACK={len(backlog)} git push ...",
+        "[codebase-kg]   Fix it:         run /codebase-kg:refresh, commit the graph, push again",
+        f"[codebase-kg]   Accept it once: KG_STALE_ACK={len(stale)} git push ...",
         "[codebase-kg]   Skip the check: SKIP_KG=1 git push ...  (or git push --no-verify)",
         "[codebase-kg]",
         "[codebase-kg] The ack names the count on purpose: it stops matching as soon as",
-        "[codebase-kg] the backlog moves, so it cannot be set once and forgotten.",
+        "[codebase-kg] the count moves, so it cannot be set once and forgotten.",
     ]
     sys.stderr.write("\n".join(msg) + "\n")
 
 
-def acknowledged(backlog: list[str]) -> bool:
-    """Is this exact backlog already acknowledged for this push?
+def acknowledged(stale: list[str]) -> bool:
+    """Is this exact set of stale files already acknowledged for this push?
 
     `KG_STALE_ACK` must name the count. An ack that meant "yes, whatever the
     number" is the `--no-verify`-and-forget failure in a different spelling: set
@@ -752,11 +745,11 @@ def acknowledged(backlog: list[str]) -> bool:
     afterwards. Naming the number makes the acknowledgement expire on its own.
     """
     ack = os.environ.get("KG_STALE_ACK", "").strip()
-    return ack.isdigit() and int(ack) == len(backlog)
+    return ack.isdigit() and int(ack) == len(stale)
 
 
 def main() -> int:
-    """Run the check. Returns 1 only for an unacknowledged backlog.
+    """Run the check. Returns 1 only for unacknowledged stale mapped files.
 
     Every other outcome — no graph, an unreadable one, findings in the change
     set, or a bug in here — returns 0. A staleness check that can fail a push by
@@ -813,16 +806,12 @@ def _run() -> int:
     # The repo-wide pass, over every anchored file rather than the change set.
     revs = push_tips(refs) or ["HEAD"]
     split = repo_staleness(graph, root, revs)
-    touched = {_rel_to_root(rel, root) for _status, rel in changed}
-    backlog = [p for p in split.stale if p not in touched]
-    blocked = bool(backlog) and not acknowledged(backlog)
+    blocked = bool(split.stale) and not acknowledged(split.stale)
 
     if any(findings):
         _emit(findings, graph_rel, blocked=blocked)
     if split.stale:
-        _emit_backlog(
-            split.stale, backlog, stale_nodes(graph, split.stale), graph_rel, root, blocked
-        )
+        _emit_stale(split.stale, stale_nodes(graph, split.stale), graph_rel, root, blocked)
     return 1 if blocked else 0
 
 

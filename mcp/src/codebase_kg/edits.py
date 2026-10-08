@@ -59,9 +59,6 @@ from .store import CodeGraph, StoreError
 #: delete plus an insert with different edge consequences.
 SCALAR_FIELDS = ("kind", "description", "section", "parity", "counterpart", "divergence")
 
-#: Fields whose value is a list, replaced wholesale when present.
-LIST_FIELDS = ("anchors", "edges", "external_links", "references")
-
 
 class EditError(ValueError):
     """The edit was refused. The committed graph is byte-identical to before."""

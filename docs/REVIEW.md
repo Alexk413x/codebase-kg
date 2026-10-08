@@ -15,7 +15,8 @@ $ git diff -- knowledge/code_graph.db
 Binary files a/knowledge/code_graph.db and b/knowledge/code_graph.db differ
 ```
 
-With the textconv driver configured (`/codebase-kg:setup`):
+With the textconv driver configured (`/codebase-kg:setup` once per repo, then
+`sh .githooks/install.sh` once per clone):
 
 ```diff
 $ git diff -- knowledge/code_graph.db
@@ -39,10 +40,12 @@ Two pieces, deliberately split:
 | Piece | Where | Committed? |
 |---|---|---|
 | `*.db binary diff=codegraph` | `.gitattributes` | **yes** — every clone gets the wiring |
-| `diff.codegraph.textconv …` | `git config` | no — per-clone, because it names a local command |
+| `diff.codegraph.textconv …` | `git config` | no — per-clone; the committed `install.sh` writes it |
 
-The attribute cannot carry the command: the path to the converter differs per
-machine, and a committed absolute path would be wrong for everyone else.
+The attribute cannot carry the command. Git never clones `.git/config`, so a
+repo cannot make a clone run a command without someone choosing to. The
+command `install.sh` writes is the same on every machine: `uvx` runs
+`codebase-kg-export` from a tag-pinned release (`docs/RELEASING.md`).
 
 ## Merges
 

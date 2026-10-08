@@ -2,6 +2,148 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.13.0] — 2026-10-07 — start and end tools move to the CLI
+
+### Changed
+
+- `kg_stats`, `kg_validate` and `kg_parity_gaps` leave the MCP catalog for every transport: HTTP,
+  the shim and a private stdio server. Their definitions cost context in every session, and a task
+  runs them once at its start or end. They run through
+  `mcp/launch/kg_cli.py query <tool> [json-args]`, which prints the same JSON. The MCP surface is 13
+  tools: 7 lookups and the 6 write tools, which stay on MCP.
+- The `validate`, `audit`, `build`, `refresh`, `link` and `query` skills run the three with
+  `uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query <tool>` and allow
+  that command. A skill or agent definition that lists `mcp__codebase-kg__kg_stats`,
+  `kg_validate` or `kg_parity_gaps` must switch to the CLI.
+- The `pre-push` hook no longer runs `claude -p "/codebase-kg:refresh"` before it blocks. The
+  headless run did nothing whenever the plugin did not load in a print-mode session, for example
+  when the plugin is installed only at project scope for another repo: the session reported an
+  unknown command, no codebase-kg tools attached, and the hook then reported files "still stale
+  after the refresh". A stale push is blocked as before. The block message tells the session or
+  the person pushing to run `/codebase-kg:refresh`, commit the graph and push again, as the
+  `PreToolUse` push gate already does. `KG_AUTO_REFRESH` and `KG_REFRESHING` are gone;
+  `KG_STALE_ACK=<n>` and `SKIP_KG=1` still pass. `git-hooks/install.sh` pins 0.13.0.
+- The migrate report names `kg_cli.py query kg_stats` and `kg_cli.py query kg_validate`.
+
+## [0.12.0] — 2026-10-07 — one shared HTTP server for Claude Code
+
+### Changed
+
+- Claude Code reaches codebase-kg over HTTP at `http://127.0.0.1:47821/mcp` instead of launching a
+  stdio shim per session. Each open session cost a shim process whether or not it called a tool:
+  eight sessions held 317 MB across 18 processes. Over HTTP, an idle server holds 26 MB in one
+  process, however many sessions connect. `kg-shim` and the TCP path stay unchanged for Codex and
+  other stdio clients, in the same server process.
+- The server imports only the standard library. It runs on the base Python with `-I -S`, with no
+  venv and no `uv run`, starts in about 0.2 s instead of 2.2-2.4 s, and holds 26 MB idle instead of
+  83 MB. It serves MCP 2026-07-28 over HTTP and classic MCP to the shims from one core, and refuses
+  any older protocol version over HTTP with `-32022`. Single calls take 4-6 ms instead of 10-12 ms,
+  and with 16 agents calling at once the median call is 81-115 ms instead of 147-161 ms.
+- `fastmcp` is a dev dependency only. `server.py` keeps the tool definitions;
+  `mcp/scripts/gen_catalog.py` writes them to `src/codebase_kg/catalog.json`, which the server sends,
+  and a test fails when the two differ. The server checks arguments with pydantic's lax rules, and a
+  test compares 79 argument cases with fastmcp's validation.
+- The server learns each Claude Code session's repo by asking for its roots on the first tool call,
+  and caches the answer per connection. The `headersHelper` runs in the plugin folder and cannot see
+  the session's cwd. `CODEBASE_KG_PATH` still names a graph, and a relative one resolves against the
+  session's root.
+- A server that holds the HTTP port exits after 8 hours with no request
+  (`CODEBASE_KG_HTTP_IDLE_TIMEOUT`), not 10 minutes. Claude Code never restarts a server that stopped
+  mid-session, so an idle exit would leave the session with failing tools.
+- A server exits within 5 s once its state file is gone or names another server. Nothing can
+  verify such an orphan, so it would otherwise hold the port with every session refused.
+
+### Added
+
+- Plugin settings `server_port` (default 47821) and `max_workers` (default 8, no upper limit).
+  `CODEBASE_KG_PORT` overrides the port for any client, and `CODEBASE_KG_MAX_WORKERS` the pool size.
+  A running server keeps the `max_workers` it started with; the README says how to apply a change.
+- The shared server runs tool calls on an elastic pool of worker processes, for HTTP and shim
+  sessions alike. A worker is a plain Python process of about 21 MB. The pool starts a worker when a
+  call finds none idle, up to `max_workers`, queues calls beyond that, and stops a worker after 60 s
+  with no call. A worker that crashes or exceeds `CODEBASE_KG_CALL_TIMEOUT` (default 60 s) fails
+  only that call. Writes run on the workers too, one at a time per graph, and keep their refusal
+  answer and `written` flag. `max_workers` 0 runs calls in the server process. A private stdio
+  server, which `kg-shim` falls back to, has no pool.
+- `kg_cli.py server status` prints the build, pid and `max_workers` of the server on the port, and
+  `kg_cli.py server stop` stops it, so the next one reads the settings afresh.
+- `hooks/kg_server_start.py`, a `SessionStart` hook that starts the server when nothing answers
+  `GET /health`, or an older build does, and waits up to 3 s. It prints one line only when the port
+  belongs to another program or the server does not come up.
+- `mcp/launch/kg_headers.py`, the `headersHelper`. While nothing listens on the port it waits up to
+  3 s for the server the hook starts. A request without the token gets 403, and Claude Code then
+  records the server as needing auth and stops connecting to it.
+- `GET /health` reports the service, build, pid and `max_workers`. `POST /shutdown` stops the
+  server; it takes that server's own state-file token. A newer build asks an older one on the port
+  to stop and takes the port; an older build leaves a newer one running and serves only shims.
+
+### Removed
+
+- The server's venv (`venv-<key>` in `CLAUDE_PLUGIN_DATA` or the cache dir), `CODEBASE_KG_DATA_DIR`,
+  and the server's `uv run` launch. Venvs earlier builds made stay on disk; delete them to reclaim
+  the space.
+- uvicorn, starlette and the `mcp` package from the server process.
+
+### Security
+
+- The HTTP server binds `127.0.0.1` only, refuses a request whose `Host` is not its loopback address
+  or whose `Origin` is foreign, and requires a per-user bearer token. It answers a missing or wrong
+  token with 403, not 401, which would start Claude Code's OAuth flow. A request body may be at most
+  8 MB, and a keep-alive connection idle for 60 s is closed.
+- The helper and the takeover send a credential only to a server whose pid and port match a live
+  state file of this user. A build name from `/health` must match the format a build has, so a
+  reply cannot point the check at a file outside the cache dir.
+
+## [0.11.0] — 2026-10-07 — pre-push blocks on every stale file
+
+### Added
+
+- `mcp/launch/kg_cli.py query <tool> [json-args]` runs any of the ten read tools from a shell and
+  prints the same JSON as the MCP tool. It needs only the standard library. `mcp/bench/` compares it
+  with the MCP server.
+
+### Changed
+
+- The `pre-push` hook blocks on every stale mapped file, including files the
+  push touches. A mapped file is stale when its contents no longer match the
+  digest recorded when the graph was built. Before, the hook blocked only on
+  stale files the push did not touch and let drift in pushed files through as
+  advice. A push publishes the code, so the graph has to match it first. Run
+  `/codebase-kg:audit`, then `/codebase-kg:refresh`.
+- The block message lists every stale file as a repo-relative path.
+- `KG_STALE_ACK=<n>` names the total stale count, not the count of files the
+  push leaves untouched. The ack still stops matching when the count moves.
+  `SKIP_KG=1` and `git push --no-verify` work as before.
+- Before the hook blocks, it runs `claude -p "/codebase-kg:refresh"` headless
+  in the repo root, with the stale files listed in the prompt. The run gets the
+  graph's MCP tools, `Read(./**)`, `Grep` and `Glob`, and a minimal
+  environment. It gets no shell, `Write`, `Edit` or CLI runner, so text in the
+  repo cannot steer it into writing or running anything else. Even read-only
+  `git` is left out, because `git diff` and `git log` take `--output=<file>`.
+  It runs only when `claude` is on `PATH`,
+  `KG_AUTO_REFRESH` is not `0`, `KG_REFRESHING` is not set, a pushed ref points
+  at `HEAD`, and the graph file has no uncommitted changes. When the run exits
+  0 and no mapped file is stale, the hook commits the graph as "Refresh the code
+  graph" and exits 1. A pre-push hook cannot add a commit to the push in
+  progress, so you run `git push` again. When `claude` fails or times out (900
+  seconds), a file stays stale, or anything raises, the hook prints the reason,
+  leaves any graph change uncommitted and prints the normal block. Each stale
+  push costs one headless model run. `KG_AUTO_REFRESH=0` turns the refresh off.
+- A new `PreToolUse` hook, `hooks/kg_push_gate.py`, denies an agent's `git push`
+  while any mapped file is stale against `HEAD`. It parses the Bash command, so
+  `git -C <dir> push`, chained commands and env prefixes are covered. The reason
+  lists up to 20 stale files and tells the agent to run `/codebase-kg:refresh`,
+  commit the graph and push again. `SKIP_KG=1` and a matching
+  `KG_STALE_ACK=<n>` pass it. `--no-verify` does not, so an agent cannot skip
+  the check silently. The hook uses the pre-push hook's staleness comparison and
+  fails open on any error. When it denies, the pre-push hook's headless refresh
+  does not run.
+- The change-set findings (unmapped, deleted and drifted files in the pushed
+  commits) stay advisory, `pre-commit` stays advisory, and an error inside the
+  check still exits 0.
+- `git-hooks/README.md`, `README.md`, `SCHEMA.md` and the setup and refresh
+  skills describe the new rule. `git-hooks/install.sh` pins 0.11.0.
+
 ## [0.10.0] — 2026-09-28 — retire the kg_stats CLI field
 
 ### Removed

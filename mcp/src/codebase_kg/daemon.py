@@ -1,55 +1,68 @@
-"""`codebase-kg --serve`: one server process for every session on the machine.
+"""The codebase-kg server: `--serve` runs one process for every session on the machine. Stdlib only.
 
-`shim.py` starts this on first use and relays each session to it over a
-loopback TCP connection. The server binds 127.0.0.1 on a port the OS picks and
-publishes `{version, port, pid, token}` in a per-build state file readable
+`shim.spawn_server` and the SessionStart hook start it on the base Python with
+`-I -S`, from the plugin's `src`, with no venv and no third-party package. It
+serves classic MCP to the shims over loopback TCP (`tcp_transport.py`) and MCP
+2026-07-28 to Claude Code over HTTP (`http_transport.py`), both from one
+`core.Core`, which runs tool calls on the worker pool in `pool.py`.
+
+The TCP listener binds 127.0.0.1 on a port the OS picks. The server publishes
+`{version, port, pid, token, http_port}` in a per-build state file readable
 only by the user, where `version` is `shim.server_build()`: the package version
-plus a digest of the source files. A connection opens with one JSON handshake
-line — the token, the build, and the session's cwd and explicit graph path — and
-the server answers with one line before any MCP traffic flows. It refuses a
-handshake from any other build.
+plus a digest of the source files. `http_port` is the port `shim.http_port()`
+names, or null when this server holds none. When that port answers as an older
+codebase-kg build that its state file verifies, this server asks it to stop and
+takes the port. When it answers as a newer build, or as anything it cannot
+verify, this server serves the shims only; when it answers as this same build,
+this server exits, because its state file is the one the shims read.
 
-Each accepted connection runs its own MCP session over the socket, with the
-same tool registrations the stdio server uses, bound to that connection's
-`server.Connection`. The server exits once it has had no connection for
-`CODEBASE_KG_IDLE_TIMEOUT` seconds (default 600) and removes its state file.
+Claude Code sends each call to whatever holds the port, but nothing restarts a
+server that stopped mid-session. So a server that holds the HTTP port exits only
+after `CODEBASE_KG_HTTP_IDLE_TIMEOUT` seconds (default 8 hours) with no HTTP
+request and no shim connection. One without it exits after
+`CODEBASE_KG_IDLE_TIMEOUT` seconds (default 600) with no shim connection. Both
+exit within `ORPHAN_CHECK_INTERVAL` seconds once their state file is gone or
+names another server, and at once on `POST /shutdown` with the state-file token.
+Each removes its state file if it is still its own.
+
+The pool size is `pool.max_workers()`, read once at start: a changed
+`max_workers` setting takes effect when the server next starts. With 0 the calls
+run in this process.
+
+Without `--serve`, the process is a private server: classic MCP on its own
+stdio for the one session that started it, with the graph from its first
+argument, `$CODEBASE_KG_PATH` or its cwd, and no pool.
 """
 
 from __future__ import annotations
 
-import hmac
 import json
 import logging
 import os
 import secrets
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
-import anyio
-from anyio.abc import SocketAttribute, SocketStream
-from anyio.streams.buffered import BufferedByteReceiveStream
-from mcp.server.lowlevel.server import NotificationOptions
-from mcp.shared.message import SessionMessage
-from mcp.types import jsonrpc_message_adapter
-
-from . import server, shim
+from . import core, http_transport, resolve, shim, tcp_transport
+from .pool import Pool, call_timeout, max_workers
 
 logger = logging.getLogger("codebase_kg.daemon")
 
 DEFAULT_IDLE_TIMEOUT = 600.0
-HANDSHAKE_TIMEOUT = 5.0
-MAX_HANDSHAKE = 64 * 1024
-MAX_MESSAGE = 64 * 1024 * 1024
+DEFAULT_HTTP_IDLE_TIMEOUT = 8 * 3600.0
+ORPHAN_CHECK_INTERVAL = 5.0
+TICK = 0.25
 
 
-def idle_timeout() -> float:
-    raw = os.environ.get("CODEBASE_KG_IDLE_TIMEOUT", "").strip()
+def idle_timeout(name: str = "CODEBASE_KG_IDLE_TIMEOUT", default: float = DEFAULT_IDLE_TIMEOUT) -> float:
+    raw = os.environ.get(name, "").strip()
     try:
-        return float(raw) if raw else DEFAULT_IDLE_TIMEOUT
+        return float(raw) if raw else default
     except ValueError:
-        return DEFAULT_IDLE_TIMEOUT
+        return default
 
 
 def _write_private(path: Path, data: bytes) -> None:
@@ -74,136 +87,71 @@ def _write_private(path: Path, data: bytes) -> None:
 
 
 class Daemon:
-    def __init__(self, version: str, token: str, timeout: float) -> None:
+    """When to exit: idle limits, an orphaned state file, or a shutdown request."""
+
+    def __init__(
+        self, version: str, token: str, timeout: float,
+        http_port: int | None = None, http_timeout: float = DEFAULT_HTTP_IDLE_TIMEOUT,
+    ) -> None:
         self.version = version
         self.token = token
         self.timeout = timeout
-        self.active = 0
-        self.last_seen = time.monotonic()
+        self.http_port = http_port
+        self.http_timeout = http_timeout
+        self.state: Path | None = None
+        self._lock = threading.Lock()
+        self._active = 0
+        self._last_seen = time.monotonic()
+        self._stopping = threading.Event()
 
-    def accept(self, line: bytes) -> server.Connection:
-        """Validate a handshake line, or raise ValueError naming what is wrong."""
+    def touch(self) -> None:
+        with self._lock:
+            self._last_seen = time.monotonic()
+
+    def opened(self) -> None:
+        with self._lock:
+            self._active += 1
+            self._last_seen = time.monotonic()
+
+    def closed(self) -> None:
+        with self._lock:
+            self._active -= 1
+            self._last_seen = time.monotonic()
+
+    def stop(self) -> None:
+        self._stopping.set()
+
+    def idle(self) -> bool:
+        limit = self.http_timeout if self.http_port is not None else self.timeout
+        with self._lock:
+            return self._active == 0 and time.monotonic() - self._last_seen >= limit
+
+    def orphaned(self) -> bool:
+        """True once this server's state file is gone or names another server.
+
+        Nothing can verify an orphan, so it would hold the HTTP port with every
+        session refused until its idle limit.
+        """
+        if self.state is None:
+            return False
         try:
-            hello = json.loads(line)
-        except ValueError as exc:
-            raise ValueError(f"malformed handshake: {exc}") from None
-        if not isinstance(hello, dict):
-            raise ValueError("malformed handshake")
-        token = hello.get("token")
-        if not isinstance(token, str) or not hmac.compare_digest(token, self.token):
-            raise ValueError("bad token")
-        if hello.get("version") != self.version:
-            raise ValueError(
-                f"version mismatch: server is {self.version}, client is {hello.get('version')}"
-            )
-        cwd = hello.get("cwd")
-        if not isinstance(cwd, str) or not Path(cwd).is_absolute():
-            raise ValueError("cwd must be an absolute path")
-        graph_path = hello.get("graph_path")
-        if graph_path is not None and not isinstance(graph_path, str):
-            raise ValueError("graph_path must be a string")
-        explicit = Path(cwd, graph_path) if graph_path else None
-        return server.Connection(cwd=Path(cwd), explicit=explicit)
+            return json.loads(self.state.read_text(encoding="utf-8")).get("token") != self.token
+        except FileNotFoundError:
+            return True
+        except (OSError, ValueError, AttributeError):
+            return False
 
-    async def handle(self, stream: SocketStream) -> None:
-        self.active += 1
-        try:
-            async with stream:
-                buffered = BufferedByteReceiveStream(stream)
-                with anyio.fail_after(HANDSHAKE_TIMEOUT):
-                    line = await buffered.receive_until(b"\n", MAX_HANDSHAKE)
-                try:
-                    conn = self.accept(line)
-                except ValueError as exc:
-                    logger.warning("rejected a connection: %s", exc)
-                    await stream.send(_line({"ok": False, "error": str(exc)}))
-                    return
-                await stream.send(_line({"ok": True, "version": self.version, "pid": os.getpid()}))
-                server.bind_connection(conn)
-                await _run_session(buffered, stream)
-        except (anyio.EndOfStream, anyio.IncompleteRead, anyio.BrokenResourceError,
-                anyio.ClosedResourceError, anyio.DelimiterNotFound, TimeoutError):
-            pass
-        except Exception:
-            # One broken session must not take the listener, and every other
-            # session with it, down.
-            logger.exception("connection failed")
-        finally:
-            self.active -= 1
-            self.last_seen = time.monotonic()
-
-    async def watch_idle(self) -> None:
-        while True:
-            await anyio.sleep(min(1.0, self.timeout / 4))
-            if self.active == 0 and time.monotonic() - self.last_seen >= self.timeout:
+    def wait(self) -> None:
+        """Return when the server should exit."""
+        checked = time.monotonic()
+        while not self._stopping.wait(TICK):
+            if self.idle():
                 return
-
-
-def _line(obj: dict[str, Any]) -> bytes:
-    return json.dumps(obj).encode("utf-8") + b"\n"
-
-
-async def _run_session(buffered: BufferedByteReceiveStream, stream: SocketStream) -> None:
-    """One MCP session over a socket, framed the way the stdio transport frames it."""
-    read_send, read_recv = anyio.create_memory_object_stream[SessionMessage | Exception](0)
-    write_send, write_recv = anyio.create_memory_object_stream[SessionMessage](0)
-
-    async def reader() -> None:
-        async with read_send:
-            while True:
-                try:
-                    raw = await buffered.receive_until(b"\n", MAX_MESSAGE)
-                except (anyio.EndOfStream, anyio.IncompleteRead):
+            if time.monotonic() - checked >= ORPHAN_CHECK_INTERVAL:
+                checked = time.monotonic()
+                if self.orphaned():
+                    logger.warning("state file %s is gone or not ours; exiting", self.state)
                     return
-                if not raw.strip():
-                    continue
-                try:
-                    message = jsonrpc_message_adapter.validate_json(raw, by_name=False)
-                except Exception as exc:
-                    await read_send.send(exc)
-                    continue
-                await read_send.send(SessionMessage(message))
-
-    async def writer() -> None:
-        async with write_recv:
-            async for item in write_recv:
-                payload = item.message.model_dump_json(by_alias=True, exclude_unset=True)
-                await stream.send(payload.encode("utf-8") + b"\n")
-
-    lowlevel = server.mcp._mcp_server
-    async with anyio.create_task_group() as tg:
-        tg.start_soon(reader)
-        tg.start_soon(writer)
-        await lowlevel.run(
-            read_recv,
-            write_send,
-            lowlevel.create_initialization_options(
-                notification_options=NotificationOptions(tools_changed=True),
-            ),
-        )
-        tg.cancel_scope.cancel()
-
-
-async def _serve(daemon: Daemon) -> None:
-    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
-    port = listener.extra(SocketAttribute.local_port)
-    state = shim.state_path(daemon.version)
-    state.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _write_private(state, json.dumps({
-        "version": daemon.version, "port": port, "pid": os.getpid(), "token": daemon.token,
-    }).encode("utf-8"))
-    logger.info("serving codebase-kg %s on 127.0.0.1:%d", daemon.version, port)
-    try:
-        # Entered once here, as run_stdio_async does, so each session's lowlevel
-        # run() reuses it through FastMCP's ref count instead of re-running setup.
-        async with server.mcp._lifespan_manager():
-            async with listener, anyio.create_task_group() as tg:
-                tg.start_soon(listener.serve, daemon.handle)
-                await daemon.watch_idle()
-                tg.cancel_scope.cancel()
-    finally:
-        _remove_if_ours(state, daemon.token)
-        logger.info("shutting down")
 
 
 def _remove_if_ours(state: Path, token: str) -> None:
@@ -214,11 +162,84 @@ def _remove_if_ours(state: Path, token: str) -> None:
         pass
 
 
+def _start(server: Any, name: str, running: list[Any]) -> None:
+    threading.Thread(target=server.serve_forever, name=name, daemon=True).start()
+    running.append(server)
+
+
 def serve() -> None:
     logging.basicConfig(
         level=logging.INFO, stream=sys.stderr,
         format="%(asctime)s %(process)d %(levelname)s %(name)s: %(message)s",
     )
-    server.enter_serve_mode()
-    daemon = Daemon(shim.server_build(), secrets.token_hex(32), idle_timeout())
-    anyio.run(_serve, daemon)
+    info = shim.build_info()
+    port = shim.http_port()
+    http_sock = http_transport.claim_port(port, info)
+    if http_sock is None:
+        holder = shim.verified_holder(port)
+        if holder is not None and holder[0].get("build") == info["build"]:
+            logger.info("codebase-kg %s already serves port %d; exiting", info["build"], port)
+            return
+    daemon = Daemon(
+        info["build"], secrets.token_hex(32), idle_timeout(),
+        http_port=http_sock.getsockname()[1] if http_sock is not None else None,
+        http_timeout=idle_timeout("CODEBASE_KG_HTTP_IDLE_TIMEOUT", DEFAULT_HTTP_IDLE_TIMEOUT),
+    )
+    limit = max_workers()
+    pool = Pool(limit, timeout=call_timeout()) if limit > 0 else None
+    engine = core.Core(pool)
+    tcp = tcp_transport.TcpServer(engine, daemon.version, daemon.token, daemon.opened, daemon.closed)
+    state = shim.state_path(daemon.version)
+    state.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    daemon.state = state
+    http: http_transport.HttpServer | None = None
+    running: list[Any] = []
+    try:
+        if http_sock is not None:
+            http = http_transport.HttpServer(
+                http_sock, engine, shim.http_token(create=True) or "", daemon.token,
+                http_transport.health_reply({**info, "max_workers": limit}, os.getpid()),
+                on_request=daemon.touch, on_shutdown=daemon.stop,
+            )
+        _write_private(state, json.dumps({
+            "version": daemon.version, "port": tcp.port, "pid": os.getpid(), "token": daemon.token,
+            "http_port": daemon.http_port,
+        }).encode("utf-8"))
+        logger.info("serving codebase-kg %s on 127.0.0.1:%d", daemon.version, tcp.port)
+        logger.info("tool calls run on up to %d worker processes", limit)
+        _start(tcp, "kg-tcp", running)
+        if http is not None:
+            logger.info("HTTP on http://127.0.0.1:%d/mcp", daemon.http_port)
+            _start(http, "kg-http", running)
+        daemon.wait()
+    finally:
+        _remove_if_ours(state, daemon.token)
+        for server in running:
+            server.shutdown()
+        for server in (http, tcp):
+            if server is not None:
+                server.server_close()
+        if http is None and http_sock is not None:
+            http_sock.close()
+        if pool is not None:
+            pool.close()
+        logger.info("shutting down")
+
+
+def private(argv: list[str]) -> None:
+    tcp_transport.serve_lines(core.Core(None), resolve.from_process(argv), sys.stdin.buffer, sys.stdout.buffer)
+
+
+def main(argv: list[str] | None = None) -> None:
+    # Resolve nothing here: the server must start cleanly in a repo that has no
+    # graph yet (e.g. before /codebase-kg:build). A missing graph surfaces as an
+    # actionable error on first use, not as a server that refuses to start.
+    args = sys.argv if argv is None else argv
+    if args[1:2] == ["--serve"]:
+        serve()
+    else:
+        private(args)
+
+
+if __name__ == "__main__":
+    main()

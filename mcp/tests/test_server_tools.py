@@ -1,40 +1,33 @@
-"""Every MCP tool, invoked through the registered surface an agent actually hits.
+"""Every MCP tool, invoked through the surface an agent actually hits: `core.Core.call_tool`.
 
-`test_server.py` proves the tools are *registered* and that path resolution
+`test_server.py` proves the tools are *defined* and that path resolution
 works; `test_tools.py` and `test_edits.py` prove the functions beneath them are
-correct. Neither called a tool, so the layer joining them — the `@mcp.tool()`
-wrapper that opens the graph, delegates, and closes it — was uncovered on every
-one of them.
+correct. Neither called a tool, so the layer joining them — the argument check,
+the graph lookup and the dispatch in `core.py` and `worker.py` — would be
+uncovered without this file.
 
-That layer is two lines per tool and looks too small to break, which is exactly
+That layer is a line per tool and looks too small to break, which is exactly
 the argument that kept it untested. It is also the only place a wrong argument
 order or a missing peer graph would live, and a mistake there is invisible to
 both neighbouring test files.
 
-Calls go through `mcp.call_tool` rather than the module-level names, so the
-registration, the schema coercion and the body are all exercised together.
+Calls run in this process (`max_workers` 0), resolving the graph the way a
+private server does; `test_pool.py` shows a worker returns the same.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import shutil
+import sys
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 
-from codebase_kg import migrate, server
+from codebase_kg import core, migrate, query, resolve
 
 FIX = Path(__file__).resolve().parent / "fixtures"
-
-
-@pytest.fixture(autouse=True)
-def reset_server_state() -> Iterator[None]:
-    server._graph_path = None
-    yield
-    server._graph_path = None
 
 
 @pytest.fixture
@@ -54,12 +47,16 @@ def served(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+def _result(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    return core.Core(None).call_tool(resolve.from_process(sys.argv), name, arguments)
+
+
 def call(name: str, **kwargs: Any) -> dict[str, Any]:
-    """Invoke a registered tool the way the MCP client does."""
-    result = asyncio.run(server.mcp.call_tool(name, kwargs))
-    data = getattr(result, "structured_content", None) or getattr(result, "data", None)
-    if data is None and isinstance(result, tuple):  # older FastMCP shape
-        data = result[1]
+    """Invoke a tool the way the server does. A tool error raises, with its text."""
+    result = _result(name, kwargs)
+    data = result.get("structuredContent")
+    if data is None:
+        raise RuntimeError(result["content"][0]["text"])
     assert isinstance(data, dict), f"{name} returned {type(data)}: {data!r}"
     return data
 
@@ -128,21 +125,36 @@ def test_kg_find_by_path_accepts_a_bare_filename(served: Path) -> None:
     assert out["count"] >= 1
 
 
-def test_kg_parity_gaps_runs_unfiltered_and_filtered(served: Path) -> None:
-    assert "count" in call("kg_parity_gaps")
-    assert "count" in call("kg_parity_gaps", status="divergent")
+def cli(capsys: pytest.CaptureFixture[str], name: str, **kwargs: Any) -> dict[str, Any]:
+    """Run a read tool the way `kg_cli.py query` does. A failure raises, with its error."""
+    code = query.main([name, json.dumps(kwargs)])
+    out = json.loads(capsys.readouterr().out)
+    if code:
+        raise RuntimeError(out["error"])
+    return out
 
 
-def test_kg_stats_reports_totals(served: Path) -> None:
-    out = call("kg_stats")
+@pytest.mark.parametrize("name", ["kg_parity_gaps", "kg_stats", "kg_validate"])
+def test_the_cli_only_tools_are_not_on_mcp(served: Path, name: str) -> None:
+    result = _result(name, {})
+    assert result["isError"] is True and "Unknown tool" in result["content"][0]["text"]
+
+
+def test_kg_parity_gaps_runs_unfiltered_and_filtered(served: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert "count" in cli(capsys, "kg_parity_gaps")
+    assert "count" in cli(capsys, "kg_parity_gaps", status="divergent")
+
+
+def test_kg_stats_reports_totals(served: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = cli(capsys, "kg_stats")
     assert out["nodes"] > 0
     assert "edges" in out and "anchors" in out
 
 
-def test_kg_validate_runs_without_a_peer(served: Path) -> None:
+def test_kg_validate_runs_without_a_peer(served: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # `_open_peer` yields None when there is no counterpart; the wrapper holds
     # two context managers at once and this is the only test that opens both.
-    out = call("kg_validate")
+    out = cli(capsys, "kg_validate")
     assert "ok" in out
 
 
@@ -165,12 +177,9 @@ def test_every_tool_reports_a_missing_graph_actionably(
         ("kg_neighborhood", {"id": "x"}),
         ("kg_find_by_kind", {"kind": "x"}),
         ("kg_find_by_path", {"path": "x"}),
-        ("kg_parity_gaps", {}),
-        ("kg_stats", {}),
-        ("kg_validate", {}),
     ]:
-        with pytest.raises(Exception) as exc:
-            asyncio.run(server.mcp.call_tool(name, kwargs))
+        with pytest.raises(RuntimeError) as exc:
+            call(name, **kwargs)
         assert "/codebase-kg:build" in str(exc.value), name
 
     # The write tools answer instead of raising -- a refusal is data there, so
@@ -227,14 +236,15 @@ def test_kg_add_link_then_remove_link_round_trips(served: Path) -> None:
 
 
 # --- the MCP call path -------------------------------------------------------
-def _call_over_mcp(name: str, arguments: dict[str, Any]) -> Any:
-    from fastmcp import Client
+class _Result:
+    def __init__(self, raw: dict[str, Any]) -> None:
+        self.is_error = raw["isError"]
+        self.structured_content: dict[str, Any] = raw.get("structuredContent") or {}
+        self.text = raw["content"][0]["text"]
 
-    async def run() -> Any:
-        async with Client(server.mcp) as client:
-            return await client.call_tool(name, arguments, raise_on_error=False)
 
-    return asyncio.run(run())
+def _call_over_mcp(name: str, arguments: dict[str, Any]) -> _Result:
+    return _Result(_result(name, arguments))
 
 
 def test_a_refused_write_is_an_error_result_with_the_same_body(served: Path) -> None:
@@ -246,7 +256,7 @@ def test_a_refused_write_is_an_error_result_with_the_same_body(served: Path) -> 
     body = result.structured_content
     assert body["ok"] is False and body["written"] is False
     assert "ticket refs" in body["error"]
-    assert json.loads(result.content[0].text) == body
+    assert json.loads(result.text) == body
 
 
 def test_an_accepted_write_is_not_an_error_result(served: Path) -> None:
@@ -284,8 +294,8 @@ def test_list_tools_page_through_the_tool_surface(served: Path) -> None:
     assert first["total"] == rest["total"] == 1 + rest["count"]
 
 
-def test_kg_validate_reports_issue_counts(served: Path) -> None:
-    out = call("kg_validate", limit=1)
+def test_kg_validate_reports_issue_counts(served: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = cli(capsys, "kg_validate", limit=1)
     assert set(out["issue_counts"]) == {
         "anchor_issues", "counterpart_issues", "description_issues",
         "external_link_issues", "reference_issues",

@@ -5,19 +5,15 @@ description: >-
 allowed-tools:
   # Both names the host gives the server: bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin.
-  - mcp__codebase-kg__kg_stats
   - mcp__codebase-kg__kg_node
   - mcp__codebase-kg__kg_search
   - mcp__codebase-kg__kg_find_by_kind
   - mcp__codebase-kg__kg_find_by_path
-  - mcp__codebase-kg__kg_validate
   - mcp__codebase-kg__kg_neighborhood
-  - mcp__plugin_codebase-kg_codebase-kg__kg_stats
   - mcp__plugin_codebase-kg_codebase-kg__kg_node
   - mcp__plugin_codebase-kg_codebase-kg__kg_search
   - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_kind
   - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_path
-  - mcp__plugin_codebase-kg_codebase-kg__kg_validate
   - mcp__plugin_codebase-kg_codebase-kg__kg_neighborhood
   - Read
   - Grep
@@ -72,7 +68,15 @@ picks the write path that fits the size of the fix.
 ## Workflow
 
 ### 1. Inventory
-Run `kg_stats` for node count and sections. Read its `staleness` block: `stale_files` and
+Run `kg_stats` for node count and sections. `kg_stats` and `kg_validate` run through the CLI, not
+MCP, and print JSON. Arguments go in one JSON object after the tool name:
+
+```bash
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query kg_stats
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query kg_validate '{"limit": 200}'
+```
+
+Read the `staleness` block of `kg_stats`: `stale_files` and
 `stale_nodes` are the repo-wide count of mapped files whose contents no longer match what the graph
 was built against, and `nodes` names the first of them. Those nodes are known-suspect before anyone
 reads a line — verify them first and say so in the report.

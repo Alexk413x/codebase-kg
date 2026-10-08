@@ -8,7 +8,7 @@ from codebase_kg import clean
 from codebase_kg.schema import MAX_DESCRIPTION
 
 
-# --- problems / check --------------------------------------------------------
+# --- problems --------------------------------------------------------
 def test_clean_description_has_no_problems() -> None:
     assert clean.problems("Foreground Media3 MediaSessionService owning the player.") == []
 
@@ -25,15 +25,6 @@ def test_clean_description_has_no_problems() -> None:
 )
 def test_problems_flags_each_violation(text: str, expect: str) -> None:
     assert any(expect in p for p in clean.problems(text))
-
-
-def test_check_raises_on_violation() -> None:
-    with pytest.raises(clean.DescriptionError, match="ticket refs"):
-        clean.check("Handles upload retry (ACME-427).")
-
-
-def test_check_passes_clean_text() -> None:
-    clean.check("Handles upload retry with a bounded attempt cap.")
 
 
 def test_lowercase_dash_number_is_not_a_ticket() -> None:

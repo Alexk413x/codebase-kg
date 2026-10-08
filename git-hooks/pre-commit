@@ -3,7 +3,7 @@
 #
 # ADVISORY: it reports and never blocks. A gate that stops a commit gets
 # bypassed with --no-verify and then ignored. The pre-push hook beside it does
-# block, on one thing only: a staleness backlog that this push did not create.
+# block, on one thing only: any mapped file the graph no longer matches.
 # A commit is provisional; a push is publication.
 #
 # It does NOT run /codebase-kg:refresh. That is a model workflow -- it maps

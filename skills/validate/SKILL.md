@@ -2,13 +2,8 @@
 name: validate
 description: Fast, deterministic drift check on a repo that has a code graph. It reports anchors that no longer resolve, source files no node covers, mapped files changed since the graph was built, and broken or one-way counterpart and external links. Advisory; it blocks nothing. Use when the user asks to "validate the code graph", "lint code_graph.db", "run kg_validate", "find broken anchors" or "check the parity links", or wants a cheap check before committing. (For the deep check that re-reads source and judges whether descriptions are still true, use audit.)
 allowed-tools:
-  # Both names the host gives the server — bare when the MCP server is installed
-  # directly, prefixed when it arrives as a plugin.
-  - mcp__codebase-kg__kg_validate
-  - mcp__codebase-kg__kg_stats
-  - mcp__plugin_codebase-kg_codebase-kg__kg_validate
-  - mcp__plugin_codebase-kg_codebase-kg__kg_stats
   - Read
+  - Bash(uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" *)
 ---
 
 # validate — deterministic drift check (advisory)
@@ -64,9 +59,21 @@ that was never at risk:
 
 ## Workflow
 
-1. **Locate the graph.** If the user named a file, use it. Otherwise the MCP server auto-discovers
-   `knowledge/code_graph.db` (the only location — no repo-root fallback). Confirm with `kg_stats` —
-   note the `generated` date and node count.
+`kg_stats` and `kg_validate` are not MCP tools. Run them through the plugin's CLI, which prints
+the same JSON:
+
+```bash
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query kg_stats
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query kg_validate
+```
+
+Arguments go in one JSON object after the tool name, with the MCP parameter names:
+`query kg_validate '{"limit": 200}'`.
+
+1. **Locate the graph.** If the user named a file, pass it as `query --graph <file> <tool>`.
+   Otherwise the CLI walks up from the working directory to `knowledge/code_graph.db` (the only
+   location — no repo-root fallback). Confirm with `kg_stats` — note the `generated` date and node
+   count.
 2. **Run `kg_validate`.** It returns `anchor_issues`, `coverage`, `changed_since_built`,
    `staleness`, `counterpart_issues`, `description_issues`, `external_link_issues`,
    `reference_issues`, plus

@@ -2,8 +2,9 @@
   "_comment": [
     "A worked cross-codebase example: the Android half of an Android ↔ iOS pair.",
     "It exists to show the three parity shapes on real-looking nodes. Build it with:",
-    "    python -m codebase_kg.build docs/examples/EXAMPLE_GRAPH.json -o /tmp/example.db",
-    "then poke at it with the kg_* tools. See SCHEMA.md §9 for the parity contract."
+    "    uv run --no-project --quiet mcp/launch/kg_cli.py build docs/examples/EXAMPLE_GRAPH.json -o /tmp/example.db",
+    "then query it, e.g. CODEBASE_KG_PATH=/tmp/example.db uv run --no-project --quiet mcp/launch/kg_cli.py query kg_parity_gaps",
+    "See SCHEMA.md §9 for the parity contract."
   ],
 
   "codebase": "android",

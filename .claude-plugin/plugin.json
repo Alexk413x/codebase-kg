@@ -1,7 +1,7 @@
 {
   "name": "codebase-kg",
-  "version": "0.10.0",
-  "description": "Builds, maintains, and serves a per-repo code graph — a committed SQLite map of any codebase (nodes = components, symbol anchors = where they live, edges = relationships) so an agent can orient and find code without re-deriving the map every session. Constant-time load and indexed full-text search at any size; dangling edges and inconsistent data are impossible to write, not merely reported. Language-agnostic. Cross-codebase parity linking tracks feature gaps between paired repos (e.g. an iOS app and its Android port). A search gate points the agent at the graph before it greps; the commit check advises, and the push check blocks only on a stale-graph backlog.",
+  "version": "0.13.0",
+  "description": "Builds, maintains, and serves a per-repo code graph — a committed SQLite map of any codebase (nodes = components, symbol anchors = where they live, edges = relationships) so an agent can orient and find code without re-deriving the map every session. Constant-time load and indexed full-text search at any size; dangling edges and inconsistent data are impossible to write, not merely reported. Language-agnostic. Cross-codebase parity linking tracks feature gaps between paired repos (e.g. an iOS app and its Android port). A search gate points the agent at the graph before it greps; the commit check advises, and the push check blocks only on stale mapped files.",
   "author": {
     "name": "Alexk413x",
     "email": "alexk413x@gmail.com"
@@ -19,5 +19,19 @@
     "cross-codebase",
     "mcp",
     "language-agnostic"
-  ]
+  ],
+  "userConfig": {
+    "server_port": {
+      "type": "number",
+      "title": "Server port",
+      "description": "Loopback port of the shared codebase-kg HTTP server. Change it only when another program uses 47821.",
+      "default": 47821
+    },
+    "max_workers": {
+      "type": "number",
+      "title": "Maximum workers",
+      "description": "Most worker processes the server runs tool calls on at once, with no upper limit. 0 runs every call in the server process. A running server keeps the value it started with: to apply a change, run \"mcp/launch/kg_cli.py server stop\" from the plugin folder, then restart Claude Code. See the README, section Changing max_workers.",
+      "default": 8
+    }
+  }
 }

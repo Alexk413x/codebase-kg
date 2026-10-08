@@ -2,13 +2,13 @@
 
 A consumer repo carried 47 stale files for months with every check passing. The
 tool was not wrong. Both hooks scope to a change set, which is right for
-per-commit noise and wrong for a backlog — a file that drifts and is never
+per-commit noise and wrong for a standing gap — a file that drifts and is never
 re-derived is reported once, in the commit that touched it, and never again.
 `kg_validate` knew the repo-wide number and nothing routine ran it.
 
 These tests pin the four things that fix: one comparison rule shared by every
 caller, the total surfaced where an agent orients (`kg_stats`), one line at
-commit, and a push that stops for a backlog it did not create.
+commit, and a push that stops for any stale mapped file.
 """
 
 from __future__ import annotations
@@ -256,27 +256,28 @@ def test_push_reports_the_repo_wide_total(
     assert "Repo-wide: 1 mapped file(s) and 1 node(s)" in err
 
 
-def test_drift_this_push_introduces_does_not_block(
+def test_drift_this_push_introduces_blocks(
     hook_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    """The gate is for a backlog, not for work in progress. This file is in the
-    push, the commit hook already named it, and blocking here would fire on
-    every push that touches mapped code — which is how a gate becomes something
-    people route around permanently."""
-    monkeypatch.setattr(g, "_git", _fake_git(hook_repo, "M\tsrc/ui/Known.kt"))
+    """The gate covers every stale file, including one this push touches. A push
+    publishes the code, and a graph that lags it stays wrong for every reader."""
+    monkeypatch.setattr(g, "_git", _fake_git(hook_repo, "M	src/ui/Known.kt"))
     monkeypatch.setattr(
         g, "blob_digests", _fake_blobs(_tree_digests(hook_repo / "src", (KNOWN,)))
     )
-    assert g.main() == 0
-    assert "PUSH BLOCKED" not in capsys.readouterr().err
+    assert g.main() == 1
+    err = capsys.readouterr().err
+    assert "PUSH BLOCKED" in err
+    assert f"src/{KNOWN}" in err
+    assert "KG_STALE_ACK=1" in err
 
 
-def test_a_backlog_this_push_did_not_touch_blocks(
+def test_a_stale_file_this_push_did_not_touch_blocks(
     hook_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    """The failure this whole change exists for: drift left behind in some
-    earlier commit, which no change set will ever mention again."""
-    monkeypatch.setattr(g, "_git", _fake_git(hook_repo, "M\tsrc/ui/Known.kt"))
+    """Drift left behind in some earlier commit, which no change set will ever
+    mention again."""
+    monkeypatch.setattr(g, "_git", _fake_git(hook_repo, "M	src/ui/Known.kt"))
     monkeypatch.setattr(
         g, "blob_digests", _fake_blobs(_tree_digests(hook_repo / "src", (RANKER,)))
     )
@@ -288,6 +289,35 @@ def test_a_backlog_this_push_did_not_touch_blocks(
     # different file from the one the findings above name.
     assert f"src/{RANKER}" in err
     assert "KG_STALE_ACK=1" in err
+
+
+def test_the_block_tells_the_session_to_refresh_commit_and_push_again(
+    hook_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    def no_model(cmd: list[str], **_kwargs: object) -> None:
+        raise AssertionError(f"the hook started a process: {cmd}")
+
+    monkeypatch.setattr(g, "_git", _fake_git(hook_repo, "M	src/ui/Known.kt"))
+    monkeypatch.setattr(g, "blob_digests", _fake_blobs(_tree_digests(hook_repo / "src", (KNOWN,))))
+    monkeypatch.setattr(g.subprocess, "run", no_model)
+    assert g.main() == 1
+    err = capsys.readouterr().err
+    assert "run /codebase-kg:refresh, commit the graph, push again" in err
+    assert "claude -p" not in err
+
+
+def test_the_block_lists_touched_and_untouched_stale_files(
+    hook_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.setattr(g, "_git", _fake_git(hook_repo, "M	src/ui/Known.kt"))
+    monkeypatch.setattr(
+        g, "blob_digests", _fake_blobs(_tree_digests(hook_repo / "src", (KNOWN, RANKER)))
+    )
+    assert g.main() == 1
+    err = capsys.readouterr().err
+    assert f"src/{KNOWN}" in err
+    assert f"src/{RANKER}" in err
+    assert "KG_STALE_ACK=2" in err
 
 
 def test_a_blocked_push_does_not_also_claim_to_be_going_through(
@@ -307,22 +337,37 @@ def test_a_blocked_push_does_not_also_claim_to_be_going_through(
     assert "Nothing is blocked" not in err
 
 
-def test_the_acknowledgement_has_to_name_the_count(
+def test_the_acknowledgement_has_to_name_the_total_count(
     hook_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An ack meaning "yes, whatever the number" is --no-verify in a different
-    spelling: set once and the gate is off for every file that rots afterwards."""
-    monkeypatch.setattr(g, "_git", _fake_git(hook_repo, "M\tsrc/ui/Known.kt"))
+    spelling: set once and the gate is off for every file that rots afterwards.
+    The count covers every stale file, touched by the push or not."""
+    monkeypatch.setattr(g, "_git", _fake_git(hook_repo, "M	src/ui/Known.kt"))
     monkeypatch.setattr(
-        g, "blob_digests", _fake_blobs(_tree_digests(hook_repo / "src", (RANKER,)))
+        g, "blob_digests", _fake_blobs(_tree_digests(hook_repo / "src", (KNOWN, RANKER)))
     )
     monkeypatch.setenv("KG_STALE_ACK", "7")
+    assert g.main() == 1
+    monkeypatch.setenv("KG_STALE_ACK", "1")
+    assert g.main() == 1
+    monkeypatch.setenv("KG_STALE_ACK", "2")
+    assert g.main() == 0
+
+
+def test_an_acknowledgement_releases_drift_this_push_touches(
+    hook_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(g, "_git", _fake_git(hook_repo, "M	src/ui/Known.kt"))
+    monkeypatch.setattr(
+        g, "blob_digests", _fake_blobs(_tree_digests(hook_repo / "src", (KNOWN,)))
+    )
     assert g.main() == 1
     monkeypatch.setenv("KG_STALE_ACK", "1")
     assert g.main() == 0
 
 
-def test_a_rebaseline_upsert_releases_the_backlog(
+def test_a_rebaseline_upsert_releases_the_block(
     hook_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
     ranker = hook_repo / "src" / RANKER
@@ -388,7 +433,7 @@ def test_commit_prints_the_standing_total_as_one_line(
     hook_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
     """One line is the whole budget. Change-set scoping is correct at commit
-    time and must not become noisy, but the backlog cannot stay invisible at
+    time and must not become noisy, but the stale files cannot stay invisible at
     both hooks."""
     monkeypatch.setattr(c, "_git", _fake_git(hook_repo))
     monkeypatch.setattr(g, "blob_digests", _fake_blobs(_tree_digests(hook_repo / "src", (RANKER,))))

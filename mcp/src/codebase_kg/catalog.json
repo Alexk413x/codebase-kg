@@ -1,0 +1,660 @@
+{
+  "instructions": "codebase-kg serves a committed map of this repository's code in knowledge/code_graph.db: components, the files and symbols that implement them, and how they depend on each other. The tools apply only in a repo that has that file; elsewhere they return an error. kg_search is the entry point: it finds components by concept, including ones whose names lack the search words. kg_node and kg_neighborhood give anchors and dependents, and kg_find_by_path maps a file back to its component. In a repo with a graph, a hook denies a Grep or Glob over mapped source until a graph query has been made.",
+  "tools": [
+    {
+      "name": "kg_search",
+      "title": "Kg Search",
+      "description": "Full-text search the code graph for nodes matching a phrase. Use when you\nhave a concept but no node id — this is the usual entry point. Ranked, up to\n10 results, each with its `path#Symbol` anchors so you can go straight to the\ncode. CamelCase identifiers are matched in split form, so \"video playback\"\nfinds `VideoPlaybackService`.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "description": "Free-form text, e.g. \"feed ranking\" or \"bookmark persistence\".",
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional case-insensitive substring of the node's `kind`, e.g. \"ViewModel\"."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "kg_node",
+      "title": "Kg Node",
+      "description": "Fetch one full node by id — anchors (`path#Symbol`), description, edges,\nparity, counterpart, external links and references, plus inbound edges. The\nprimary lookup once you know the id. Returns `found: false` with\n`did_you_mean` suggestions when the id is unknown.\n\nNot for finding a node by concept; use `kg_search`. It does not return the\nneighbours' details or any source text; use `kg_neighborhood` for the nodes\naround it.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Exact node id, as returned by `kg_search` or another tool.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "kg_neighborhood",
+      "title": "Kg Neighborhood",
+      "description": "Return a node with its graph neighborhood — outbound edges, inbound edges\n(who depends on it), and counterpart — expanded `depth` hops. Use to\nunderstand what surrounds a node before changing it. Neighbors come nearest\nfirst and are paged by `limit`; a truncated result says how to narrow.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Exact id of the node at the center.",
+            "type": "string"
+          },
+          "depth": {
+            "default": 1,
+            "description": "Hops to expand, 1 to 3; other values are clamped. Depth 3 can reach most of a graph.",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 50,
+            "description": "Most items to return. The result's `total` counts every match and `truncated` says whether more remain.",
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "description": "Items to skip, for the next page: the previous result's `next_offset`.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "kg_find_by_kind",
+      "title": "Kg Find By Kind",
+      "description": "List every node whose free-text `kind` matches (case-insensitive\nsubstring) — e.g. all `ViewModel`s, `Service`s, `Room @Entity`s. Use for a\ncategory question such as \"every migration\".\n\nNot for a concept or a name; use `kg_search`, because `kind` is free text\nand one category can be spelled several ways. Returns id, kind, description\nand anchors per node, not edges; call `kg_node` for those.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "Case-insensitive substring of the node's `kind`, e.g. \"viewmodel\". An empty string matches every node.",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "description": "Most items to return. The result's `total` counts every match and `truncated` says whether more remain.",
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "description": "Items to skip, for the next page: the previous result's `next_offset`.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "kg_find_by_path",
+      "title": "Kg Find By Path",
+      "description": "Reverse lookup: given a source file, which node(s) own it, and what do\nthey connect to. Use when you have a file open and want its place in the map.\nAccepts a repo-relative path or a bare filename (matched as a suffix).",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "A repo-relative path, or a bare filename matched as a path suffix, e.g. `FeedRanker.kt`.",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "description": "Most items to return. The result's `total` counts every match and `truncated` says whether more remain.",
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "description": "Items to skip, for the next page: the previous result's `next_offset`.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "kg_find_by_link",
+      "title": "Kg Find By Link",
+      "description": "Reverse lookup across graphs: which code node(s) link to a node in another\ncommitted graph in this repo — typically a screen in `cartographer/baselines/baseline.db`.\n\nUse when you have a screen and want the code behind it. Accepts a full\n`<db-file>#<node-id>` target or a bare peer node id. See cartographer's\ndocs/GRAPH-LINKS.md for the convention.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "target": {
+            "description": "A full `<db-file>#<node-id>` target, or a bare peer node id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ]
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "kg_find_by_reference",
+      "title": "Kg Find By Reference",
+      "description": "Which node(s) depend on a piece of external documentation. Use when an SDK\nor spec moves and you need every place the code relies on it.\n\nEach hit carries the `path` / `symbol` it narrows to, when it has one.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Case-insensitive substring of the reference url or title, e.g. `developer.android.com/reference/android/view`. Omit to list every reference."
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Exact tag filter: `platform-api`, `spec`, `rfc` or `issue`."
+          },
+          "limit": {
+            "default": 50,
+            "description": "Most items to return. The result's `total` counts every match and `truncated` says whether more remain.",
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "description": "Items to skip, for the next page: the previous result's `next_offset`.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "kg_upsert_node",
+      "title": "Kg Upsert Node",
+      "description": "Atomic: if any node in the batch is rejected, nothing is written and the\nfile is byte-identical, and the result is an error with `ok: false`,\n`written: false` and the reason.\n\nCreate or update node(s) in place — the targeted alternative to\nexport/edit/build. Use for a handful of nodes: a wrong description, an anchor\nthat moved, a missing edge. For bulk work (a parity sweep, a restructuring,\nanything you want to review as a diff first) still use the plugin's\n`mcp/launch/kg_cli.py export` → edit the JSON → `kg_cli.py build`.\n\n**Only the keys you supply change** — omit a field and it keeps its value,\npass `null` to clear `parity`/`counterpart`/`divergence`. `anchors`, `edges`,\n`external_links` and `references` replace the whole list when present, so read\nthe node first if you mean to append. Baselines follow the anchors as a\nbuild's do: a file this node anchors that has no baseline gets one, and a\nfile no node anchors any more loses its own.\n\nReturns every row and field it changed, before and after, including each\n`source` row (file baseline) it created, re-hashed or dropped.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "nodes": {
+            "description": "One object per node. Only the keys present change.",
+            "items": {
+              "additionalProperties": true,
+              "properties": {
+                "id": {
+                  "description": "Node id. A node that does not exist yet also needs `kind`.",
+                  "type": "string"
+                },
+                "kind": {
+                  "description": "Free text, e.g. 'ViewModel', 'Service', 'module'.",
+                  "type": "string"
+                },
+                "description": {
+                  "description": "What the node does. Refused if it fails the description checks, e.g. a ticket ref.",
+                  "type": "string"
+                },
+                "section": {
+                  "description": "The section the node is listed under.",
+                  "type": "string"
+                },
+                "parity": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "`matched`, `divergent` or `<codebase>-only`. `null` clears it."
+                },
+                "counterpart": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "`<peer-graph-relative-path>#<peer-node-id>`. `null` clears it."
+                },
+                "divergence": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "One line, only with parity `divergent`. `null` clears it."
+                },
+                "anchors": {
+                  "description": "`[\"path/to/File.kt#Symbol\", ...]` — symbols, never line numbers. Replaces the whole list.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "edges": {
+                  "description": "Outbound node ids. Both endpoints must exist after this call. Replaces the whole list.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "external_links": {
+                  "description": "Links to nodes in other committed graphs. Replaces the whole list.",
+                  "items": {
+                    "additionalProperties": true,
+                    "properties": {
+                      "target": {
+                        "description": "`<peer-db>#<node>`, relative to `knowledge/`.",
+                        "type": "string"
+                      },
+                      "kind": {
+                        "description": "What the link means from this side, e.g. `presented-by`.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "target"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "references": {
+                  "description": "Where the facts this node depends on are documented. Replaces the whole list.",
+                  "items": {
+                    "additionalProperties": true,
+                    "properties": {
+                      "url": {
+                        "description": "The documentation page, e.g. `https://...`.",
+                        "type": "string"
+                      },
+                      "kind": {
+                        "description": "`platform-api`, `spec`, `rfc` or `issue`.",
+                        "type": "string"
+                      },
+                      "title": {
+                        "description": "A human label, e.g. `TouchDelegate`.",
+                        "type": "string"
+                      },
+                      "path": {
+                        "description": "Optional. Must equal the path of one of this node's anchors.",
+                        "type": "string"
+                      },
+                      "symbol": {
+                        "description": "Optional. With `path`, must equal one of this node's anchors.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "url"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "rebaseline": {
+                  "description": "`true` records that you checked this node against its source now. It re-hashes every file the node anchors, so those files leave `changed_since_built` and the pre-push stale-file list. The baseline belongs to the file, not the node: it clears every node anchored to that file, the same as `build --rebaseline`. Set it only after you have checked every node that anchors those files. Without it, a recorded baseline never changes, so a description edit alone cannot hide drift.",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "nodes"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "kg_delete_node",
+      "title": "Kg Delete Node",
+      "description": "Delete node(s). **Previews by default** — call with `dry_run=false` to apply.\n\nA node does not leave alone: its anchors, its outbound edges and its external\nlinks cascade away with it, and so does the baseline of any file no remaining\nnode anchors. Edges pointing *at* it do not — `ON DELETE\nRESTRICT` blocks the delete instead, so a relationship is never dropped by\naccident. Pass `cascade_inbound=true` to remove those edges as part of the\nsame atomic call, having seen them in the dry run.\n\nThe preview lists exactly what would go. Nothing is written unless\n`dry_run=false`, and even then the delete is rejected whole if it would break\nthe graph.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ids": {
+            "description": "Ids of the nodes to delete.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "dry_run": {
+            "default": true,
+            "description": "True previews what would go and writes nothing. Pass false to apply.",
+            "type": "boolean"
+          },
+          "cascade_inbound": {
+            "default": false,
+            "description": "Also remove edges from other nodes that point at these, in the same atomic call. Without it such edges block the delete.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ids"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "kg_add_link",
+      "title": "Kg Add Link",
+      "description": "Point a code node at a node in another committed graph in this repo —\ntypically a screen in `cartographer/baselines/baseline.db`. The inverse of `kg_find_by_link`.\nSee cartographer's docs/GRAPH-LINKS.md for the target convention. An empty\n`kind` is honest for a link nobody has characterised.\n\nRefused if the peer graph is present and does not contain that node, so a\ntypo'd target cannot be committed.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "node_id": {
+            "description": "Id of the code node the link starts from.",
+            "type": "string"
+          },
+          "target": {
+            "description": "`<db-file>#<node-id>`, relative to `knowledge/` and never absolute (an absolute path breaks on the next clone).",
+            "type": "string"
+          },
+          "kind": {
+            "default": "",
+            "description": "What the link means from this side: `implements`, `presented-by`, `tests`, `documents`. Empty means unspecified.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_id",
+          "target"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "kg_remove_link",
+      "title": "Kg Remove Link",
+      "description": "Remove one cross-graph link from a node. The node, its anchors and its\nedges are untouched — this drops the pointer only. Refused when the node has\nno link to `target`.\n\nNot for a documentation reference (use `kg_remove_reference`) or an edge\nbetween code nodes (use `kg_upsert_node` with the new `edges` list). Returns\nthe change, not the node; call `kg_node` to see the links that remain.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "node_id": {
+            "description": "Id of the code node that holds the link.",
+            "type": "string"
+          },
+          "target": {
+            "description": "The link's `<db-file>#<node-id>` target, as `kg_node` lists it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_id",
+          "target"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "kg_add_reference",
+      "title": "Kg Add Reference",
+      "description": "Record where a fact a code node depends on is documented — a platform API\npage, a spec, an RFC, an issue. The inverse of `kg_find_by_reference`.\n\nA `path` / `symbol` narrowing that matches none of the node's own anchors is\nrefused — read the node first.\n\nNot for a link to a node in another graph; that is `kg_add_link`.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "node_id": {
+            "description": "Id of the code node that depends on the documented fact.",
+            "type": "string"
+          },
+          "url": {
+            "description": "The documentation page's URL.",
+            "type": "string"
+          },
+          "kind": {
+            "default": "",
+            "description": "A short tag: `platform-api`, `spec`, `rfc`, `issue`.",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "description": "A human label for the page.",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional. Narrows the reference to one file; must equal the path of one of the node's anchors."
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional. With `path`, narrows to one function; `path` + `symbol` must equal one of the node's anchors."
+          }
+        },
+        "required": [
+          "node_id",
+          "url"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "kg_remove_reference",
+      "title": "Kg Remove Reference",
+      "description": "Remove a node's reference(s) to `url`. With `path` / `symbol`, removes only\nthe reference with that exact narrowing; without, every reference to the url.\nRefused when nothing matches.\n\nNot for a link to a node in another graph; that is `kg_remove_link`. Returns\nthe change, not the node; call `kg_node` to see the references that remain.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "node_id": {
+            "description": "Id of the code node that holds the reference.",
+            "type": "string"
+          },
+          "url": {
+            "description": "The reference's URL, exactly as `kg_node` lists it.",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional. The narrowing's path; with it, only the reference with exactly this `path` and `symbol` goes."
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional. The narrowing's symbol; with it, only the reference with exactly this `path` and `symbol` goes."
+          }
+        },
+        "required": [
+          "node_id",
+          "url"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

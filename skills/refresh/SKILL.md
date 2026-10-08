@@ -4,8 +4,6 @@ description: Re-derives the affected nodes of an existing code_graph.db against 
 allowed-tools:
   # Both names the host gives the server: bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin.
-  - mcp__codebase-kg__kg_validate
-  - mcp__codebase-kg__kg_stats
   - mcp__codebase-kg__kg_search
   - mcp__codebase-kg__kg_node
   - mcp__codebase-kg__kg_find_by_path
@@ -16,8 +14,6 @@ allowed-tools:
   - mcp__codebase-kg__kg_add_reference
   - mcp__codebase-kg__kg_remove_reference
   - mcp__codebase-kg__kg_neighborhood
-  - mcp__plugin_codebase-kg_codebase-kg__kg_validate
-  - mcp__plugin_codebase-kg_codebase-kg__kg_stats
   - mcp__plugin_codebase-kg_codebase-kg__kg_search
   - mcp__plugin_codebase-kg_codebase-kg__kg_node
   - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_path
@@ -161,10 +157,16 @@ Nothing gates on it, so it is not a substitute for doing step 2.
 ### 4. Build and validate
 Run the builder. Then `kg_validate` — fix ungreppable anchors, and add nodes for anything under
 `coverage.gaps` that deserves one (or add it to `exempt`, which records the decision instead of
-leaving it looking like an oversight). Run `kg_stats` and report the delta.
+leaving it looking like an oversight). Run `kg_stats` and report the delta. Both run through the
+CLI, not MCP, and print JSON:
+
+```bash
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query kg_validate
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query kg_stats
+```
 
 Neither a build nor an edit changes a recorded baseline on its own. A drifted file stays in
-`changed_since_built`, and in the pre-push backlog, until you say you checked it. For each node you
+`changed_since_built`, and in the pre-push stale-file list, until you say you checked it. For each node you
 re-read against current source and verified, upsert it with `rebaseline: true`, after the build if
 you ran one:
 
@@ -176,7 +178,7 @@ kg_upsert_node(nodes=[{"id": "feed_ranker",
 
 The flag re-hashes every file that node anchors, and the result lists each `source` row it changed.
 Use it instead of deleting paths from the export's `sources` and rebuilding, and instead of
-`KG_STALE_ACK`, which accepts a backlog you chose not to fix rather than one you verified.
+`KG_STALE_ACK`, which accepts stale files you chose not to fix rather than ones you verified.
 
 The baseline belongs to the file, not the node. Re-baselining a file clears it for every node
 anchored there, the same as `--rebaseline`. Before you set the flag, run `kg_find_by_path` on each

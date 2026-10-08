@@ -11,7 +11,7 @@
   longer fit.
 
 All three are **advisory**, at both hooks. On top of them each hook also reports the **repo-wide**
-staleness total, and `pre-push` blocks on one narrow part of it — see
+staleness total, and `pre-push` blocks on it — see
 [The one thing that blocks](#the-one-thing-that-blocks).
 
 ### Why the third one exists
@@ -39,15 +39,15 @@ It is still worth having for the commits it does see, but it is not the one to r
 
 ## The repo-wide total
 
-Change-set scoping is right for per-commit noise and wrong for a backlog. A file that drifts and is
+Change-set scoping is right for per-commit noise and wrong for a standing gap. A file that drifts and is
 never re-derived is reported once, in the commit that touched it, and never again. Miss it once and
 it is invisible: one repo carried 47 stale files for months with every check above passing, because
 nothing ever asked the standing question.
 
 So both hooks also compare **every anchored file** against its baseline, not just the ones in the
 change set. `pre-commit` prints that as one line, and one line only — its scoping is correct and
-must not become noisy. `pre-push` prints the total, the nodes it puts in doubt, and the part of it
-this push does not touch.
+must not become noisy. `pre-push` prints the total, the nodes it puts in doubt, and every stale
+file.
 
 `kg_stats` reports the same numbers, from the same helper (`codebase_kg/staleness.py`). One
 comparison rule, four callers: the digest folds CRLF to LF before hashing, because the builder reads
@@ -56,25 +56,29 @@ itself got 113 stale files where the truth was 47.
 
 ## The one thing that blocks
 
-`pre-push` exits non-zero when the repo has a **backlog**: mapped files that have drifted and that
-this push does not touch. Nothing else blocks — not the change-set findings, not an error inside the
-check itself, and never `pre-commit`.
+`pre-push` exits non-zero when any **mapped file is stale**: its contents no longer match the digest
+recorded when the graph was built. The gate covers every stale file, including the files this push
+touches. Nothing else blocks — not the change-set findings, not an error inside the check itself,
+and never `pre-commit`.
 
-The split is the design. Drift you are introducing right now was already named at commit time and
-you are plainly still working on it; blocking on it would fire on every push that touches mapped
-code, and a gate that fires on every push is one people route around permanently. Drift you walked
-away from is what no change set will ever mention again. In a repo that is kept current the backlog
-is zero and this hook is silent.
+A commit is provisional; a push is publication. The remote records the code, and a graph that lags
+the code at that point stays wrong for everyone who reads it. To push, refresh the graph first, or
+acknowledge the drift explicitly. In a repo that is kept current no file is stale and this hook is
+silent, so there is no habit of bypassing it to develop.
 
-That is the answer to the standing objection — a hard gate gets `--no-verify`'d and then ignored. It
-holds for a gate that fires constantly. It is met by narrowing what gates, not by not gating: a
-commit is provisional, a push is publication, and drift should not leave a local branch unrecorded.
+Agents that run `git push` through Claude Code meet a `PreToolUse` hook first
+(`hooks/kg_push_gate.py`, see [hooks/README.md](../hooks/README.md#the-push-gate-pretooluse)). It
+denies the push on the same rule and tells the agent to refresh, commit and push again. It does not
+accept `--no-verify`.
 
-Three ways past it, all explicit:
+To clear the block, run `/codebase-kg:refresh` in a Claude Code session, commit the graph and push
+again.
+
+Three ways past the block, all explicit:
 
 | | |
 |---|---|
-| `KG_STALE_ACK=<n> git push …` | Accept this exact backlog. `<n>` is the count the message prints. It names the number on purpose — the ack stops matching the moment the backlog moves, so it cannot be set once in a shell profile and forgotten. |
+| `KG_STALE_ACK=<n> git push …` | Accept this exact set of stale files. `<n>` is the total stale count the message prints. It names the number on purpose — the ack stops matching the moment the count moves, so it cannot be set once in a shell profile and forgotten. |
 | `SKIP_KG=1 git push …` | Skip the check, as at commit time. |
 | `git push --no-verify` | Skip every hook. |
 
@@ -93,7 +97,7 @@ rather than recording it. The hooks say the graph needs attention; a person or a
 | File | Role |
 |---|---|
 | `kg_pre_push.py` | The check — **stdlib only** (sqlite3 included), **no codebase-kg dependency**, so it vendors into any repo. Reads `root` from the committed graph's `meta` table (auto-discovers the graph; an optional, gitignored `.claude/codebase-kg.local.md` may override). No committed config file required. |
-| `pre-push` | Thin `sh` wrapper that runs `kg_pre_push.py` next to it and **propagates its exit status**, so the backlog gate is a gate. Guards against a missing interpreter or checker rather than letting either block a push. |
+| `pre-push` | Thin `sh` wrapper that runs `kg_pre_push.py` next to it and **propagates its exit status**, so the stale-file gate is a gate. Guards against a missing interpreter or checker rather than letting either block a push. |
 | `kg_pre_commit.py` | The same check over the staged change set, plus the one-line repo-wide total. Imports the coverage and staleness rules from `kg_pre_push.py` rather than repeating them, so there is one implementation to keep in step with `codebase_kg/coverage.py` and `codebase_kg/staleness.py`. |
 | `pre-commit` | Thin `sh` wrapper, honouring `SKIP_KG`. |
 | `install.sh` | Per-clone wiring: `core.hooksPath`, the exec bits, and the three `diff.codegraph.*` settings. Vendored beside the checkers, because the settings it writes are the ones git never clones. |
@@ -108,7 +112,7 @@ today's date. That was wrong twice over:
    the code. In practice a real graph sat at `refreshed: 2026-07-12` with three nodes stale from a
    later commit — under a gate designed to prevent exactly that.
 
-Both faults are about *what* was gated, not about gating. The backlog gate above measures a real
+Both faults are about *what* was gated, not about gating. The stale-file gate above measures a real
 thing — digests, not a date — and is zero in a repo that is kept current, so there is nothing to
 develop a habit of bypassing.
 
@@ -200,7 +204,7 @@ if [ -n "$PY" ] && [ -f "$(dirname "$0")/kg_pre_push.py" ]; then
 fi
 ```
 
-Don't append `|| true`. The checker returns non-zero only for an unacknowledged backlog — it catches
+Don't append `|| true`. The checker returns non-zero only for unacknowledged stale files — it catches
 its own errors and returns 0 — so swallowing the status leaves you with the reporting and none of the
 gate. The interpreter and file guards are there because a `127` from a missing `python` would block
 a push in a repo that cannot run the check at all.

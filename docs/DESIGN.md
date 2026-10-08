@@ -22,12 +22,14 @@ These are locked — change them only with a deliberate reason.
    change narrative belong to git and the tracker — `SCHEMA.md` §5.
 6. **No separate parity file.** A node cross-links *directly* to its counterpart node in the other
    repo's graph, carrying a `parity` status + one-line `divergence`. Detail stays on each side;
-   "find all gaps" = `kg_parity_gaps`.
+   "find all gaps" = the `kg_parity_gaps` query, which runs through `mcp/launch/kg_cli.py query`.
 7. **Point, don't copy.** Never paste code into the graph — reference symbols.
 8. **Comprehensive updates.** Every refresh updates *all* affected nodes (add new, edit changed,
    remove deleted) + edges.
-9. **Advisory, never blocking.** Freshness, drift and validation surface as advice; they never gate
-   a commit, build, or tool.
+9. **Advisory, with one gate.** Freshness, drift and validation surface as advice; they never gate
+   a commit or a build. The push check blocks on exactly one thing: a mapped file whose content no
+   longer matches the digest recorded when the graph was built. See "The gate that measured the
+   wrong thing".
 10. **Constraints over checks.** Anything expressible as a constraint in the store is one, so bad
     data fails to be written rather than being found later. See "Why a database" below.
 11. **Suggest, never wire.** Nothing in the plugin writes a repo's git config on the user's behalf.
@@ -44,14 +46,14 @@ These are locked — change them only with a deliberate reason.
 |---|---|---|
 | **Storage format** | Committed SQLite (`code_graph.db`) | Constant-time open, write-time integrity, persisted FTS5. Supersedes "Markdown-as-source". |
 | **Human readability** | Explicitly a non-goal | The artifact is AI-consumed. It is not read raw and not reviewed in diffs. |
-| **Plugin name** | `codebase-kg` | Unchanged **on purpose** — see "The rename we didn't do". Slash `/codebase-kg:query\|build\|refresh\|audit\|link\|validate` (skills) + `setup` (command); MCP server `codebase-kg`. |
+| **Plugin name** | `codebase-kg` | Unchanged **on purpose** — see "The rename we didn't do". Skills `/codebase-kg:query\|build\|refresh\|audit\|link\|validate`, plus `setup`, which only the user invokes; MCP server `codebase-kg`. |
 | **MCP tool names** | `kg_*` | Unchanged, same reason. |
-| **Repo layout** | Standalone plugin at root | `plugin.json` at root + a thin `marketplace.json` so it installs. |
+| **Repo layout** | Standalone plugin at root | `.claude-plugin/plugin.json` + a thin `.claude-plugin/marketplace.json` so it installs from this repo. |
 | **Graph location** | Per-repo `knowledge/code_graph.db` | Always `knowledge/` (no repo-root fallback); override per clone via `graph_path` in `.local.md`. |
 | **Refresh engine** | Agent-driven first | The agent reads source and emits nodes — keeps it language-agnostic. Add static parsers later for speed; never as the only path. |
 | **Search index** | FTS5, persisted in the file | An in-memory index was deferred because building it landed on the load path. Persisting it removes that objection entirely: built once at write time, free on open. |
 | **Counterpart direction** | Reciprocal | Both sides link; `validate` flags one-directional or dangling links. |
-| **Freshness gate** | Content check, advisory | Replaced the date-based push block. See "The gate that measured the wrong thing". |
+| **Freshness gate** | Content check | Pushes block only on stale mapped files; everything else is advice. Replaced the date-based push block. See "The gate that measured the wrong thing". |
 
 ## Why a database
 
@@ -95,20 +97,98 @@ costs a working install. Precedent: the `a11y-plugin` → `accessibility-tools` 
 left Acme-iOS pointing at a nonexistent marketplace, silently disabling two plugins until it was
 found weeks later. Renaming `codebase-kg` would repeat that across three repos plus user settings.
 
+## One server, two transports
+
+A server per session cost about 116 MB and four processes for each open session. One server
+process per machine and build now serves every session, over two transports in the same process,
+from one tool catalog and one call path (`core.py`):
+
+- **MCP 2026-07-28 over HTTP for Claude Code**, at `http://127.0.0.1:<server_port>/mcp`. The
+  server holds about 26 MB however many sessions connect, plus about 21 MB per busy worker, against
+  317 MB for eight shim sessions (measured 2026-10-07 with `mcp/bench/`).
+- **Classic MCP over a loopback TCP socket for stdio clients**, through `mcp/launch/kg-shim`, which
+  Codex and sentinel-swarm's role sessions launch.
+
+### A server on the standard library
+
+The server imports only the standard library and runs on the base Python with `-I -S`. fastmcp,
+the `mcp` package and the HTTP stack beneath them made up about 55 of its 83 MB and 2 s of its
+start, for a protocol surface of a few methods. So the tool definitions stay fastmcp registrations
+in `server.py`, which nothing at runtime imports, and `mcp/scripts/gen_catalog.py` writes them to
+`catalog.json`. The
+server sends that catalog and checks arguments against it with pydantic's lax rules. Two tests guard
+the split: the catalog must equal what the registrations produce, and each of 79 argument cases
+must pass, fail or coerce in the core as it does in fastmcp.
+
+With no third-party import there is no venv to build on the first start after an update, which
+used to outlast Claude Code's 7 s connect window. The server starts in about 0.2 s.
+
+The server has no cwd of its own that means anything, so each session tells it which repo it is in.
+A shim sends its cwd in a handshake. Claude Code speaks MCP 2026-07-28 over HTTP, which has no
+sessions, and its `headersHelper` runs in the plugin folder, so neither can carry the cwd. Instead
+the helper sends a random client id, and the server answers that client's first tool call with an
+`InputRequiredResult` asking for roots. Claude Code answers with the session's cwd; the server caches
+it under the client id. Measured: the extra round trip costs about 10 ms, once per connection.
+
+Two rules follow from Claude Code's behaviour, measured against Claude Code 2.1.293 on 2026-10-07:
+
+- **Something must listen within about 7 s of session start.** Claude Code gives up on a server it
+  cannot reach by then, for the whole session, and `SessionStart` hooks do not run before it first
+  tries. The `SessionStart` hook starts the server; Claude Code retries as the hooks finish.
+- **The server must outlive the sessions.** Claude Code sends each call to whatever holds the port
+  and never re-runs anything that could start a server mid-session. So a server that holds the HTTP
+  port exits only after 8 hours with no request.
+
+The bearer token is one per user and outlives each server, because Claude Code keeps the headers it
+got at connect and sends them to a server that restarted since. It is sent only to a server whose
+pid and port match a state file only this user can read, and a takeover authenticates with the old
+server's own state-file token, so a program squatting on the port never receives a credential.
+
+### Tool calls on a worker pool
+
+One interpreter running every session's calls made 16 agents at once wait about 320 ms per call.
+So the shared server sends each tool call to a worker process (`pool.py`, `worker.py`), for HTTP and
+shim sessions alike:
+
+- **A worker is the base Python interpreter, run with `-I -S`.** A worker that only reads imports
+  `query`, `tools` and the standard library, about 21 MB; `edits` loads on its first write. Reads
+  dispatch through `query.TOOLS`, the table `kg_cli.py query` uses, so the CLI, a worker and the
+  in-process path return the same JSON.
+- **The server resolves the graph, never the worker.** The server binds each call to its session as
+  before, resolves the graph path, and sends the absolute path with the call. The worker opens the
+  graph for that call and closes it, as the server does.
+- **Elastic.** A call takes an idle worker, else starts one (about 200-270 ms) while fewer than
+  `max_workers` run, else waits. A worker idle for 60 s is told to exit, so an idle server holds only
+  its own process. Requests and replies are one JSON line each on the worker's stdin and stdout; a
+  worker exits at stdin EOF, so it never outlives the server.
+- **Failure stays with one call.** A worker that exits during a call, or exceeds the call timeout,
+  is killed and dropped; that call returns a tool error and the next call starts a fresh worker.
+- **One writer per graph.** Writes run on workers too, but the server holds a lock per graph path
+  around each one. `edits` replaces the file from a private copy, so two writes at once would lose
+  one. A refused write comes back as `{ok: false, written: false, error}` with `isError`, as before.
+- `max_workers` (default 8, no upper limit) caps the pool; 0 runs every call in the server.
+
+Measured with `mcp/bench/concurrency.py` on 2026-10-07: with 16 agents the HTTP median fell from 323-329 ms with one
+interpreter to 147-161 ms with the pool behind fastmcp, and to 81-115 ms with the stdlib front.
+
 ## The gate that measured the wrong thing
 
-The pre-push hook used to block a push when source changed and the graph's `refreshed:` header was
-not today's date. It was removed, for two independent reasons:
+The first pre-push gate blocked a push when source changed and the graph's `refreshed:` header was
+not today's date. A date cannot measure freshness. It proves someone edited the file, not that the
+nodes match the code. The evidence was in the live graph: the Android header read
+`refreshed: 2026-07-12` while three nodes were stale from a commit that landed after it, under a gate
+designed to prevent exactly that.
 
-1. **It contradicted principle #9.** A hard block is exactly the thing the plugin says it never does.
-2. **A date cannot measure freshness.** It proves someone edited the file, not that the nodes match
-   the code. The evidence was in the live graph: the Android header read `refreshed: 2026-07-12`
-   while three nodes were stale from a commit that landed after it — under a gate designed to
-   prevent precisely that.
+The check that replaced it asks questions with real answers. It compares each mapped file's content
+with the digest the graph recorded when it was built, and it names changed files that no node
+anchors and deleted files that a node still anchors. None of these needs a date.
 
-What replaced it asks questions with real answers: does every anchor still resolve to code, and does
-any source file in this push have no node covering it. Both are checkable, neither needs a date, and
-the check reports rather than blocks.
+The push check blocks on one finding only: a mapped file whose content no longer matches its
+digest, including files the push touches. A push publishes the code, so the graph has to match it
+first. The block tells the session or person pushing to run `/codebase-kg:refresh`, commit the
+graph and push again; the hook runs no model itself. The `PreToolUse` hook `hooks/kg_push_gate.py` denies an agent's
+`git push` on the same finding. `KG_STALE_ACK=<n>` and `SKIP_KG=1` pass both. Unmapped, deleted and
+drifted files in the pushed commits stay advice, and so does the whole pre-commit check.
 
 ## The verification that could only pass
 
@@ -119,7 +199,7 @@ in a repo where the configured driver was a version-stamped path under one devel
 (`…/.claude/plugins/cache/codebase-kg/codebase-kg/0.5.2/mcp`), and every other clone silently showed
 `Binary files differ`. Git reports nothing when a textconv command does not exist; it just falls back.
 
-Two rules came out of it, and both are in the command now:
+Two rules came out of it, and the `setup` skill follows both:
 
 - **A wiring check runs where the wiring will be met.** Setup verifies from a fresh clone with its
   own empty `.git/config`, so the only thing that can make it pass is the committed installer.
@@ -130,14 +210,15 @@ Two rules came out of it, and both are in the command now:
 ## Genericity rules (do not violate)
 
 - **No language hardcoding** anywhere in skills/MCP. Source reading is agent-driven → handles any
-  language. `kind` is free text. Even "which files count as source" is derived from the extensions
-  the graph already anchors on.
+  language. `kind` is free text. Which files count as source is declared per graph in `meta.covers`
+  (`SCHEMA.md`), never a built-in list of extensions.
 - **Symbol discovery via Grep always**; ctags/LSP only when present — never assume a toolchain.
 - **All per-repo specifics live in config** (`SCHEMA.md` §8), never in the generic components.
 
 ## Principles carried from the author's existing plugins
 
-- **Advisory, never blocking** (the a11y-plugin rule — hard gates cause workarounds).
+- **Advisory by default** (the a11y-plugin rule — hard gates cause workarounds). The one gate is
+  the push check on stale mapped files.
 - **Source over tickets** — the graph is a code mirror, verified against source.
 - **Comprehensive updates** — a partial refresh is what causes drift.
 
@@ -149,4 +230,5 @@ in `docs/examples/`): matched (SavedArticle ↔ SavedArticleEntity), divergent
 product doc).
 
 Parity is expressed by **direct node cross-linking** (decision #6, `SCHEMA.md` §9) — there is no
-separate parity file. "Find all gaps" is the `kg_parity_gaps` query across both graphs.
+separate parity file. "Find all gaps" is the `kg_parity_gaps` query (`kg_cli.py query kg_parity_gaps`)
+across both graphs.

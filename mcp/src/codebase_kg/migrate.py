@@ -26,7 +26,7 @@ from pathlib import Path
 
 from . import clean, cli, markdown, writer
 from .coverage import resolve_source_base
-from .models import Anchor, Meta, Node
+from .models import Anchor, Node
 
 LEGACY_NAME = "KNOWLEDGE_GRAPH.md"
 
@@ -40,7 +40,6 @@ class MigrationReport:
     edges: int = 0
     anchors: int = 0
     hashed: int = 0
-    source_base: str | None = None
     descriptions_scrubbed: int = 0
     chars_removed: int = 0
     dropped_edges: list[dict[str, str]] = field(default_factory=list)
@@ -187,7 +186,6 @@ def convert(
     report.edges = build.edges
     report.anchors = build.anchors
     report.hashed = build.hashed
-    report.source_base = str(base) if base else None
     report.dropped_edges = [{"src": s, "dst": d} for s, d in build.dropped_edges]
     return report
 
@@ -228,7 +226,8 @@ def _render(report: MigrationReport) -> str:
     lines += [
         "",
         "  The markdown file was not modified. Commit the .db, verify with",
-        "  kg_stats / kg_validate, then delete the markdown when you are happy.",
+        "  `kg_cli.py query kg_stats` and `kg_cli.py query kg_validate`, then",
+        "  delete the markdown when you are happy.",
     ]
     return "\n".join(lines)
 

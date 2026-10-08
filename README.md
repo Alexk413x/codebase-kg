@@ -17,9 +17,9 @@ every session*.
   carrying a parity status + one-line divergence — so "find all feature gaps between the iOS app and
   its Android port" is a query across two graphs, not a hand-maintained file.
 - **Advisory, with one gate.** Drift and validation surface as advice; they never gate a build or a
-  tool, and never a commit. The push hook blocks on exactly one thing: mapped files that have
-  drifted and that the push does not touch — a backlog nothing else will report again. Zero in a
-  repo that is kept current, and releasable with an acknowledgement that names the count.
+  tool, and never a commit. The push hook blocks on exactly one thing: any mapped file that has
+  drifted, including files the push touches. Zero in a repo that is kept current, and releasable
+  with an acknowledgement that names the count.
 
 The graph is **descriptive** (a mirror of current code), **source-derived** (never ticket- or
 history-derived), and **point-don't-copy** (references symbols, never pastes code). It is a tool
@@ -74,7 +74,8 @@ rule, names it and writes nothing.
 
 ## The tools
 
-Sixteen MCP tools over the graph — ten queries and six targeted writes.
+Thirteen MCP tools over the graph — seven queries and six targeted writes. Three more read tools
+run from the CLI only, so their definitions cost no context in a session that does not use them.
 
 | query | answers |
 |---|---|
@@ -85,9 +86,24 @@ Sixteen MCP tools over the graph — ten queries and six targeted writes.
 | `kg_find_by_kind` | every `ViewModel` / `Service` / `@Entity` |
 | `kg_find_by_link` | which code node(s) point at a node in another committed graph |
 | `kg_find_by_reference` | "this SDK page moved — which code relies on it?" — nodes by the documentation they cite |
+
+| CLI only | answers |
+|---|---|
 | `kg_parity_gaps` | the cross-codebase gap report, as a query |
 | `kg_stats` | cold-start orientation: counts, kinds, sections, isolated nodes, and the repo-wide staleness total — how much of this map is out of date, and which nodes |
 | `kg_validate` | advisory drift check against real source: anchors that no longer resolve, declared coverage gaps, and files edited since the graph was built |
+
+Run a CLI-only tool with `query`, which prints the same JSON the tool returned over MCP. Arguments
+go in one JSON object with the tool's parameter names:
+
+```bash
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" query kg_stats
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" query kg_validate '{"limit": 200}'
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" query kg_parity_gaps '{"status": "divergent"}'
+```
+
+The skills that use them (`validate`, `audit`, `build`, `refresh`, `link`, `query`) allow this
+command, so they need no extra permission.
 
 | write | does |
 |---|---|
@@ -101,6 +117,56 @@ Sixteen MCP tools over the graph — ten queries and six targeted writes.
 A write runs against a private copy of the file, inside one transaction, and the copy replaces the
 original only after `kg_validate` confirms it introduced no new finding. So a rejected edit leaves
 the committed graph **byte-identical** — not rolled back, never opened for writing.
+
+## The server
+
+One server process per machine and build serves every session. Claude Code reaches it over HTTP at
+`http://127.0.0.1:47821/mcp`; other MCP clients (Codex, any stdio client) launch
+`mcp/launch/kg-shim`, which relays stdio to the same process over a loopback socket. The server
+imports only the Python standard library: it runs on your Python 3.10 or later with no venv, starts
+in about 0.2 s and holds about 25 MB while idle.
+
+- **Starting it.** A `SessionStart` hook starts the server when nothing answers `GET /health` on the
+  port, and waits up to 3 s. Claude Code retries the connection for about 7 s after a session starts,
+  then gives up for that session.
+- **Which repo.** The server asks Claude Code for the session's roots on the first tool call and
+  resolves the graph from the first root, as a shim resolves it from its cwd. `CODEBASE_KG_PATH`
+  still names a graph explicitly.
+- **Port.** The plugin setting `server_port` (default 47821) moves it. When another program holds
+  the port, the hook prints one line naming the setting. A newer codebase-kg build takes the port
+  from an older one; an older build leaves a newer one running.
+- **Security.** The server binds `127.0.0.1` only, refuses any `Host` but its own loopback address
+  and any foreign `Origin`, and needs a bearer token that only your user account can read. The
+  `headersHelper` (`mcp/launch/kg_headers.py`) sends that token only after the server on the port
+  proves, through its state file, to be yours.
+- **Lifetime.** A server that holds the HTTP port exits after 8 hours with no request; a shim-only
+  server exits after 10 minutes with no connection.
+- **Workers.** The server runs each tool call on a worker process: a plain Python interpreter of
+  about 21-24 MB. A call that finds no idle worker starts one, up to the `max_workers` setting
+  (default 8); later calls wait for a free one. A worker exits after 60 s with no call, so an idle
+  server holds only its own process. A worker that crashes, or takes longer than 60 s
+  (`CODEBASE_KG_CALL_TIMEOUT`), fails that call alone, and the next call starts a fresh one. Writes
+  to one graph run one at a time. `max_workers` 0 runs every call in the server process.
+
+### Changing `max_workers`
+
+`max_workers` has no upper limit. Raise it when many agents query at once on a machine with spare
+cores and memory; lower it, or set 0, on a machine short of memory.
+
+1. Set the value with `/plugin configure codebase-kg`, the plugin's row in `/config`, or
+   `claude plugin configure`.
+2. Stop the running server. It reads the setting only when it starts:
+
+   ```sh
+   uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" server stop
+   ```
+
+   `kg_cli.py server status` shows the server's pid and the `max_workers` it runs.
+3. Restart Claude Code. The `SessionStart` hook starts a new server with the new value. Sessions that
+   stay open reach the new server without reconnecting.
+
+`CODEBASE_KG_MAX_WORKERS` overrides the setting. A server that a stdio shim starts, rather than the
+hook, does not see the plugin setting and uses `CODEBASE_KG_MAX_WORKERS`, else 8.
 
 ## Migrating from `KNOWLEDGE_GRAPH.md`
 
@@ -145,10 +211,10 @@ codebase-kg/
 ├── templates/
 │   ├── code_graph.template.json
 │   └── codebase-kg.local.md.example
-├── .mcp.json                 # registers the codebase-kg MCP server (mcp/launch/kg-shim → mcp/src/codebase_kg/shim.py)
+├── .mcp.json                 # registers the codebase-kg HTTP server, with mcp/launch/kg_headers.py as its headersHelper
 ├── skills/                   # query / build / refresh / audit / link / validate, and setup (user-invoked only)
 ├── mcp/                      # the query server (one shared process per machine) + build/export/migrate CLIs
-├── hooks/                    # Claude Code hooks: the search gate, the post-edit nudge, the unwired-clone notice
+├── hooks/                    # Claude Code hooks: the search gate, the push gate, the post-edit nudge, the unwired-clone notice, the server start
 └── git-hooks/                # advisory pre-commit + pre-push staleness checks and install.sh, vendored into any repo (stdlib-only)
 ```
 
@@ -185,6 +251,12 @@ Two advisory layers, both pointing at the same fix (`/codebase-kg:refresh`):
 
 - **In-session nudge** (`hooks/`): while Claude edits source, it says so the first time you touch a
   file no node covers, and periodically once enough mapped files have changed.
+- **Push gate for agents** (`hooks/kg_push_gate.py`, a `PreToolUse` hook on Bash): when an agent runs
+  `git push` (also `git -C <dir> push`, chained, or env-prefixed) while any mapped file is stale
+  against `HEAD`, the hook denies the call. The reason lists the stale files and tells the agent to run
+  `/codebase-kg:refresh`, commit the graph and push again. `SKIP_KG=1` and a matching
+  `KG_STALE_ACK=<n>` pass it. `--no-verify` does not, because it skips git hooks and not this one. The
+  hook fails open on any error. It uses the pre-push hook's comparison, so both agree on what is stale.
 - **Commit/push checks** (`git-hooks/`): installed per-repo via `/codebase-kg:setup`. They compare
   the change set against the graph and report three things: source no node covers, deleted files the
   graph still anchors on, and mapped files whose contents no longer match the digest recorded when
@@ -192,9 +264,9 @@ Two advisory layers, both pointing at the same fix (`/codebase-kg:refresh`):
   modifications, and a check that reads only additions and deletions is silent through most of the
   drift. Both also report the **repo-wide** total, which no change set can see: a file that drifts
   and is never re-derived is named once and then never again. Commit-time is one line and never
-  blocks; push-time blocks on the backlog it did not create (`KG_STALE_ACK=<n>`, `SKIP_KG=1` or
-  `--no-verify` to get past it). They're stdlib-only and vendored into the repo, so they run for
-  every clone and CI.
+  blocks; push-time blocks on every stale mapped file (`KG_STALE_ACK=<n>`, `SKIP_KG=1` or
+  `--no-verify` to get past it). The block tells you to run `/codebase-kg:refresh`, commit the
+  graph and push again. They're stdlib-only and vendored into the repo, so they run for every clone and CI.
 
 ### One command per clone
 

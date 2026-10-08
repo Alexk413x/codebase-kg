@@ -670,16 +670,6 @@ def parse_shell_search(command: str, proj: Path) -> ShellSearch | None:
     return out if found_search else None
 
 
-def shell_search_targets(command: str, proj: Path) -> list[Path] | None:
-    """The paths a shell search is aimed at, or None if it is not one.
-
-    An empty list means "a search with no path operand": `grep foo` reads stdin
-    and is not a tree search, so the caller treats it as nothing to gate.
-    """
-    parsed = parse_shell_search(command, proj)
-    return None if parsed is None else parsed.targets
-
-
 def _name_ext(name: str) -> str:
     """The extension a file-name filter pins, or "" when it pins none.
 
@@ -910,7 +900,7 @@ def _run(data: dict[str, object]) -> None:
         state = _read_state(proj, session)
         earned = gate_credit(cfg)
         # A grant REPLACES rather than accumulates, and takes the larger of the
-        # two. Both halves earn their place: `+` would let `kg_stats` in a loop
+        # two. Both halves earn their place: `+` would let `kg_find_by_kind` in a loop
         # bank the whole session for having learned nothing, and taking the new
         # value outright would let a cheap follow-up query cost an agent the
         # allowance a bigger answer already earned it. Running out is not

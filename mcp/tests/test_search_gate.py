@@ -264,10 +264,10 @@ def test_credit_cannot_be_farmed_by_repeating_a_cheap_query(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A grant REPLACES rather than accumulates, which is why `max` and not `+`.
-    Otherwise `kg_stats` in a loop banks the session: five answers naming nothing
+    Otherwise `kg_find_by_kind` in a loop banks the session: five answers naming nothing
     would buy fifteen searches for having learned nothing."""
     for _ in range(5):
-        query(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_stats")
+        query(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_find_by_kind")
     for i in range(3):
         assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"c{i}"}) is None
     assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "farmed"})) == "deny"
@@ -280,7 +280,7 @@ def test_a_second_query_tops_up_rather_than_stacking(
     Spend one of three, ask again, and there are three — not five."""
     query(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_search")
     assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "one"}) is None
-    query(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_stats")
+    query(monkeypatch, capsys, repo, "mcp__codebase-kg__kg_node")
     for i in range(3):
         assert run(monkeypatch, capsys, repo, "Grep", {"pattern": f"e{i}"}) is None
     assert decision(run(monkeypatch, capsys, repo, "Grep", {"pattern": "gone"})) == "deny"
@@ -648,7 +648,7 @@ def test_cd_back_into_the_repo_is_still_gated(scoped: Path) -> None:
 
 
 def test_a_command_that_is_not_a_search_returns_none(scoped: Path) -> None:
-    assert gate.shell_search_targets("git status", scoped) is None
+    assert gate.parse_shell_search("git status", scoped) is None
 
 
 def test_an_unparseable_command_does_not_raise(scoped: Path) -> None:

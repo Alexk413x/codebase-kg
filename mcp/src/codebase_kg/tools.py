@@ -23,7 +23,7 @@ from typing import Any
 from . import clean, staleness
 from .coverage import CoverageReport, classify, declared_roots, resolve_source_base
 from .links import Resolution, resolve
-from .models import Anchor, Node
+from .models import Anchor
 from .store import CodeGraph, StoreError, tokenize
 from .writer import file_sha
 
