@@ -78,8 +78,8 @@ files with the total count.
   not pass: it skips git hooks, and the point is that an agent cannot skip the check silently.
 - **Fails open.** A parse error, an unreadable graph or any other error allows the push. The git hook
   still blocks it.
-- **No double refresh.** When this hook denies, the pre-push hook's headless refresh never starts. The
-  agent refreshes in its own turn. When the agent pushes again with a current graph, nothing is stale
+- **The agent refreshes.** When this hook denies, the agent runs `/codebase-kg:refresh` in its own
+  turn. The pre-push hook runs no refresh of its own. When the agent pushes again with a current graph, nothing is stale
   and neither hook acts.
 
 ## The post-edit nudge (PostToolUse)

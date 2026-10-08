@@ -31,26 +31,9 @@ code at that point stays wrong for everyone who reads it. Refresh the graph
 before you push, or acknowledge the drift explicitly. In a repo that is kept
 current no file is stale and this hook is silent.
 
-When the gate would block, the hook first tries to fix the cause: it runs
-`claude -p "/codebase-kg:refresh"` headless in the repo root, with the stale
-files listed in the prompt. The run reads the repo and writes only through the
-graph's MCP write tools: no shell, no `Write`, `Edit` or CLI runner, and a
-minimal environment. It does this only when all of these hold:
-
-  * `claude` is on `PATH`;
-  * `KG_AUTO_REFRESH` is not `0`, and `KG_REFRESHING` is not set (the recursion
-    guard the hook sets for the run);
-  * a pushed ref's local sha is `HEAD`, so the refreshed graph can be committed
-    on top of what is being pushed;
-  * the graph file has no uncommitted changes.
-
-If the run exits 0, the graph file changed and no mapped file is stale against
-`HEAD`, the hook commits the graph as "Refresh the code graph" and still exits
-1. A pre-push hook cannot add a commit to the push in progress, so you run
-`git push` again. Every other outcome — `claude` fails or times out (900 s), a
-file stays stale, anything raises — prints the reason, leaves any graph change
-uncommitted, and falls through to the normal block. A refresh costs one headless
-model run per stale push.
+When the gate blocks, the message tells the Claude session or the person
+pushing to run `/codebase-kg:refresh`, commit the graph and push again. The
+hook itself never runs a model.
 
 The escape hatches are deliberate and all explicit:
 
@@ -58,7 +41,6 @@ The escape hatches are deliberate and all explicit:
     reports. It names the number on purpose — it stops matching the moment the
     count moves, so it cannot be set once in a shell profile and forgotten.
   * `SKIP_KG=1` skips the check entirely, as it does at commit time.
-  * `KG_AUTO_REFRESH=0` keeps the check and skips only the automatic refresh.
   * `git push --no-verify` skips every hook.
 
 An unexpected error is never a block: `main` returns 0 on anything it did not
@@ -85,7 +67,6 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -745,7 +726,7 @@ def _emit_stale(
         "[codebase-kg] PUSH BLOCKED. A commit is provisional; a push is publication,",
         "[codebase-kg] and the graph no longer matches the code you are publishing.",
         "[codebase-kg]",
-        "[codebase-kg]   Fix it:         /codebase-kg:audit, then /codebase-kg:refresh",
+        "[codebase-kg]   Fix it:         run /codebase-kg:refresh, commit the graph, push again",
         f"[codebase-kg]   Accept it once: KG_STALE_ACK={len(stale)} git push ...",
         "[codebase-kg]   Skip the check: SKIP_KG=1 git push ...  (or git push --no-verify)",
         "[codebase-kg]",
@@ -765,164 +746,6 @@ def acknowledged(stale: list[str]) -> bool:
     """
     ack = os.environ.get("KG_STALE_ACK", "").strip()
     return ack.isdigit() and int(ack) == len(stale)
-
-
-REFRESH_PROMPT = (
-    "/codebase-kg:refresh This run is unattended and has no shell, so it cannot run git. "
-    "The push hook already found the change set: the mapped files below no longer match "
-    "the graph. Read them, re-derive the nodes that anchor on them, and write the graph "
-    "only through the kg_* write tools (kg_upsert_node, kg_delete_node and the link and "
-    "reference tools). Do not export, edit or build .kg-export.json. Skip the skill's "
-    "kg_cli.py steps (kg_validate, kg_stats): each write tool validates its own change, "
-    "and the push hook checks the graph again after this run."
-)
-REFRESH_TIMEOUT = 900
-
-_REFRESH_MCP_TOOLS = (
-    "kg_search", "kg_node", "kg_find_by_path",
-    "kg_upsert_node", "kg_delete_node", "kg_add_link", "kg_remove_link",
-    "kg_add_reference", "kg_remove_reference", "kg_neighborhood",
-)
-
-# Unattended, so narrower than the skill's own `allowed-tools`: the run reads the
-# repo and writes only through the MCP write tools, which validate each change and
-# touch nothing but the graph. No Bash at all: even read-only git takes
-# `--output=<file>`. No Write, Edit or CLI runner either, so text in the repo
-# cannot steer the run into writing or executing anything. The hook supplies the
-# change set in the prompt instead. Both server names are listed: the host
-# prefixes the plugin's server one way and a direct install another.
-REFRESH_TOOLS = [
-    f"{prefix}{name}"
-    for prefix in ("mcp__codebase-kg__", "mcp__plugin_codebase-kg_codebase-kg__")
-    for name in _REFRESH_MCP_TOOLS
-] + ["Read(./**)", "Grep", "Glob"]
-
-
-def refresh_prompt(stale: list[str]) -> str:
-    return REFRESH_PROMPT + "\n\nStale mapped files:\n" + "\n".join(f"- {path}" for path in stale)
-
-# Git exports GIT_DIR, GIT_INDEX_FILE and friends into hooks; passed on, they
-# point the nested run's git at the pushing process's state. Everything else the
-# run needs to start, authenticate and reach the API is named here.
-_REFRESH_ENV = (
-    "PATH", "PATHEXT", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "USER", "USERNAME",
-    "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "SYSTEMROOT", "SYSTEMDRIVE",
-    "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "TERM",
-    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
-    "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
-    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
-)
-
-
-def refresh_env() -> dict[str, str]:
-    upper = {k.upper(): v for k, v in os.environ.items()}
-    env = {name: upper[name] for name in _REFRESH_ENV if name in upper}
-    env["KG_REFRESHING"] = "1"
-    return env
-
-
-def can_auto_refresh(refs: list[tuple[str, str, str, str]], graph_rel: str) -> bool:
-    """May the hook run the refresh itself for this push?
-
-    The pushed tip has to be `HEAD`: the hook cannot add a commit to the push in
-    progress, so the refreshed graph is committed on `HEAD` and lands with the
-    next push. A graph file with uncommitted changes is someone's work, and the
-    refresh would build on top of it.
-    """
-    if os.environ.get("KG_AUTO_REFRESH", "").strip() == "0":
-        return False
-    if os.environ.get("KG_REFRESHING"):
-        return False
-    if not shutil.which("claude"):
-        return False
-    head = _git("rev-parse", "HEAD").strip()
-    if not head or head not in push_tips(refs):
-        return False
-    return not _git("status", "--porcelain", "--", graph_rel).strip()
-
-
-def _run_claude(claude: str, repo: Path, stale: list[str]) -> str | None:
-    """Run the refresh skill headless. Returns the failure, or None on exit 0.
-
-    stdin is closed: the hook's own stdin carried the pushed refs and is spent.
-    `KG_REFRESHING` stops a refresh that somehow pushes from refreshing again.
-    """
-    try:
-        proc = subprocess.run(
-            [claude, "-p", refresh_prompt(stale), "--allowedTools", ",".join(REFRESH_TOOLS)],
-            cwd=repo,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=REFRESH_TIMEOUT,
-            env=refresh_env(),
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return f"claude did not finish within {REFRESH_TIMEOUT} seconds"
-    except OSError as exc:
-        return f"claude did not start: {exc}"
-    if proc.returncode != 0:
-        tail = " ".join((proc.stderr or proc.stdout or "").strip().splitlines()[-3:])
-        return f"claude exited with status {proc.returncode}" + (f": {tail}" if tail else "")
-    return None
-
-
-def _commit_graph(graph_rel: str) -> str | None:
-    """Commit the graph file alone. Returns the short sha, or None on failure."""
-    env = {**os.environ, "KG_REFRESHING": "1"}
-    for cmd in (
-        ["git", "add", "--", graph_rel],
-        ["git", "commit", "-m", "Refresh the code graph", "--", graph_rel],
-    ):
-        if subprocess.run(cmd, capture_output=True, env=env, check=False).returncode != 0:
-            return None
-    return _git("rev-parse", "--short", "HEAD").strip() or None
-
-
-def _may_auto_refresh(refs: list[tuple[str, str, str, str]], graph_rel: str) -> bool:
-    try:
-        return can_auto_refresh(refs, graph_rel)
-    except Exception:  # noqa: BLE001 - the stale state is real; fall back to the block
-        return False
-
-
-def auto_refresh(repo: Path, graph_rel: str, root: str, stale: list[str]) -> str | None:
-    """Refresh the graph with a headless run and commit it.
-
-    Returns None once the refreshed graph is committed, else the reason it was
-    not. Any graph change from a failed run stays uncommitted.
-    """
-    try:
-        before = read_graph(repo / graph_rel)
-        missing_before = set(repo_staleness(before, root, ["HEAD"]).unreadable) if before else set()
-        failure = _run_claude(
-            shutil.which("claude") or "claude", repo, [_root_to_rel(p, root) for p in stale]
-        )
-        if failure:
-            return failure
-        fresh = read_graph(repo / graph_rel)
-        if fresh is None:
-            return "the refreshed graph is unreadable"
-        after = repo_staleness(fresh, root, ["HEAD"])
-        if after.stale:
-            return f"{len(after.stale)} mapped file(s) are still stale after the refresh"
-        missing = sorted(set(after.unreadable) - missing_before)
-        if missing:
-            return f"the refresh anchored {len(missing)} file(s) that do not exist at HEAD"
-        if not _git("status", "--porcelain", "--", graph_rel).strip():
-            return "the refresh did not change the graph"
-        sha = _commit_graph(graph_rel)
-        if sha is None:
-            return "git could not commit the refreshed graph"
-    except Exception as exc:  # noqa: BLE001 - the block message still follows
-        return f"the refresh raised: {exc}"
-    sys.stderr.write(
-        f"[codebase-kg] Graph refreshed and committed as {sha}. Review it with "
-        f"`git show {sha}`, then run git push again: a pre-push hook cannot add a commit "
-        "to the push in progress.\n"
-    )
-    return None
 
 
 def main() -> int:
@@ -984,20 +807,6 @@ def _run() -> int:
     revs = push_tips(refs) or ["HEAD"]
     split = repo_staleness(graph, root, revs)
     blocked = bool(split.stale) and not acknowledged(split.stale)
-
-    if blocked and _may_auto_refresh(refs, graph_rel):
-        sys.stderr.write(
-            f"[codebase-kg] The graph is stale ({len(split.stale)} mapped file(s)). Running "
-            '`claude -p "/codebase-kg:refresh"` to refresh it. This can take a few minutes and '
-            "costs one headless model run. Set KG_AUTO_REFRESH=0 to turn it off.\n"
-        )
-        failure = auto_refresh(repo, graph_rel, root, split.stale)
-        if failure is None:
-            return 1
-        sys.stderr.write(
-            f"[codebase-kg] Auto-refresh failed: {failure}. "
-            "Any change to the graph is left uncommitted.\n"
-        )
 
     if any(findings):
         _emit(findings, graph_rel, blocked=blocked)

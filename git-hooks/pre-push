@@ -9,9 +9,7 @@
 # Release a block with KG_STALE_ACK=<count> (the total stale count is in the
 # message), SKIP_KG=1, or git push --no-verify.
 #
-# Before it blocks, the checker runs `claude -p "/codebase-kg:refresh"` when it
-# can, and commits the refreshed graph. You then push again. KG_AUTO_REFRESH=0
-# turns that off.
+# To clear a block, run /codebase-kg:refresh, commit the graph and push again.
 #
 # The exit status is deliberately NOT swallowed with `|| true` — that is what
 # makes the gate a gate. kg_pre_push.py returns non-zero only for unacknowledged

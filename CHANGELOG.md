@@ -15,10 +15,14 @@ All notable changes to the `codebase-kg` plugin.
   `uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query <tool>` and allow
   that command. A skill or agent definition that lists `mcp__codebase-kg__kg_stats`,
   `kg_validate` or `kg_parity_gaps` must switch to the CLI.
-- The headless refresh that the `pre-push` hook starts no longer gets `kg_validate` or `kg_stats`,
-  and still gets no shell. Its prompt tells it to skip the skill's CLI steps: each write tool
-  validates its own change. After the run, the hook also commits nothing when the refreshed graph
-  anchors a file that does not exist at `HEAD` and the old graph did not. `git-hooks/install.sh` pins 0.13.0.
+- The `pre-push` hook no longer runs `claude -p "/codebase-kg:refresh"` before it blocks. The
+  headless run did nothing whenever the plugin did not load in a print-mode session, for example
+  when the plugin is installed only at project scope for another repo: the session reported an
+  unknown command, no codebase-kg tools attached, and the hook then reported files "still stale
+  after the refresh". A stale push is blocked as before. The block message tells the session or
+  the person pushing to run `/codebase-kg:refresh`, commit the graph and push again, as the
+  `PreToolUse` push gate already does. `KG_AUTO_REFRESH` and `KG_REFRESHING` are gone;
+  `KG_STALE_ACK=<n>` and `SKIP_KG=1` still pass. `git-hooks/install.sh` pins 0.13.0.
 - The migrate report names `kg_cli.py query kg_stats` and `kg_cli.py query kg_validate`.
 
 ## [0.12.0] — 2026-10-07 — one shared HTTP server for Claude Code

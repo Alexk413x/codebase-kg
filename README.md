@@ -265,10 +265,8 @@ Two advisory layers, both pointing at the same fix (`/codebase-kg:refresh`):
   drift. Both also report the **repo-wide** total, which no change set can see: a file that drifts
   and is never re-derived is named once and then never again. Commit-time is one line and never
   blocks; push-time blocks on every stale mapped file (`KG_STALE_ACK=<n>`, `SKIP_KG=1` or
-  `--no-verify` to get past it). Before it blocks, the push hook runs
-  `claude -p "/codebase-kg:refresh"` and commits the refreshed graph, then asks you to push again.
-  That costs one headless model run per stale push; `KG_AUTO_REFRESH=0` turns it off. They're
-  stdlib-only and vendored into the repo, so they run for every clone and CI.
+  `--no-verify` to get past it). The block tells you to run `/codebase-kg:refresh`, commit the
+  graph and push again. They're stdlib-only and vendored into the repo, so they run for every clone and CI.
 
 ### One command per clone
 

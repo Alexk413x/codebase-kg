@@ -71,41 +71,8 @@ Agents that run `git push` through Claude Code meet a `PreToolUse` hook first
 denies the push on the same rule and tells the agent to refresh, commit and push again. It does not
 accept `--no-verify`.
 
-### The hook tries to refresh the graph first
-
-When the gate would block, `pre-push` first runs `claude -p "/codebase-kg:refresh"` in the repo
-root. It prints a line before it starts. The run can take a few minutes and costs **one headless
-model run per stale push**.
-
-The hook runs the refresh only when all of these hold:
-
-- `claude` is on `PATH`.
-- `KG_AUTO_REFRESH` is not `0`, and `KG_REFRESHING` is not set.
-- A pushed ref points at `HEAD`, so the refreshed graph can be committed on top of the push.
-- The graph file has no uncommitted changes.
-
-The run is unattended, so it gets less than the refresh skill's own `allowed-tools`:
-
-- The graph's MCP tools. The write tools validate each change and write only the graph file.
-- `Read(./**)`, `Grep` and `Glob`.
-- No shell, no `Write`, no `Edit` and no CLI runner, so text in the repo cannot steer the run into
-  writing or running anything else. Even read-only `git` is left out, because `git diff` and
-  `git log` take `--output=<file>`. The hook lists the stale files in the prompt in place of the
-  skill's own `git` scoping, and tells the skill to use the write tools, not the export and build
-  path.
-- A minimal environment: the variables `claude` needs to start, sign in and reach the API, plus
-  `KG_REFRESHING=1`, so a refresh cannot trigger another one. The `GIT_*` variables git sets for
-  the hook do not reach the run.
-
-The hook stops the run after 900 seconds. Review the refresh commit with `git show` before you
-push again.
-
-If the run exits 0, the graph file changed, and no mapped file is stale against `HEAD`, the hook
-commits the graph as "Refresh the code graph". The push still fails with exit status 1. A pre-push
-hook cannot add a commit to the push in progress, so run `git push` again.
-
-Every other outcome prints the reason, leaves any graph change uncommitted, and falls through to
-the normal block: `claude` fails or times out, a file stays stale, or the hook raises an error.
+To clear the block, run `/codebase-kg:refresh` in a Claude Code session, commit the graph and push
+again.
 
 Three ways past the block, all explicit:
 
@@ -113,7 +80,6 @@ Three ways past the block, all explicit:
 |---|---|
 | `KG_STALE_ACK=<n> git push …` | Accept this exact set of stale files. `<n>` is the total stale count the message prints. It names the number on purpose — the ack stops matching the moment the count moves, so it cannot be set once in a shell profile and forgotten. |
 | `SKIP_KG=1 git push …` | Skip the check, as at commit time. |
-| `KG_AUTO_REFRESH=0 git push …` | Keep the check and the block. Skip only the automatic refresh. |
 | `git push --no-verify` | Skip every hook. |
 
 An unexpected error inside the check is **not** a block: it reports itself on stderr and exits 0. A

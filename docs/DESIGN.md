@@ -185,8 +185,8 @@ anchors and deleted files that a node still anchors. None of these needs a date.
 
 The push check blocks on one finding only: a mapped file whose content no longer matches its
 digest, including files the push touches. A push publishes the code, so the graph has to match it
-first. Before it blocks, `git-hooks/kg_pre_push.py` can run `/codebase-kg:refresh` headless and
-commit the refreshed graph. The `PreToolUse` hook `hooks/kg_push_gate.py` denies an agent's
+first. The block tells the session or person pushing to run `/codebase-kg:refresh`, commit the
+graph and push again; the hook runs no model itself. The `PreToolUse` hook `hooks/kg_push_gate.py` denies an agent's
 `git push` on the same finding. `KG_STALE_ACK=<n>` and `SKIP_KG=1` pass both. Unmapped, deleted and
 drifted files in the pushed commits stay advice, and so does the whole pre-commit check.
 
