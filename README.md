@@ -305,11 +305,6 @@ it went wrong in practice. See [`docs/DESIGN.md`](docs/DESIGN.md).
 Because refresh reads the peer graph, two linked repos stay **eventually consistent**: each side
 reconciles parity when *it* commits, so you only ever manage one repo's commit at a time.
 
-## Design lineage
-
-Mirrors the structure of the author's `a11y` plugin (skill + MCP + advisory-hook) and its `a11y-kg`
-MCP query server, generalized past accessibility to *any* codebase.
-
 ## License
 
 Free to use, including at work, and free to fork and share. You may not sell it, a fork
