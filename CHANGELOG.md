@@ -2,6 +2,25 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.13.0] — 2026-10-07 — start and end tools move to the CLI
+
+### Changed
+
+- `kg_stats`, `kg_validate` and `kg_parity_gaps` leave the MCP catalog for every transport: HTTP,
+  the shim and a private stdio server. Their definitions cost context in every session, and a task
+  runs them once at its start or end. They run through
+  `mcp/launch/kg_cli.py query <tool> [json-args]`, which prints the same JSON. The MCP surface is 13
+  tools: 7 lookups and the 6 write tools, which stay on MCP.
+- The `validate`, `audit`, `build`, `refresh`, `link` and `query` skills run the three with
+  `uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query <tool>` and allow
+  that command. A skill or agent definition that lists `mcp__codebase-kg__kg_stats`,
+  `kg_validate` or `kg_parity_gaps` must switch to the CLI.
+- The headless refresh that the `pre-push` hook starts no longer gets `kg_validate` or `kg_stats`,
+  and still gets no shell. Its prompt tells it to skip the skill's CLI steps: each write tool
+  validates its own change. After the run, the hook also commits nothing when the refreshed graph
+  anchors a file that does not exist at `HEAD` and the old graph did not. `git-hooks/install.sh` pins 0.13.0.
+- The migrate report names `kg_cli.py query kg_stats` and `kg_cli.py query kg_validate`.
+
 ## [0.12.0] — 2026-10-07 — one shared HTTP server for Claude Code
 
 ### Changed

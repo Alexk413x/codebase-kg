@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 
-from codebase_kg import core, migrate, resolve
+from codebase_kg import core, migrate, query, resolve
 
 FIX = Path(__file__).resolve().parent / "fixtures"
 
@@ -125,21 +125,36 @@ def test_kg_find_by_path_accepts_a_bare_filename(served: Path) -> None:
     assert out["count"] >= 1
 
 
-def test_kg_parity_gaps_runs_unfiltered_and_filtered(served: Path) -> None:
-    assert "count" in call("kg_parity_gaps")
-    assert "count" in call("kg_parity_gaps", status="divergent")
+def cli(capsys: pytest.CaptureFixture[str], name: str, **kwargs: Any) -> dict[str, Any]:
+    """Run a read tool the way `kg_cli.py query` does. A failure raises, with its error."""
+    code = query.main([name, json.dumps(kwargs)])
+    out = json.loads(capsys.readouterr().out)
+    if code:
+        raise RuntimeError(out["error"])
+    return out
 
 
-def test_kg_stats_reports_totals(served: Path) -> None:
-    out = call("kg_stats")
+@pytest.mark.parametrize("name", ["kg_parity_gaps", "kg_stats", "kg_validate"])
+def test_the_cli_only_tools_are_not_on_mcp(served: Path, name: str) -> None:
+    result = _result(name, {})
+    assert result["isError"] is True and "Unknown tool" in result["content"][0]["text"]
+
+
+def test_kg_parity_gaps_runs_unfiltered_and_filtered(served: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert "count" in cli(capsys, "kg_parity_gaps")
+    assert "count" in cli(capsys, "kg_parity_gaps", status="divergent")
+
+
+def test_kg_stats_reports_totals(served: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = cli(capsys, "kg_stats")
     assert out["nodes"] > 0
     assert "edges" in out and "anchors" in out
 
 
-def test_kg_validate_runs_without_a_peer(served: Path) -> None:
+def test_kg_validate_runs_without_a_peer(served: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # `_open_peer` yields None when there is no counterpart; the wrapper holds
     # two context managers at once and this is the only test that opens both.
-    out = call("kg_validate")
+    out = cli(capsys, "kg_validate")
     assert "ok" in out
 
 
@@ -162,9 +177,6 @@ def test_every_tool_reports_a_missing_graph_actionably(
         ("kg_neighborhood", {"id": "x"}),
         ("kg_find_by_kind", {"kind": "x"}),
         ("kg_find_by_path", {"path": "x"}),
-        ("kg_parity_gaps", {}),
-        ("kg_stats", {}),
-        ("kg_validate", {}),
     ]:
         with pytest.raises(RuntimeError) as exc:
             call(name, **kwargs)
@@ -282,8 +294,8 @@ def test_list_tools_page_through_the_tool_surface(served: Path) -> None:
     assert first["total"] == rest["total"] == 1 + rest["count"]
 
 
-def test_kg_validate_reports_issue_counts(served: Path) -> None:
-    out = call("kg_validate", limit=1)
+def test_kg_validate_reports_issue_counts(served: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = cli(capsys, "kg_validate", limit=1)
     assert set(out["issue_counts"]) == {
         "anchor_issues", "counterpart_issues", "description_issues",
         "external_link_issues", "reference_issues",

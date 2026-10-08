@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cli_vs_mcp import CpuMeter, cpu_load, http_client, http_server  # noqa: E402
 from loop10 import CALLS, RUNNER, SHIM  # noqa: E402
 
-LOOKUPS = [c for c in CALLS if c[0] != "kg_validate"]
+LOOKUPS = CALLS
 
 
 def _summary(times: list[float], wall: float, errors: int) -> dict:
@@ -71,7 +71,7 @@ async def mcp_agents(n: int, graph: str, server: dict | None = None) -> dict:
         clients = [http_client(server, graph, f"agent{n}-{i}") for i in range(n)]
     for c in clients:
         await c.__aenter__()
-        await c.call_tool("kg_stats", {})
+        await c.call_tool("kg_search", {"query": "warm up"})
     errors = 0
 
     async def agent(c: Client) -> list[float]:

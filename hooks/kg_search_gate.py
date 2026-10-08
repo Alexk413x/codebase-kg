@@ -900,7 +900,7 @@ def _run(data: dict[str, object]) -> None:
         state = _read_state(proj, session)
         earned = gate_credit(cfg)
         # A grant REPLACES rather than accumulates, and takes the larger of the
-        # two. Both halves earn their place: `+` would let `kg_stats` in a loop
+        # two. Both halves earn their place: `+` would let `kg_find_by_kind` in a loop
         # bank the whole session for having learned nothing, and taking the new
         # value outright would let a cheap follow-up query cost an agent the
         # allowance a bigger answer already earned it. Running out is not

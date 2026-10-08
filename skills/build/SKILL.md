@@ -2,13 +2,6 @@
 name: build
 description: Bootstraps a committed code_graph.db from source for a repo that has no graph yet, or whose graph is too narrow to keep. It reads the source tree and writes a source-derived, symbol-anchored graph per the codebase-kg schema. Use when the user asks to "build a code graph", "build a knowledge graph", "bootstrap a KG", "create a code_graph.db", "map this codebase" or "generate the code graph". (To update an existing graph use refresh. A repo with an old KNOWLEDGE_GRAPH.md is migrated, not rebuilt; this skill says how.)
 allowed-tools:
-  # Both names the host gives the server: bare when the MCP server is installed
-  # directly, prefixed when it arrives as a plugin. Listing only the bare form
-  # denies a plugin-installed skill its own query surface.
-  - mcp__codebase-kg__kg_validate
-  - mcp__codebase-kg__kg_stats
-  - mcp__plugin_codebase-kg_codebase-kg__kg_validate
-  - mcp__plugin_codebase-kg_codebase-kg__kg_stats
   - Read
   - Grep
   - Glob
@@ -127,6 +120,12 @@ Write the JSON, then run the builder. Iterate on any node it names until it writ
 ### 5. Validate
 Run `kg_validate` (or the `validate` skill) and fix what it finds — chiefly ungreppable anchors
 and `coverage.gaps`. Run `kg_stats` and report the shape (node/edge counts, kinds) to the user.
+Both run through the CLI, not MCP, and print JSON:
+
+```bash
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query kg_validate
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query kg_stats
+```
 
 If `coverage.declared` is `false`, go back to step 2 and write `covers`. A graph that has not
 declared its scope cannot report a file type it never covered, so a clean result at this point is

@@ -11,7 +11,6 @@ allowed-tools:
   - mcp__codebase-kg__kg_find_by_kind
   - mcp__codebase-kg__kg_find_by_link
   - mcp__codebase-kg__kg_find_by_reference
-  - mcp__codebase-kg__kg_stats
   - mcp__plugin_codebase-kg_codebase-kg__kg_search
   - mcp__plugin_codebase-kg_codebase-kg__kg_node
   - mcp__plugin_codebase-kg_codebase-kg__kg_neighborhood
@@ -19,10 +18,10 @@ allowed-tools:
   - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_kind
   - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_link
   - mcp__plugin_codebase-kg_codebase-kg__kg_find_by_reference
-  - mcp__plugin_codebase-kg_codebase-kg__kg_stats
   - Read
   - Grep
   - Glob
+  - Bash(uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" *)
 ---
 
 # query — find code through the graph, confirm it in the source
@@ -70,7 +69,10 @@ When you already have a more specific handle, go straight to it:
 | a category ("every ViewModel", "every migration") | `kg_find_by_kind` |
 | a node in a paired repo's graph | `kg_find_by_link` |
 | a platform API, spec or doc URL that moved | `kg_find_by_reference` |
-| no idea of the shape of the repo | `kg_stats` first — sections and kinds are the table of contents |
+| no idea of the shape of the repo | `kg_stats` first — sections and kinds are the table of contents (see below) |
+
+`kg_stats` runs through the CLI, not MCP, and prints JSON:
+`uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query kg_stats`.
 
 ### 2. Expand
 **`kg_neighborhood`** from the node you landed on. This is the step that makes the graph worth

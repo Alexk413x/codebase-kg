@@ -42,6 +42,16 @@ def registered_tools() -> set[str]:
     return {t["name"] for t in json.loads(CATALOG.read_text(encoding="utf-8"))["tools"]}
 
 
+def cli_only_tools() -> set[str]:
+    """Read tools that `kg_cli.py query` runs and the MCP server does not expose."""
+    from codebase_kg import query
+
+    return set(query.TOOLS) - registered_tools()
+
+
+CLI_RUNNER = 'Bash(uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" *)'
+
+
 def frontmatter(path: Path) -> dict[str, object]:
     text = path.read_text(encoding="utf-8")
     assert text.startswith("---"), f"{path.name} has no frontmatter"
@@ -141,8 +151,22 @@ def named_tools(text: str) -> set[str]:
 )
 def test_every_tool_a_document_names_in_prose_is_registered(doc: Path) -> None:
     """Catches a renamed tool that only survives in an instruction."""
-    unknown = named_tools(doc.read_text(encoding="utf-8")) - registered_tools()
-    assert not unknown, f"{doc} names tools the server does not expose: {sorted(unknown)}"
+    unknown = named_tools(doc.read_text(encoding="utf-8")) - registered_tools() - cli_only_tools()
+    assert not unknown, f"{doc} names tools neither the server nor the CLI runs: {sorted(unknown)}"
+
+
+def test_the_cli_runs_the_tools_dropped_from_mcp() -> None:
+    assert cli_only_tools() == {"kg_stats", "kg_validate", "kg_parity_gaps"}
+
+
+@pytest.mark.parametrize("skill", SKILLS, ids=lambda p: p.parent.name)
+def test_a_skill_naming_a_cli_only_tool_may_run_the_cli(skill: Path) -> None:
+    """A skill that tells the agent to run `kg_validate` must allow the runner that runs it."""
+    named = named_tools(skill.read_text(encoding="utf-8")) & cli_only_tools()
+    if named:
+        assert CLI_RUNNER in allowed_entries(skill), (
+            f"{skill.parent.name} names {sorted(named)} but does not allow {CLI_RUNNER}"
+        )
 
 
 # --- nothing stranded --------------------------------------------------------

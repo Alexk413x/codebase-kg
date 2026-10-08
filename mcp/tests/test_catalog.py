@@ -78,9 +78,9 @@ CASES: list[tuple[str, dict[str, Any]]] = [
     ("kg_search", {"query": "feed", "extra": 1}),
     ("kg_node", {"id": NODE}),
     ("kg_node", {"id": ["x"]}),
-    ("kg_validate", {"limit": "2"}),
-    ("kg_validate", {"limit": True}),
-    ("kg_parity_gaps", {"status": None}),
+    ("kg_find_by_kind", {"kind": "", "limit": "2"}),
+    ("kg_find_by_kind", {"kind": "", "limit": True}),
+    ("kg_find_by_reference", {"query": None}),
     *[("kg_delete_node", {"ids": [NODE], "dry_run": flag}) for flag in (
         True, "true", "True", "yes", "on", "t", "y", "1", 1, 1.0, "maybe", 2, None, 0.5,
     )],

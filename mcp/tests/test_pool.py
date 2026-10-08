@@ -224,7 +224,7 @@ def _reference(tool: str, args: dict[str, Any]) -> Any:
 
 
 def test_every_read_tool_returns_the_same_json_from_a_worker(bound: Path, pools: list[Pool]) -> None:
-    calls = _calls(bound)
+    calls = [(tool, args) for tool, args in _calls(bound) if tool in core.TOOLS]
     p = _pool(pools, 2)
     for tool, args in calls:
         expected = _reference(tool, args)
@@ -281,10 +281,10 @@ def test_a_tool_error_reads_the_same_from_a_worker(pools: list[Pool], tmp_path: 
     broken = tmp_path / "knowledge" / "code_graph.db"
     broken.parent.mkdir()
     broken.write_bytes(b"not a database at all" * 100)
-    here = core.Core(None).call_tool(_conn(broken), "kg_stats", {})
-    there = core.Core(_pool(pools, 1)).call_tool(_conn(broken), "kg_stats", {})
+    here = core.Core(None).call_tool(_conn(broken), "kg_search", {"query": "x"})
+    there = core.Core(_pool(pools, 1)).call_tool(_conn(broken), "kg_search", {"query": "x"})
     assert here["isError"] is True and here == there
-    assert here["content"][0]["text"].startswith("Error calling tool 'kg_stats': ")
+    assert here["content"][0]["text"].startswith("Error calling tool 'kg_search': ")
 
 
 def test_zero_workers_run_calls_in_process(bound: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -292,7 +292,8 @@ def test_zero_workers_run_calls_in_process(bound: Path, monkeypatch: pytest.Monk
         raise AssertionError("a worker started with max_workers 0")
 
     monkeypatch.setattr(pool_mod, "_Worker", refuse)
-    assert _data(core.Core(None), bound, "kg_stats", {})["nodes"] > 0
+    node = _calls(bound)[1][1]["id"]
+    assert _data(core.Core(None), bound, "kg_node", {"id": node})["found"] is True
 
 
 def test_the_worker_imports_no_fastmcp() -> None:

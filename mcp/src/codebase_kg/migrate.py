@@ -226,7 +226,8 @@ def _render(report: MigrationReport) -> str:
     lines += [
         "",
         "  The markdown file was not modified. Commit the .db, verify with",
-        "  kg_stats / kg_validate, then delete the markdown when you are happy.",
+        "  `kg_cli.py query kg_stats` and `kg_cli.py query kg_validate`, then",
+        "  delete the markdown when you are happy.",
     ]
     return "\n".join(lines)
 

@@ -209,7 +209,7 @@ def test_a_server_without_workers_returns_what_the_pool_returns(
 ) -> None:
     alpha = _repo(tmp_path / "alpha", "alpha")
     calls = [("kg_search", {"query": "widget"}), ("kg_node", {"id": "alpha_widget"}), ALL,
-             ("kg_stats", {}), ("kg_validate", {}), ("kg_parity_gaps", {})]
+             ("kg_find_by_kind", {"kind": "component"}), ("kg_find_by_reference", {})]
     cache = tmp_path / "cache"
     proc = _start(cache, tmp_path, CODEBASE_KG_MAX_WORKERS="0")
     try:

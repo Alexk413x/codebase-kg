@@ -394,6 +394,7 @@ class _Refresh:
         self.commits: list[str] = []
         self.run_result: str | None = None
         self.leaves_stale = False
+        self.drops: tuple[str, ...] = ()
         self.changes_graph = True
         self.graph_dirty = False
         self.head = "aaa"
@@ -417,7 +418,10 @@ class _Refresh:
 
     def _blobs(self, specs: list[str]) -> dict[str, str]:
         drifted = () if self.refreshed and not self.leaves_stale else (KNOWN,)
-        return _fake_blobs(_tree_digests(self.repo / "src", drifted))(specs)
+        tree = _tree_digests(self.repo / "src", drifted)
+        if self.refreshed:
+            tree = {path: sha for path, sha in tree.items() if path not in self.drops}
+        return _fake_blobs(tree)(specs)
 
     def _run_claude(self, claude: str, repo: Path, stale: list[str]) -> str | None:
         self.runs.append(claude)
@@ -469,6 +473,18 @@ def test_a_refresh_that_leaves_files_stale_blocks_and_commits_nothing(
     err = capsys.readouterr().err
     assert refresh.commits == []
     assert "1 mapped file(s) are still stale after the refresh" in err
+    assert "PUSH BLOCKED" in err
+
+
+def test_a_refresh_that_leaves_an_anchor_on_a_missing_file_blocks(
+    refresh: _Refresh, capsys: pytest.CaptureFixture
+) -> None:
+    """The unattended run has no `kg_validate`, so the hook checks the anchors it can."""
+    refresh.drops = (f"src/{RANKER}",)
+    assert g.main() == 1
+    err = capsys.readouterr().err
+    assert refresh.commits == []
+    assert "the refresh anchored 1 file(s) that do not exist at HEAD" in err
     assert "PUSH BLOCKED" in err
 
 
@@ -583,7 +599,7 @@ def test_run_claude_runs_the_skill_headless_with_a_narrow_allowlist(
     assert "--dangerously-skip-permissions" not in cmd
     allowed = cmd[cmd.index("--allowedTools") + 1].split(",")
     assert "mcp__plugin_codebase-kg_codebase-kg__kg_upsert_node" in allowed
-    assert "mcp__codebase-kg__kg_validate" in allowed
+    assert not any(t.endswith(("__kg_validate", "__kg_stats", "__kg_parity_gaps")) for t in allowed)
     assert not any(t.startswith("Bash") for t in allowed)
     assert not any(t in ("Write", "Edit", "Read") for t in allowed)
     assert not any("kg_cli" in t or t.startswith(("Write(", "Edit(")) for t in allowed)

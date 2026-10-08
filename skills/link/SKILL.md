@@ -4,20 +4,14 @@ description: Sets up and maintains parity between two codebases' graphs, such as
 allowed-tools:
   # Both names the host gives the server: bare when the MCP server is installed
   # directly, prefixed when it arrives as a plugin.
-  - mcp__codebase-kg__kg_parity_gaps
-  - mcp__codebase-kg__kg_validate
   - mcp__codebase-kg__kg_node
   - mcp__codebase-kg__kg_search
-  - mcp__codebase-kg__kg_stats
   - mcp__codebase-kg__kg_upsert_node
   - mcp__codebase-kg__kg_add_link
   - mcp__codebase-kg__kg_remove_link
   - mcp__codebase-kg__kg_find_by_link
-  - mcp__plugin_codebase-kg_codebase-kg__kg_parity_gaps
-  - mcp__plugin_codebase-kg_codebase-kg__kg_validate
   - mcp__plugin_codebase-kg_codebase-kg__kg_node
   - mcp__plugin_codebase-kg_codebase-kg__kg_search
-  - mcp__plugin_codebase-kg_codebase-kg__kg_stats
   - mcp__plugin_codebase-kg_codebase-kg__kg_upsert_node
   - mcp__plugin_codebase-kg_codebase-kg__kg_add_link
   - mcp__plugin_codebase-kg_codebase-kg__kg_remove_link
@@ -122,6 +116,15 @@ Build each graph. Run `kg_validate` on each side (the peer is opened automatical
 `meta.counterpart`). Fix every "not reciprocal" / "counterpart id not in peer graph" finding. Then
 `kg_parity_gaps` for the report. Both return 50 entries by default, so when a result says
 `truncated`, pass a larger `limit` (up to 1000) or page `kg_parity_gaps` with `offset`.
+
+Both run through the CLI, not MCP, and print JSON. Run them from each repo, or name the graph with
+`--graph`. Arguments go in one JSON object after the tool name:
+
+```bash
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query kg_validate
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query kg_parity_gaps '{"status": "divergent", "limit": 200}'
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query --graph ../ios/knowledge/code_graph.db kg_validate
+```
 
 ## The gap report
 

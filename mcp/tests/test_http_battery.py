@@ -151,7 +151,7 @@ def test_discover(front: dict[str, Any]) -> None:
 
 def test_tools_list(front: dict[str, Any]) -> None:
     result = _complete(_req(front, "tools/list"))
-    assert result["tools"] == core.CATALOG["tools"] and len(result["tools"]) == 16
+    assert result["tools"] == core.CATALOG["tools"] and len(result["tools"]) == 13
 
 
 @pytest.mark.parametrize(("method", "key"), [
@@ -195,18 +195,19 @@ def test_a_root_that_is_not_a_file_asks_again(front: dict[str, Any]) -> None:
 
 @pytest.mark.parametrize(("name", "args"), [
     ("kg_nope", {}),
+    ("kg_stats", {}),
     ("kg_node", {}),
     ("kg_node", {"id": "alpha_widget", "zzz": 1}),
     ("kg_neighborhood", {"id": "alpha_widget", "depth": "two"}),
     ("kg_find_by_kind", {"kind": "x", "limit": 0}),
 ])
 def test_a_bad_call_is_a_tool_error(front: dict[str, Any], name: str, args: dict[str, Any]) -> None:
-    _call(front, "kg_stats", {}, client="c1")
+    _call(front, "kg_search", {"query": "widget"}, client="c1")
     _tool_error(_call(front, name, args, client="c1", roots=False))
 
 
 def test_lax_arguments_are_coerced(front: dict[str, Any]) -> None:
-    _call(front, "kg_stats", {}, client="c1")
+    _call(front, "kg_search", {"query": "widget"}, client="c1")
     data = _tool_ok(_call(front, "kg_neighborhood", {"id": "alpha_widget", "depth": "2", "limit": 2},
                           client="c1", roots=False))
     assert data["depth"] == 2
@@ -214,10 +215,10 @@ def test_lax_arguments_are_coerced(front: dict[str, Any]) -> None:
 
 
 def test_no_graph_and_a_relative_cwd_are_tool_errors(front: dict[str, Any], tmp_path: Path) -> None:
-    empty = _tool_error(_call(front, "kg_stats", {}, client=None, roots=False,
+    empty = _tool_error(_call(front, "kg_search", {"query": "widget"}, client=None, roots=False,
                               headers={"x-codebase-kg-cwd": str(tmp_path)}))
-    assert empty["content"][0]["text"].startswith("Error calling tool 'kg_stats': No code_graph.db found.")
-    relative = _tool_error(_call(front, "kg_stats", {}, client=None, roots=False,
+    assert empty["content"][0]["text"].startswith("Error calling tool 'kg_search': No code_graph.db found.")
+    relative = _tool_error(_call(front, "kg_search", {"query": "widget"}, client=None, roots=False,
                                  headers={"x-codebase-kg-cwd": "rel/dir"}))
     assert "absolute path" in relative["content"][0]["text"]
 
@@ -239,7 +240,7 @@ def test_a_dry_run_delete_and_an_unknown_node_answer(front: dict[str, Any]) -> N
 # --- protocol refusals ---------------------------------------------------------------
 def test_a_header_that_contradicts_the_body_is_refused(front: dict[str, Any]) -> None:
     _rpc_error(_req(front, "tools/list", headers={"mcp-method": "tools/call"}), 400, -32020)
-    _rpc_error(_req(front, "tools/call", {"name": "kg_stats", "arguments": {}}, headers={"mcp-name": "kg_node"}),
+    _rpc_error(_req(front, "tools/call", {"name": "kg_search", "arguments": {"query": "x"}}, headers={"mcp-name": "kg_node"}),
                400, -32020)
 
 

@@ -228,8 +228,8 @@ def test_two_connections_see_only_their_own_graph(connect: Any, two_repos: tuple
         t.join(TIMEOUT)
     assert results["a"] == [{"alpha_widget"}] * 15
     assert results["b"] == [{"beta_widget"}] * 15
-    assert a.data("kg_stats")["codebase"] == "alpha"
-    assert b.data("kg_stats")["codebase"] == "beta"
+    assert a.data("kg_node", id="beta_widget")["found"] is False
+    assert b.data("kg_node", id="alpha_widget")["found"] is False
 
 
 def test_a_write_changes_only_the_writing_connections_graph(
@@ -262,7 +262,7 @@ def test_a_connection_without_a_graph_gets_the_stdio_error(
     a = connect(alpha)
     assert _node_ids(a) == {"alpha_widget"}
     lost = connect(empty)
-    assert expected in _error_text(lost.call("kg_stats"))
+    assert expected in _error_text(lost.call("kg_find_by_kind", kind="x"))
     assert expected in _error_text(lost.call("kg_search", query="widget"))
     assert _node_ids(a) == {"alpha_widget"}
 
@@ -623,7 +623,7 @@ INITIALIZED = {"jsonrpc": "2.0", "method": "notifications/initialized"}
 
 def _call(request_id: int) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "method": "tools/call",
-            "params": {"name": "kg_stats", "arguments": {}}}
+            "params": {"name": "kg_search", "arguments": {"query": "widget"}}}
 
 
 def _result(request_id: int, **result: Any) -> dict[str, Any]:

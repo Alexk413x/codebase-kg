@@ -772,12 +772,14 @@ REFRESH_PROMPT = (
     "The push hook already found the change set: the mapped files below no longer match "
     "the graph. Read them, re-derive the nodes that anchor on them, and write the graph "
     "only through the kg_* write tools (kg_upsert_node, kg_delete_node and the link and "
-    "reference tools). Do not export, edit or build .kg-export.json."
+    "reference tools). Do not export, edit or build .kg-export.json. Skip the skill's "
+    "kg_cli.py steps (kg_validate, kg_stats): each write tool validates its own change, "
+    "and the push hook checks the graph again after this run."
 )
 REFRESH_TIMEOUT = 900
 
 _REFRESH_MCP_TOOLS = (
-    "kg_validate", "kg_stats", "kg_search", "kg_node", "kg_find_by_path",
+    "kg_search", "kg_node", "kg_find_by_path",
     "kg_upsert_node", "kg_delete_node", "kg_add_link", "kg_remove_link",
     "kg_add_reference", "kg_remove_reference", "kg_neighborhood",
 )
@@ -892,6 +894,8 @@ def auto_refresh(repo: Path, graph_rel: str, root: str, stale: list[str]) -> str
     not. Any graph change from a failed run stays uncommitted.
     """
     try:
+        before = read_graph(repo / graph_rel)
+        missing_before = set(repo_staleness(before, root, ["HEAD"]).unreadable) if before else set()
         failure = _run_claude(
             shutil.which("claude") or "claude", repo, [_root_to_rel(p, root) for p in stale]
         )
@@ -900,9 +904,12 @@ def auto_refresh(repo: Path, graph_rel: str, root: str, stale: list[str]) -> str
         fresh = read_graph(repo / graph_rel)
         if fresh is None:
             return "the refreshed graph is unreadable"
-        left = repo_staleness(fresh, root, ["HEAD"]).stale
-        if left:
-            return f"{len(left)} mapped file(s) are still stale after the refresh"
+        after = repo_staleness(fresh, root, ["HEAD"])
+        if after.stale:
+            return f"{len(after.stale)} mapped file(s) are still stale after the refresh"
+        missing = sorted(set(after.unreadable) - missing_before)
+        if missing:
+            return f"the refresh anchored {len(missing)} file(s) that do not exist at HEAD"
         if not _git("status", "--porcelain", "--", graph_rel).strip():
             return "the refresh did not change the graph"
         sha = _commit_graph(graph_rel)

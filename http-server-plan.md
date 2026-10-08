@@ -1,7 +1,7 @@
 # Shared HTTP server: plan
 
-Status: Phases 0, 1 and 2 and the lean front done on `feat/push-refresh`, 2026-10-07; Phase 3 not
-started.
+Status: Phases 0, 1 and 2 and the lean front done on `feat/push-refresh`, 2026-10-07. Phase 3 done
+for the three start and end tools in 0.13.0; the six write tools stay on MCP by decision.
 Written 2026-10-07. Companion to `cli-plan.md`, whose benchmarks this plan builds on.
 
 ## Goal
@@ -392,6 +392,21 @@ pool of 4, from the Phase 2 results above.
    `kg_validate`. They keep working through the shim, which keeps all 16 tools. Moving them is
    sentinel-swarm's change, not this one.
 
+## Phase 3 results
+
+Done in 0.13.0 for `kg_stats`, `kg_validate` and `kg_parity_gaps` only. The plan above changed:
+
+| Change | Why |
+|---|---|
+| The three tools leave the catalog for every transport: HTTP, the shim and a private stdio server. The shim does not keep all 16; that note is superseded. | One catalog (`catalog.json`) serves every transport. A per-transport catalog would add a second surface to test for three tools that `kg_cli.py query` already runs. |
+| The six write tools stay on MCP. There is no `kg_cli.py edit`. | A refresh calls them in a loop, one node at a time, where an MCP call is cheaper than a CLI process. The unattended refresh that `git-hooks/kg_pre_push.py` starts has no Bash by design, so it can write the graph only through MCP tools. |
+| Skills run the three by `uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" query <tool> [json-args]`, the form they already use for `export` and `build`, and allow that command in `allowed-tools`. | The CLI prints the same JSON. `test_plugin_surface.py` fails when a skill names one of the three without allowing the command. |
+| The unattended push refresh drops `kg_validate` and `kg_stats` from its tools. Its prompt tells it to skip the skill's CLI steps. After the run, the hook commits nothing and keeps the push blocked when the refreshed graph anchors a file that does not exist at `HEAD` and the old graph did not. | Each write tool runs `kg_validate` on its own change and refuses a new finding. The hook already re-checks staleness after the run; the missing-file check covers the anchor half of `kg_validate` that the hook can compute without the package. |
+| The MCP surface is 13 tools: 7 lookups and 6 writes. | |
+
+Cross-repo: sentinel-swarm's role templates that list `mcp__codebase-kg__kg_stats` or `kg_validate`
+no longer resolve over any transport, and need to move to the CLI.
+
 ## Tests
 
 - Unit: header and Origin checks, token check, port-in-use and older-build handover, per-session
@@ -415,4 +430,4 @@ pool of 4, from the Phase 2 results above.
 | 1 | HTTP transport, security, health, start hook, `userConfig`, `.mcp.json` | 0.12.0 |
 | 2 | Worker pool | 0.12.0 |
 | 2b | Lean front: stdlib server, no venv, writes on the workers | 0.12.0 |
-| 3 | CLI `edit`, skills on the CLI, nine tools off the HTTP registration | 0.13.0 |
+| 3 | Skills on the CLI, three start and end tools off the catalog; writes stay on MCP | 0.13.0 |

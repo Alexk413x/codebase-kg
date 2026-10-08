@@ -74,7 +74,8 @@ rule, names it and writes nothing.
 
 ## The tools
 
-Sixteen MCP tools over the graph — ten queries and six targeted writes.
+Thirteen MCP tools over the graph — seven queries and six targeted writes. Three more read tools
+run from the CLI only, so their definitions cost no context in a session that does not use them.
 
 | query | answers |
 |---|---|
@@ -85,9 +86,24 @@ Sixteen MCP tools over the graph — ten queries and six targeted writes.
 | `kg_find_by_kind` | every `ViewModel` / `Service` / `@Entity` |
 | `kg_find_by_link` | which code node(s) point at a node in another committed graph |
 | `kg_find_by_reference` | "this SDK page moved — which code relies on it?" — nodes by the documentation they cite |
+
+| CLI only | answers |
+|---|---|
 | `kg_parity_gaps` | the cross-codebase gap report, as a query |
 | `kg_stats` | cold-start orientation: counts, kinds, sections, isolated nodes, and the repo-wide staleness total — how much of this map is out of date, and which nodes |
 | `kg_validate` | advisory drift check against real source: anchors that no longer resolve, declared coverage gaps, and files edited since the graph was built |
+
+Run a CLI-only tool with `query`, which prints the same JSON the tool returned over MCP. Arguments
+go in one JSON object with the tool's parameter names:
+
+```bash
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" query kg_stats
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" query kg_validate '{"limit": 200}'
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" query kg_parity_gaps '{"status": "divergent"}'
+```
+
+The skills that use them (`validate`, `audit`, `build`, `refresh`, `link`, `query`) allow this
+command, so they need no extra permission.
 
 | write | does |
 |---|---|

@@ -1,7 +1,7 @@
 # codebase-kg MCP server
 
 A local MCP server over one repo's committed `knowledge/code_graph.db` (see
-[`../SCHEMA.md`](../SCHEMA.md)), exposing **ten typed queries and six targeted writes** — so an
+[`../SCHEMA.md`](../SCHEMA.md)), exposing **seven typed queries and six targeted writes** — so an
 agent answers "where does X live / what depends on it / what diverges from the peer" in one tool
 call instead of re-grepping every session, and fixes one wrong description without regenerating the
 whole artifact.
@@ -19,10 +19,18 @@ with no venv. The tool definitions are fastmcp registrations in `server.py`, a d
 | `kg_find_by_path(path)` | **Reverse lookup**: which node(s) own a source file, and what connects to them. Accepts a repo-relative path or a bare filename. |
 | `kg_neighborhood(id, depth=1)` | A node + everything within 1–3 hops, following edges either way, with hop counts. |
 | `kg_find_by_kind(kind)` | All nodes whose free-text `kind` matches (substring). |
-| `kg_parity_gaps(status?)` | Nodes flagged `divergent` / `<codebase>-only` — the gap report as a query. |
-| `kg_stats()` | Counts by kind / section / parity, edge and anchor totals, isolated nodes, `generated` date, and `staleness` — the repo-wide count of mapped files that no longer match what the graph was built against, with the nodes that describe them. |
 | `kg_find_by_link(target)` | **Reverse lookup across graphs**: which code node(s) point at a node in another committed graph in this repo. |
 | `kg_find_by_reference(query?, kind?)` | **Reverse lookup by documentation**: which node(s) cite a URL or title matching `query`, with the `path` / `symbol` each citation narrows to. |
+
+## CLI-only queries
+
+These run through `launch/kg_cli.py query <tool> [json-args]` and are not in the MCP catalog. The
+CLI prints the same JSON, from the same functions in `tools.py` (dispatched by `query.TOOLS`).
+
+| Tool | Returns |
+|---|---|
+| `kg_parity_gaps(status?)` | Nodes flagged `divergent` / `<codebase>-only` — the gap report as a query. |
+| `kg_stats()` | Counts by kind / section / parity, edge and anchor totals, isolated nodes, `generated` date, and `staleness` — the repo-wide count of mapped files that no longer match what the graph was built against, with the nodes that describe them. |
 | `kg_validate()` | Advisory drift check against real source: ungreppable anchors, uncovered source files, counterpart problems. Never blocks. |
 
 ## Writes
@@ -44,7 +52,7 @@ Three properties, all in `edits.py`:
 - **Atomic.** The mutation runs against a private copy of the file inside one transaction, and the
   copy replaces the original only at the very end. A rejected edit leaves the committed graph
   byte-identical — not rolled back, never opened for writing.
-- **Validated, not merely constrained.** `kg_validate` — the same function the tool calls — runs
+- **Validated, not merely constrained.** `kg_validate` — the same function `kg_cli.py query kg_validate` calls — runs
   against the copy, and the write is refused if it introduced a finding the graph did not already
   have. The test is *no new findings*, never *clean*: a real graph carries findings, and demanding
   zero would lock the tools out of the graphs that need editing.

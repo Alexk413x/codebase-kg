@@ -209,8 +209,7 @@ def test_every_tool_is_registered_and_no_others() -> None:
     names = {t.name for t in asyncio.run(server.mcp.list_tools())}
     assert names == {
         "kg_search", "kg_node", "kg_neighborhood", "kg_find_by_kind",
-        "kg_find_by_path", "kg_find_by_link", "kg_find_by_reference", "kg_parity_gaps", "kg_stats",
-        "kg_validate",
+        "kg_find_by_path", "kg_find_by_link", "kg_find_by_reference",
         "kg_upsert_node", "kg_delete_node", "kg_add_link", "kg_remove_link",
         "kg_add_reference", "kg_remove_reference",
     }
@@ -224,7 +223,7 @@ def _mcp_tools() -> list[Any]:
 
 QUERY_TOOLS = {
     "kg_search", "kg_node", "kg_neighborhood", "kg_find_by_kind", "kg_find_by_path",
-    "kg_find_by_link", "kg_find_by_reference", "kg_parity_gaps", "kg_stats", "kg_validate",
+    "kg_find_by_link", "kg_find_by_reference",
 }
 
 

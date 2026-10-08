@@ -46,8 +46,8 @@ CALLS: list[tuple[str, dict]] = [
     ("kg_neighborhood", {"id": "run_map", "depth": 2}),
     ("kg_find_by_kind", {"kind": "test module"}),
     ("kg_find_by_path", {"path": "mcp/src/cartographer/server.py"}),
-    ("kg_stats", {}),
-    ("kg_validate", {}),
+    ("kg_find_by_kind", {"kind": "module"}),
+    ("kg_find_by_reference", {}),
 ]
 
 
@@ -108,7 +108,7 @@ async def main_async(graph: str, rounds: int, python: str) -> dict:
     before = frozenset(_process_mb("codebase_kg")["pids"])
     memory: dict = {}
     async with Client(StdioTransport(command=sys.executable, args=[str(SHIM)], env=env)) as client:
-        await client.call_tool("kg_stats", {})
+        await client.call_tool("kg_search", {"query": "warm up"})
         memory["mcp_server_idle_mb"] = _process_mb("codebase_kg", before)["total_mb"]
         for _ in range(rounds):
             modes["in-process"].append(run_inprocess(graph))

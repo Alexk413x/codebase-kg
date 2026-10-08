@@ -1,4 +1,4 @@
-"""The tool definitions: sixteen fastmcp registrations, the source of `catalog.json`.
+"""The tool definitions: thirteen fastmcp registrations, the source of `catalog.json`.
 
 Nothing at runtime imports this module. The shared server (`daemon.py`) serves
 the catalog generated from these registrations by `mcp/scripts/gen_catalog.py`,
@@ -255,53 +255,6 @@ def kg_find_by_reference(
 
     Each hit carries the `path` / `symbol` it narrows to, when it has one."""
     return _read("kg_find_by_reference", {"query": query, "kind": kind, "limit": limit, "offset": offset})
-
-
-@mcp.tool(annotations=_QUERY)
-def kg_parity_gaps(
-    status: Annotated[
-        str | None,
-        Field(default=None, description="Optional filter: 'divergent', 'only' (any *-only), or an exact flag like 'android-only'."),
-    ],
-    limit: Limit = _tools.DEFAULT_LIMIT,
-    offset: Offset = 0,
-) -> dict[str, Any]:
-    """The cross-codebase gap report, as a query. Lists nodes flagged
-    `divergent` or `<codebase>-only`, with their counterpart + divergence line.
-    `by_status` counts every gap, including any past `limit`."""
-    return _read("kg_parity_gaps", {"status": status, "limit": limit, "offset": offset})
-
-
-@mcp.tool(annotations=_QUERY)
-def kg_stats() -> dict[str, Any]:
-    """Counts and health for cold start: node/edge/anchor totals, breakdown by
-    kind and section, parity breakdown, isolated nodes, when the graph was
-    generated, and `staleness` — the repo-wide count of mapped files whose
-    contents no longer match what the graph was built against, plus the nodes
-    that describe them. Read `staleness.stale_files` before trusting a
-    description: non-zero means part of this map is out of date, and
-    `/codebase-kg:audit` says which part."""
-    return _read("kg_stats", {})
-
-
-@mcp.tool(annotations=_QUERY)
-def kg_validate(
-    limit: Annotated[
-        int,
-        Field(
-            ge=1,
-            le=_tools.MAX_LIMIT,
-            description="Most entries per issue list. `issue_counts` has each list's full length.",
-        ),
-    ] = _tools.DEFAULT_LIMIT,
-) -> dict[str, Any]:
-    """Advisory drift check against real source (never blocks). Reports anchors
-    whose file or symbol no longer exists, source files under the root that no
-    node covers, and counterpart problems vs the peer graph. Structural
-    integrity — unique ids, no dangling edges, consistent parity — is guaranteed
-    by the store and reported rather than checked. Each issue list is capped at
-    `limit`, and `changed_since_built` and `coverage.gaps` at 50."""
-    return _read("kg_validate", {"limit": limit})
 
 
 class LinkSpec(TypedDict, total=False):
