@@ -217,9 +217,8 @@ codebase-kg/
 ├── templates/
 │   ├── code_graph.template.json
 │   └── codebase-kg.local.md.example
-├── .mcp.json                 # registers the codebase-kg HTTP server, with mcp/launch/kg_headers.py as its headersHelper
 ├── skills/                   # query / build / refresh / audit / link / validate, and setup (user-invoked only)
-├── mcp/                      # the query server (one shared process per machine) + build/export/migrate CLIs
+├── mcp/                      # the query server (one shared process per machine) + build/export/migrate CLIs; claude.mcp.json registers its HTTP endpoint, with launch/kg_headers.py as the headersHelper
 ├── hooks/                    # Claude Code hooks: the search gate, the push gate, the post-edit nudge, the unwired-clone notice, the server start
 └── git-hooks/                # advisory pre-commit + pre-push staleness checks and install.sh, vendored into any repo (stdlib-only)
 ```

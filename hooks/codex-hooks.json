@@ -1,0 +1,62 @@
+{
+  "description": "codebase-kg hooks for Codex. The same gates as hooks.json, on the tool names Codex reports: a PreToolUse search gate and push gate on shell commands (each script decides whether the command is a search or a git push), a search-gate credit hook on codebase-kg MCP calls, a PostToolUse nudge on apply_patch, and the SessionStart notice. Codex has no Grep or Glob tool, runs no per-hook `if`, and starts no MCP server from a plugin, so hooks.json entries for those are left out.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_push_gate.py\"",
+            "commandWindows": "py -3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_push_gate.py\"",
+            "timeout": 20
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_search_gate.py\"",
+            "commandWindows": "py -3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_search_gate.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*codebase[-_]?kg.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_search_gate.py\"",
+            "commandWindows": "py -3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_search_gate.py\"",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_post_edit_check.py\"",
+            "commandWindows": "py -3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_post_edit_check.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_session_start.py\"",
+            "commandWindows": "py -3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_session_start.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

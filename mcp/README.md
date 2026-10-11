@@ -77,7 +77,7 @@ rm .kg-export.json                                                # a snapshot, 
 One server process per machine and server build serves every session. A build is the
 plugin version plus a short digest of the path, size and mtime of every `*.py` in the server package,
 so a dev checkout and an installed copy at the same version never share a server.
-Claude Code reaches it over HTTP, MCP 2026-07-28 (`.mcp.json`, `http_transport.py`). Stdio clients such as
+Claude Code reaches it over HTTP, MCP 2026-07-28 (`mcp/claude.mcp.json`, named by `mcpServers` in `.claude-plugin/plugin.json`, and `http_transport.py`). The plugin has no root `.mcp.json`: Codex reads that file, and cannot use its HTTP entry. Stdio clients such as
 Codex launch `mcp/launch/kg-shim`, which runs `shim.py` with the system Python:
 `python3`, else `python`, on macOS and Linux, and `py -3`, else `python`, on Windows (`kg-shim.cmd`),
 where a stock install has no `python3.exe` and both names may be Microsoft Store stubs. The shim is

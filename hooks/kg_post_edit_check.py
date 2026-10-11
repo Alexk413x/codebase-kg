@@ -1,6 +1,6 @@
 """Advisory PostToolUse hook — nudge to refresh the code graph after source edits.
 
-Fires on Edit/Write. Two signals, in order of strength:
+Fires on Edit/Write, and on Codex's `apply_patch`. Two signals, in order of strength:
 
 1. **The edited file is not in the graph at all.** No node anchors on it, so the
    map has a hole exactly where you are working. That is a fact, not a guess, so
@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -114,14 +115,34 @@ def _rel_to_root(path: Path, proj: Path, root: str) -> str | None:
     return rel
 
 
-def _run(data: dict[str, object]) -> None:
-    if data.get("tool_name") not in _EDIT_TOOLS:
-        return
+_PATCH_FILE = re.compile(r"^\*\*\* (?:Add File|Update File|Move to): (.+?)\s*$", re.MULTILINE)
+
+
+def edited_paths(data: dict[str, object]) -> list[str]:
+    """The files one edit call touched: Claude's `file_path`, or an `apply_patch` body.
+
+    Codex reports every file edit as `tool_name: apply_patch` with the patch text in
+    `tool_input.command`. Its paths are relative to the session cwd unless absolute.
+    """
+    tool = data.get("tool_name")
     tool_input = data.get("tool_input") or {}
     if not isinstance(tool_input, dict):
-        return
-    fp = tool_input.get("file_path") or tool_input.get("path") or ""
-    if not fp or not isinstance(fp, str):
+        return []
+    if tool in _EDIT_TOOLS:
+        fp = tool_input.get("file_path") or tool_input.get("path") or ""
+        return [fp] if fp and isinstance(fp, str) else []
+    if tool == "apply_patch":
+        patch = tool_input.get("command")
+        if not isinstance(patch, str):
+            return []
+        cwd = data.get("cwd") if isinstance(data.get("cwd"), str) else ""
+        return [str(Path(cwd) / m) if cwd else m for m in _PATCH_FILE.findall(patch)]
+    return []
+
+
+def _run(data: dict[str, object]) -> None:
+    paths = edited_paths(data)
+    if not paths:
         return
 
     proj = project_dir(data.get("cwd") if isinstance(data.get("cwd"), str) else None)
@@ -137,16 +158,23 @@ def _run(data: dict[str, object]) -> None:
     if not cfg.get("root"):
         cfg["root"] = graph_meta(graph, "root")
 
+    for fp in paths:
+        if _check(fp, proj, cfg, graph):
+            return
+
+
+def _check(fp: str, proj: Path, cfg: dict[str, object], graph: Path) -> bool:
+    """Nudge for one edited file. True when a message was sent, so one call sends at most one."""
     edited = Path(fp).resolve()
     state = _read_state(proj)
 
     # Touching the graph itself clears the pending counter.
     if _same(edited, graph) or edited.name == GRAPH_FILENAME:
         _write_state(proj, {"pending": 0, "reported": []})
-        return
+        return False
 
     if not is_source_file(edited, proj, cfg):
-        return
+        return False
 
     rel = _rel_to_root(edited, proj, str(cfg.get("root") or ""))
     reported = [str(r) for r in state.get("reported", []) if isinstance(r, str)]
@@ -161,7 +189,7 @@ def _run(data: dict[str, object]) -> None:
             f"Run /codebase-kg:refresh to add it, so the graph keeps answering "
             f"'where does this live?' correctly (advisory, never blocking)."
         )
-        return
+        return True
 
     _write_state(proj, {"pending": pending, "reported": reported})
 
@@ -175,6 +203,8 @@ def _run(data: dict[str, object]) -> None:
             f"At a stopping point, run /codebase-kg:refresh so the graph stays in sync "
             f"(advisory, never blocking)."
         )
+        return True
+    return False
 
 
 def main() -> None:

@@ -509,9 +509,12 @@ def test_shared_zero_goes_straight_to_a_private_server(tmp_path: Path) -> None:
     assert "shared server" not in log
 
 
-def test_mcp_json_declares_the_http_server_with_the_headers_helper():
+def test_claude_mcp_json_declares_the_http_server_with_the_headers_helper():
     root = Path(__file__).resolve().parents[2]
-    entry = json.loads((root / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["codebase-kg"]
+    manifest = json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    assert manifest["mcpServers"] == "./mcp/claude.mcp.json"
+    assert not (root / ".mcp.json").exists()
+    entry = json.loads((root / "mcp" / "claude.mcp.json").read_text(encoding="utf-8"))["mcpServers"]["codebase-kg"]
     assert entry["type"] == "http"
     assert entry["url"] == "http://127.0.0.1:${user_config.server_port}/mcp"
     helper = '"${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_headers.py"'
