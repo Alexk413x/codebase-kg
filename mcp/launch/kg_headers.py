@@ -1,4 +1,4 @@
-"""`headersHelper` for the HTTP server in `.mcp.json`: prints the request headers as JSON.
+"""`headersHelper` for the HTTP server in `mcp/claude.mcp.json`: prints the request headers as JSON.
 
 Claude Code runs this in the plugin folder on each connect attempt, so it cannot
 see the session's cwd; the server asks the client for its roots instead. This

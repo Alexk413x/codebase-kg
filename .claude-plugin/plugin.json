@@ -20,6 +20,7 @@
     "mcp",
     "language-agnostic"
   ],
+  "mcpServers": "./mcp/claude.mcp.json",
   "userConfig": {
     "server_port": {
       "type": "number",

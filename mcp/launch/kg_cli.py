@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = []
 # ///
-"""Run a codebase-kg CLI from any repo: kg_cli.py build|export|migrate|upgrade|query|server [args].
+"""Run a codebase-kg CLI from any repo: kg_cli.py build|export|migrate|upgrade|query|server|codex-config [args].
 
 Stdlib only. The CLIs import nothing outside the standard library, so this
 puts the plugin's `src` on `sys.path` and runs the module; no venv is built.
@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 COMMANDS = {"build": "build", "export": "export", "migrate": "migrate", "upgrade": "upgrade",
-            "query": "query", "server": "control"}
+            "query": "query", "server": "control", "codex-config": "codex_config"}
 
 if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
     sys.exit(f"usage: kg_cli.py {'|'.join(COMMANDS)} [args]")

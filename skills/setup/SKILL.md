@@ -293,3 +293,19 @@ check always exits 0; the `pre-push` check blocks only on stale mapped files. Th
 `core.hooksPath` and the textconv driver are local git config, which git never clones, so each clone
 runs `sh .githooks/install.sh` once. A clone that skips it sees inert hooks and the old binary
 behavior — the session-start notice is what makes that visible instead of silent.
+
+### 11. Codex only — the MCP server
+
+Skip this step unless the user runs Codex. Codex starts no MCP server a plugin declares, and it
+cannot use the HTTP server Claude Code uses. It needs one table in `~/.codex/config.toml`.
+
+When `CLAUDE_PLUGIN_ROOT` is empty, as it is in Codex, the plugin root is the folder two levels
+above this `SKILL.md`. Run:
+
+```sh
+uv run --no-project --quiet "<plugin root>/mcp/launch/kg_cli.py" codex-config
+```
+
+Show the output to the user and tell them to paste it into `~/.codex/config.toml`. Do not edit that
+file yourself. The path holds the plugin version, so the user runs the command again after each
+plugin update.

@@ -36,7 +36,7 @@ Every server, shared or private, is the base interpreter running `daemon.py`
 from this checkout's `src` with `-I -S` (`server_command`). The server imports
 only the standard library, so there is no venv to build and nothing to install.
 
-Claude Code does not use the shim: `.mcp.json` points it at the same server over
+Claude Code does not use the shim: `mcp/claude.mcp.json` points it at the same server over
 HTTP (see `http_transport.py`). The HTTP port, the per-user HTTP token, `/health` and the
 check that a port's holder is this user's server live here too, because the
 SessionStart hook and `mcp/launch/kg_headers.py` load this file by path.
