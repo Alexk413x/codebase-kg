@@ -2,6 +2,36 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.14.2] — 2026-10-11 — Codex support
+
+### Fixed
+
+- Codex followed `mcpServers` in the Claude manifest, loaded the HTTP entry, and could not expand
+  `${user_config.server_port}`. Every Codex start logged `invalid port number` three times, and no
+  tool ever came from the plugin. The plugin has a `.codex-plugin/plugin.json` with no MCP entry,
+  and `.mcp.json` is now `mcp/claude.mcp.json`, named by `mcpServers` in the Claude manifest. A
+  checkout of this repo no longer loads it as a project server, so Claude Code in the checkout no
+  longer reports `INVALID_CONFIG`.
+- Codex ignores the per-hook `if` field, so `hooks.json` started 11 codebase-kg processes for every
+  shell command. `hooks/codex-hooks.json`, named by the Codex manifest, starts two: the push gate and
+  the search gate. Each script decides for itself whether the command is a git push or a search.
+- Codex reports every file edit as `apply_patch`, so the post-edit nudge never ran there. The hook
+  now reads the files named in the patch text. A Claude `Edit` or `Write` is handled as before.
+
+### Added
+
+- `kg_cli.py codex-config` prints the `[mcp_servers.codebase-kg]` table that runs the stdio shim.
+  Codex starts no MCP server a plugin declares, so you paste the table into `~/.codex/config.toml`
+  and run the command again after each update, because the path holds the plugin version.
+  `/codebase-kg:setup` step 11 shows it.
+- Tests for both manifests, the Codex hooks file, the patch parser and the gates on Codex payloads.
+
+### Changed
+
+- The Codex hooks file has no `Grep`, `Glob` or `PowerShell` entry and no server-start hook: Codex
+  has no such tools, and the stdio shim starts the shared server.
+- The release checklist has a fifth version file, `.codex-plugin/plugin.json`.
+
 ## [0.14.1] — 2026-10-08 — the query skill leaves a repo with no graph alone
 
 ### Fixed
