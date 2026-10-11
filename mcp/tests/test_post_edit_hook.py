@@ -284,3 +284,58 @@ def test_state_is_written_outside_the_repo(
     before = {p for p in repo.rglob("*") if p.is_file()}
     _run(_payload(repo, "src/domain/Unmapped.kt"), monkeypatch)
     assert {p for p in repo.rglob("*") if p.is_file()} == before
+
+
+# --- Codex: every file edit is an apply_patch call ---------------------------
+def _patch_payload(repo: Path, *files: str, tool: str = "apply_patch") -> str:
+    patch = "*** Begin Patch\n" + "".join(f"*** Update File: {f}\n@@\n-a\n+b\n" for f in files)
+    return json.dumps({
+        "tool_name": tool, "tool_input": {"command": patch + "*** End Patch"}, "cwd": str(repo),
+    })
+
+
+def test_apply_patch_on_an_unanchored_file_nudges_like_an_edit(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _run(_patch_payload(repo, "src/domain/Unmapped.kt"), monkeypatch)
+    messages = _emitted(capsys)
+    assert len(messages) == 1
+    assert "no node" in messages[0]["systemMessage"]
+    assert "domain/Unmapped.kt" in messages[0]["systemMessage"]
+
+
+def test_apply_patch_on_an_anchored_file_is_silent(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _run(_patch_payload(repo, "src/domain/FeedRanker.kt"), monkeypatch)
+    assert _emitted(capsys) == []
+
+
+def test_one_apply_patch_nudges_once_however_many_files_it_names(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (repo / "src" / "domain" / "Other.kt").write_text("x", encoding="utf-8")
+    _run(_patch_payload(repo, "src/domain/Unmapped.kt", "src/domain/Other.kt"), monkeypatch)
+    assert len(_emitted(capsys)) == 1
+
+
+def test_an_added_file_is_found_in_the_patch_text() -> None:
+    patch = "*** Begin Patch\n*** Add File: src/New.kt\n+x\n*** Move to: src/Moved.kt\n*** End Patch"
+    paths = hook.edited_paths({"tool_name": "apply_patch", "tool_input": {"command": patch}})
+    assert [Path(p).as_posix() for p in paths] == ["src/New.kt", "src/Moved.kt"]
+
+
+@pytest.mark.parametrize("payload", [
+    {"tool_name": "apply_patch"},
+    {"tool_name": "apply_patch", "tool_input": "nope"},
+    {"tool_name": "apply_patch", "tool_input": {"command": 42}},
+    {"tool_name": "apply_patch", "tool_input": {"command": "no patch headers here"}},
+])
+def test_a_broken_apply_patch_payload_names_no_file(payload: dict[str, Any]) -> None:
+    assert hook.edited_paths(payload) == []
+
+
+def test_claude_edits_name_their_file_path_unchanged() -> None:
+    assert hook.edited_paths({"tool_name": "Write", "tool_input": {"file_path": "/a/b.kt"}}) == ["/a/b.kt"]
+    assert hook.edited_paths({"tool_name": "Edit", "tool_input": {"path": "/a/c.kt"}}) == ["/a/c.kt"]
+    assert hook.edited_paths({"tool_name": "Bash", "tool_input": {"command": "ls"}}) == []
