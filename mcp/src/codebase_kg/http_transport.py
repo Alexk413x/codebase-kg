@@ -1,12 +1,19 @@
-"""MCP over HTTP for Claude Code, on the shared server. Stdlib only.
+"""MCP over HTTP for Claude Code and Codex, on the shared server. Stdlib only.
 
 Claude Code reaches the server at `http://127.0.0.1:<port>/mcp` and speaks MCP
 2026-07-28: every request is one self-contained POST, with no `initialize`, no
 sessions and no server-to-client channel. This front serves `server/discover`,
 `tools/list`, `tools/call` and the empty prompt and resource lists, answers a
-notification with 202, and refuses any older protocol version with -32022.
-Stdio clients keep classic MCP through the shim (`tcp_transport.py`), served
-from the same `core.Core`.
+notification with 202, and refuses a protocol version it does not serve with
+-32022. Stdio clients keep classic MCP through the shim (`tcp_transport.py`),
+served from the same `core.Core`.
+
+Codex opens with a classic `initialize` instead, so a request that carries a
+classic protocol version, or an `initialize` with no version, gets the classic
+stateless form from `core.classic`: plain JSON results, no `Mcp-Session-Id`,
+and `notifications/initialized` answered with 202. The roots request needs a
+server-to-client channel the classic form does not have, so the client's
+`headersHelper` equivalent must send `X-Codebase-KG-Cwd`.
 
 Before any MCP handling, a request whose `Host` is not this server's loopback
 address, or whose `Origin` is set to anything else, gets 403, which blocks DNS
@@ -127,6 +134,14 @@ class Clients:
                 while len(self.bound) > self.limit:
                     self.bound.popitem(last=False)
         return conn
+
+
+def classic_connection(headers: Mapping[str, str | None]) -> resolve.Connection | None:
+    """The session of a classic request, which names its folder in `X-Codebase-KG-Cwd` or not at all."""
+    graph, cwd = (_decoded(headers.get(h)) for h in (GRAPH_HEADER, CWD_HEADER))
+    if cwd is None or not Path(cwd).is_absolute():
+        return None
+    return _new(Path(cwd), graph)
 
 
 def _decoded(value: str | None) -> str | None:
@@ -320,6 +335,11 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or not isinstance(msg.get("method"), str):
             self._rpc_error(None, core.INVALID_REQUEST, NOT_ONE_MESSAGE)
             return
+        if version != MODERN_PROTOCOL and (
+            version in core.CLASSIC_VERSIONS or (version is None and msg["method"] == "initialize")
+        ):
+            self._classic(msg)
+            return
         if "id" not in msg:
             if version != MODERN_PROTOCOL:
                 self._unsupported(None, version or "")
@@ -330,8 +350,8 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(request_id, bool) or not isinstance(request_id, (str, int)):
             self._rpc_error(None, core.INVALID_REQUEST, NOT_ONE_MESSAGE)
             return
-        if version is None or version in core.CLASSIC_VERSIONS:
-            self._unsupported(request_id, version or "")
+        if version is None:
+            self._unsupported(request_id, "")
             return
         for name in ("mcp-protocol-version", "mcp-method", "mcp-name"):
             if len(self.headers.get_all(name) or []) > 1:
@@ -368,6 +388,19 @@ class Handler(BaseHTTPRequestHandler):
         result.setdefault("resultType", "complete")
         result.setdefault("_meta", {SERVER_INFO_KEY: core.SERVER_INFO})
         self._json(200, {"jsonrpc": "2.0", "id": request_id, "result": result})
+
+    def _classic(self, msg: dict[str, Any]) -> None:
+        if "id" not in msg:
+            self._send(202, content_type=None)
+            return
+        request_id = msg["id"]
+        if isinstance(request_id, bool) or not isinstance(request_id, (str, int)):
+            self._rpc_error(None, core.INVALID_REQUEST, NOT_ONE_MESSAGE)
+            return
+        conn = None
+        if msg["method"] == "tools/call":
+            conn = classic_connection({h: self.headers.get(h) for h in (GRAPH_HEADER, CWD_HEADER)})
+        self._json(200, core.classic(self.srv.core, conn, msg))
 
     def _unsupported(self, request_id: Any, requested: str) -> None:
         self._rpc_error(request_id, UNSUPPORTED_VERSION, "Unsupported protocol version",

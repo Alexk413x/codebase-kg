@@ -8,6 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import pytest
 from codebase_kg import codex_config, tools
@@ -45,19 +46,91 @@ def test_claude_names_its_mcp_file_and_the_plugin_has_no_root_mcp_json():
     assert not (ROOT / ".mcp.json").exists()
 
 
-def test_the_entry_points_at_the_launcher_for_the_platform():
-    assert codex_config.entry("win32").splitlines()[1].endswith("kg-shim.cmd'")
-    assert codex_config.entry("linux").splitlines()[1].endswith("kg-shim'")
+def _table(text: str) -> dict[str, str]:
+    lines = [ln for ln in text.splitlines() if ln and not ln.startswith("#")]
+    assert lines[0] == "[mcp_servers.codebase-kg]"
+    return dict(ln.split(" = ", 1) for ln in lines[1:])
+
+
+def test_the_stdio_entry_points_at_the_launcher_for_the_platform():
+    assert codex_config.stdio_entry("win32").splitlines()[1].endswith("kg-shim.cmd'")
+    assert codex_config.stdio_entry("linux").splitlines()[1].endswith("kg-shim'")
     assert codex_config.launcher("win32").is_file()
     assert codex_config.launcher("linux").is_file()
 
 
-def test_codex_config_prints_a_table_for_this_checkout():
-    out = subprocess.run(
-        [sys.executable, str(RUNNER), "codex-config"], capture_output=True, text=True, check=True
-    ).stdout
-    assert "[mcp_servers.codebase-kg]" in out
-    assert str(codex_config.launcher()) in out
+def test_the_entry_connects_to_the_http_server_through_the_headers_helper():
+    table = _table(codex_config.entry(47821, platform="linux"))
+    assert set(table) == {"url", "http_headers_helper", "startup_timeout_sec", "tool_timeout_sec"}
+    assert table["url"] == "'http://127.0.0.1:47821/mcp'"
+    assert table["http_headers_helper"] == (
+        f"'python3 -I -S {ROOT / 'mcp' / 'launch' / 'kg_headers.py'} --port 47821 --cwd --start'"
+    )
+    assert int(table["startup_timeout_sec"]) >= 30 and int(table["tool_timeout_sec"]) > 60
+
+
+def test_the_windows_helper_runs_through_the_py_launcher():
+    helper = codex_config.helper_command(47821, platform="win32")
+    assert helper.startswith("py -3 -I -S ") and helper.endswith("kg_headers.py --port 47821 --cwd --start")
+
+
+def test_the_helper_takes_the_cache_folder_as_an_argument():
+    assert "--home /srv/kg " in codex_config.helper_command(1, "/srv/kg", platform="linux")
+
+
+def test_a_word_with_a_space_gets_double_quotes():
+    helper = codex_config.helper_command(1, "/srv/a b", platform="linux")
+    assert '--home "/srv/a b" --cwd' in helper and "'" not in helper
+
+
+def test_a_command_with_a_single_quote_becomes_a_basic_string():
+    assert codex_config.toml_string("a b") == "'a b'"
+    assert codex_config.toml_string("C:\\a's") == '"C:\\\\a' + "'" + 's"'
+
+
+def test_the_port_defaults_to_the_servers_port(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_SERVER_PORT", raising=False)
+    monkeypatch.setenv("CODEBASE_KG_PORT", "47900")
+    assert "47900/mcp" in codex_config.entry() and "--port 47900 " in codex_config.entry()
+
+
+def _config(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([sys.executable, str(RUNNER), "codex-config", *args], capture_output=True, text=True,
+                          check=False)
+
+
+def test_codex_config_prints_the_http_table_for_this_checkout():
+    out = _config("--port", "47931").stdout
+    table = _table(out)
+    assert table["url"] == "'http://127.0.0.1:47931/mcp'"
+    assert str(ROOT / "mcp" / "launch" / "kg_headers.py") in table["http_headers_helper"]
+    assert "--port 47931" in table["http_headers_helper"]
+    assert "command" not in table and "--stdio" in out
+
+
+def test_codex_config_prints_the_stdio_table_with_stdio():
+    table = _table(_config("--stdio").stdout)
+    assert set(table) == {"command", "startup_timeout_sec"}
+    assert str(codex_config.launcher()) in table["command"]
+
+
+def test_codex_config_refuses_a_bad_port_and_an_unknown_word():
+    assert _config("--port", "x").returncode == 2
+    assert _config("--port", "70000").returncode == 2
+    assert _config("--bogus").returncode == 2
+
+
+def test_the_printed_helper_command_runs_and_prints_headers(tmp_path: Path):
+    table = _table(_config("--port", "47932", "--home", str(tmp_path / "cache")).stdout)
+    _, _, rest = table["http_headers_helper"].strip("'").partition(" -I -S ")
+    if '"' in rest:
+        pytest.skip("the checkout path has a space")
+    args = [word for word in rest.split(" ") if word != "--start"]
+    done = subprocess.run([sys.executable, "-I", "-S", *args], capture_output=True, text=True, cwd=tmp_path,
+                          timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    headers = json.loads(done.stdout)
+    assert unquote(headers["X-Codebase-KG-Cwd"]) == str(tmp_path) and "X-Codebase-KG-Client" in headers
 
 
 # --- the Codex hooks file -----------------------------------------------------

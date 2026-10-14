@@ -16,6 +16,7 @@ import importlib.util
 import json
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -38,8 +39,8 @@ def _serving(shim: Any, port: int, mine: dict[str, Any]) -> bool:
     return kind == shim.OURS and not shim.outranks(mine, theirs)
 
 
-def ensure_server(shim: Any, wait: float = WAIT) -> str | None:
-    """Start the server if it is needed. Returns the line to print, or None."""
+def ensure_server(shim: Any, wait: float = WAIT, spawn: Callable[[str], object] | None = None) -> str | None:
+    """Start the server, with `spawn` or `shim.spawn_server`, if it is needed. Returns the line to print, or None."""
     port = shim.http_port()
     mine = shim.build_info()
     kind, theirs = shim.health(port, timeout=0.5)
@@ -55,7 +56,7 @@ def ensure_server(shim: Any, wait: float = WAIT) -> str | None:
     locked = shim._take_lock(build)
     try:
         if locked:
-            shim.spawn_server(build)
+            (spawn or shim.spawn_server)(build)
         deadline = time.monotonic() + wait
         while time.monotonic() < deadline:
             if _serving(shim, port, mine):

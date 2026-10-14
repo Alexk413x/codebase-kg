@@ -2,6 +2,38 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.14.3] — 2026-10-14 — Codex uses the shared HTTP server
+
+### Fixed
+
+- Codex could not use the shared HTTP server, because it needs a bearer token Codex had no way to
+  read. Every Codex session started its own relay process (`kg-shim`) beside the server, and the
+  `codex-config` table could not name anything else. Codex now runs `http_headers_helper`, so the
+  table connects it to the server directly and starts no process per session.
+- The HTTP server answered only the 2026-07-28 `server/discover` protocol, so a client that opens
+  with `initialize`, as Codex does, got -32022 with HTTP 400 and no tools.
+
+### Added
+
+- The HTTP front answers the classic stateless form of `initialize`, `tools/list`, `tools/call` and
+  `ping` for protocol versions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05, with plain JSON
+  results, no `Mcp-Session-Id` and `notifications/initialized` answered with 202. The Claude Code
+  path is unchanged. A classic `tools/call` takes the session's folder from `X-Codebase-KG-Cwd`,
+  because stateless HTTP has no roots request, and returns a tool error when the header is missing.
+- `mcp/launch/kg_headers.py` takes `--port`, `--home`, `--graph`, `--cwd` and `--start` as
+  arguments, for a client that gives its helper no environment. `--cwd` sends the folder the helper
+  runs in, and `--start` starts the server when nothing serves the port.
+- On Windows, `--start` starts the server through WMI (`shim.spawn_server_outside_job`). Codex runs
+  the helper in a job object that refuses breakaway and kills every descendant when the helper
+  exits, so a server started the usual way died within a second.
+
+### Changed
+
+- `kg_cli.py codex-config` prints the HTTP table (`url` and `http_headers_helper`) and takes
+  `--port N` and `--home DIR`. `codex-config --stdio` prints the stdio table that the command
+  printed before. You paste one table into `~/.codex/config.toml` and run the command again after
+  each update, because the path holds the plugin version. `/codebase-kg:setup` step 11 shows both.
+
 ## [0.14.2] — 2026-10-11 — Codex support
 
 ### Fixed

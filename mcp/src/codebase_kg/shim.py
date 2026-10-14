@@ -37,7 +37,7 @@ from this checkout's `src` with `-I -S` (`server_command`). The server imports
 only the standard library, so there is no venv to build and nothing to install.
 
 Claude Code does not use the shim: `mcp/claude.mcp.json` points it at the same server over
-HTTP (see `http_transport.py`). The HTTP port, the per-user HTTP token, `/health` and the
+HTTP (see `http_transport.py`), and so does a Codex configured by `kg_cli.py codex-config`. The HTTP port, the per-user HTTP token, `/health` and the
 check that a port's holder is this user's server live here too, because the
 SessionStart hook and `mcp/launch/kg_headers.py` load this file by path.
 
@@ -431,6 +431,34 @@ def spawn_server(build: str) -> subprocess.Popen[bytes]:
             except OSError:
                 pass
         return start(attempts[-1])
+
+
+def spawn_server_outside_job(build: str) -> None:
+    """Start the server as a WMI child, which is outside the caller's Windows job object.
+
+    Codex runs an HTTP headers helper in a job object that refuses breakaway and
+    kills every descendant when the helper exits, so `spawn_server` leaves no server behind there.
+    """
+    env = {k: v for k, v in os.environ.items() if k.startswith("CODEBASE_KG_") and k != "CODEBASE_KG_PATH"}
+    python = getattr(sys, "_base_executable", None) or sys.executable
+    code = (
+        f"import os,sys;sys.stderr=open({str(log_path(build))!r},'a',encoding='utf-8',buffering=1);"
+        f"os.environ.update({env!r});{_SERVER_ENTRY}"
+    )
+    command = subprocess.list2cmdline([python, "-I", "-S", "-c", code, str(MCP_DIR / "src"), "--serve"])
+    create = (
+        "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+        "-Arguments @{CommandLine=$env:KG_COMMAND; CurrentDirectory=$env:KG_CWD}; exit [int]$r.ReturnValue"
+    )
+    powershell = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    done = subprocess.run(
+        [str(powershell), "-NoProfile", "-NonInteractive", "-Command", create],
+        env={**os.environ, "KG_COMMAND": command, "KG_CWD": str(cache_dir())},
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW, timeout=SPAWN_BUDGET, check=False,
+    )
+    if done.returncode != 0:
+        raise OSError(f"WMI could not start the server (Win32_Process.Create returned {done.returncode})")
 
 
 def shared_connection(

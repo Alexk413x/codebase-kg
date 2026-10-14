@@ -35,6 +35,7 @@ SERVER_INFO = {"name": "codebase-kg", "version": shim.package_version()}
 
 CLASSIC_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS = -32700, -32600, -32601, -32602
+NO_CWD = "codebase-kg: the request names no working directory. Send an absolute X-Codebase-KG-Cwd header."
 EMPTY_LISTS = {"prompts/list": "prompts", "resources/list": "resources",
                "resources/templates/list": "resourceTemplates"}
 
@@ -199,8 +200,11 @@ class Core:
         return text_result(result)
 
 
-def classic(core: Core, conn: resolve.Connection, msg: dict[str, Any]) -> dict[str, Any] | None:
-    """The response to one message of a classic (initialize-first) MCP session, or None for none."""
+def classic(core: Core, conn: resolve.Connection | None, msg: dict[str, Any]) -> dict[str, Any] | None:
+    """The response to one message of a classic (initialize-first) MCP session, or None for none.
+
+    A `conn` of None is a stateless HTTP request that named no working directory.
+    """
     method = msg.get("method")
     if not isinstance(method, str) or "id" not in msg:
         return None
@@ -221,7 +225,10 @@ def classic(core: Core, conn: resolve.Connection, msg: dict[str, Any]) -> dict[s
     elif method in EMPTY_LISTS:
         result = {EMPTY_LISTS[method]: []}
     elif method == "tools/call":
-        result = core.call_tool(conn, params.get("name"), params.get("arguments"))
+        if conn is None:
+            result = error_result(NO_CWD)
+        else:
+            result = core.call_tool(conn, params.get("name"), params.get("arguments"))
     else:
         return {"jsonrpc": "2.0", "id": msg["id"],
                 "error": {"code": METHOD_NOT_FOUND, "message": "Method not found"}}

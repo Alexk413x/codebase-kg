@@ -1,4 +1,4 @@
-"""The HTTP front, request by request: the MCP 2026-07-28 surface Claude Code uses, and its refusals.
+"""The HTTP front, request by request: the MCP 2026-07-28 surface Claude Code uses, the classic stateless form Codex uses, and its refusals.
 
 Each case sends one raw request and checks the status code and the JSON shape
 of the reply, not the wording of a validation message. The cases come from a
@@ -44,9 +44,10 @@ def front(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Any]]:
 
 
 class Reply:
-    def __init__(self, status: int, content_type: str | None, raw: bytes) -> None:
+    def __init__(self, status: int, content_type: str | None, raw: bytes, headers: dict[str, str] | None = None) -> None:
         self.status = status
         self.content_type = content_type
+        self.headers = {k.lower(): v for k, v in (headers or {}).items()}
         try:
             self.body: Any = json.loads(raw)
         except ValueError:
@@ -80,7 +81,8 @@ def _post(front: dict[str, Any], body: Any = None, headers: dict[str, str | None
     try:
         conn.request(method, path, body=data if method == "POST" else None, headers=sent)
         response = conn.getresponse()
-        return Reply(response.status, response.getheader("content-type"), response.read())
+        return Reply(response.status, response.getheader("content-type"), response.read(),
+                     dict(response.getheaders()))
     finally:
         conn.close()
 
@@ -237,6 +239,104 @@ def test_a_dry_run_delete_and_an_unknown_node_answer(front: dict[str, Any]) -> N
     assert missing["found"] is False
 
 
+# --- the classic stateless form Codex uses ----------------------------------------
+CLASSIC_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+CLASSIC_INIT = {"protocolVersion": "2025-06-18", "capabilities": {"elicitation": {"form": {}, "url": {}}},
+                "clientInfo": {"name": "codex-mcp-client", "title": "Codex", "version": "0.162.1"}}
+
+
+def _classic(front: dict[str, Any], method: str, params: dict[str, Any] | None = None,
+             version: str | None = "2025-06-18", cwd: str | None = "repo",
+             headers: dict[str, str | None] | None = None, request_id: int | None = 1) -> Reply:
+    body: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+    if request_id is not None:
+        body["id"] = request_id
+    if params is not None:
+        body["params"] = params
+    sent: dict[str, str | None] = {"mcp-protocol-version": version, "mcp-method": None, "mcp-name": None,
+                                   "x-codebase-kg-cwd": str(front["repo"]) if cwd == "repo" else cwd}
+    return _post(front, body, headers={**sent, **(headers or {})})
+
+
+def _plain(reply: Reply) -> dict[str, Any]:
+    assert reply.status == 200 and reply.content_type == "application/json"
+    assert "mcp-session-id" not in reply.headers
+    result = reply.result
+    assert "resultType" not in result and "_meta" not in result
+    return result
+
+
+def test_a_classic_initialize_without_a_version_header_is_answered(front: dict[str, Any]) -> None:
+    reply = _classic(front, "initialize", CLASSIC_INIT, version=None)
+    result = _plain(reply)
+    assert reply.body["id"] == 1
+    assert result == {"protocolVersion": "2025-06-18", "capabilities": {"tools": {"listChanged": False}},
+                      "serverInfo": core.SERVER_INFO, "instructions": core.INSTRUCTIONS}
+
+
+@pytest.mark.parametrize("asked", [*CLASSIC_VERSIONS, "2099-01-01", "2026-07-28"])
+def test_a_classic_initialize_negotiates_the_protocol_version(front: dict[str, Any], asked: str) -> None:
+    result = _plain(_classic(front, "initialize", {**CLASSIC_INIT, "protocolVersion": asked}, version=None))
+    assert result["protocolVersion"] == (asked if asked in CLASSIC_VERSIONS else "2025-11-25")
+
+
+@pytest.mark.parametrize("version", CLASSIC_VERSIONS)
+def test_a_classic_client_lists_and_pings_under_its_own_version(front: dict[str, Any], version: str) -> None:
+    listed = _plain(_classic(front, "tools/list", {"_meta": {"progressToken": 0}}, version=version))
+    assert listed["tools"] == core.CATALOG["tools"]
+    assert _plain(_classic(front, "ping", version=version)) == {}
+    assert _plain(_classic(front, "resources/list", version=version)) == {"resources": []}
+
+
+def test_a_classic_notification_is_accepted(front: dict[str, Any]) -> None:
+    for version in CLASSIC_VERSIONS:
+        reply = _classic(front, "notifications/initialized", version=version, request_id=None)
+        assert reply.status == 202 and reply.body == ""
+        assert "mcp-session-id" not in reply.headers
+
+
+def test_a_classic_unknown_method_is_a_json_rpc_error(front: dict[str, Any]) -> None:
+    reply = _classic(front, "bogus/method")
+    assert reply.status == 200 and reply.error_code() == -32601 and reply.body["id"] == 1
+
+
+def test_a_classic_call_takes_its_folder_from_the_cwd_header(front: dict[str, Any]) -> None:
+    result = _plain(_classic(front, "tools/call", {"name": "kg_search", "arguments": {"query": "widget"}}))
+    assert result["isError"] is False
+    assert [r["id"] for r in result["structuredContent"]["results"]] == ["alpha_widget"]
+    assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
+
+
+def _node(front: dict[str, Any], node_id: str, **kw: Any) -> dict[str, Any]:
+    return _plain(_classic(front, "tools/call", {"name": "kg_node", "arguments": {"id": node_id}}, **kw))["structuredContent"]
+
+
+def test_a_classic_call_resolves_its_graph_from_each_request(front: dict[str, Any]) -> None:
+    other = _repo(front["root"] / "beta", "beta")
+    assert _node(front, "beta_widget", cwd=str(other))["id"] == "beta_widget"
+    assert _node(front, "beta_widget")["found"] is False
+    assert _node(front, "alpha_widget")["id"] == "alpha_widget"
+    assert _node(front, "alpha_widget", cwd=str(other))["found"] is False
+
+
+def test_a_classic_call_honours_the_graph_header(front: dict[str, Any]) -> None:
+    other = _repo(front["root"] / "gamma", "gamma")
+    header = {"x-codebase-kg-graph": str(other / "knowledge" / "code_graph.db")}
+    assert _node(front, "gamma_widget", headers=header)["id"] == "gamma_widget"
+
+
+@pytest.mark.parametrize("cwd", [None, "rel/dir", ""])
+def test_a_classic_call_without_a_usable_cwd_is_a_tool_error(front: dict[str, Any], cwd: str | None) -> None:
+    result = _plain(_classic(front, "tools/call", {"name": "kg_search", "arguments": {"query": "widget"}}, cwd=cwd))
+    assert result["isError"] is True and result["content"][0]["text"] == core.NO_CWD
+
+
+def test_a_classic_request_with_a_bad_id_is_refused(front: dict[str, Any]) -> None:
+    reply = _post(front, {"jsonrpc": "2.0", "id": True, "method": "tools/list"},
+                  headers={"mcp-protocol-version": "2025-06-18", "mcp-method": None})
+    _rpc_error(reply, 400, -32600)
+
+
 # --- protocol refusals ---------------------------------------------------------------
 def test_a_header_that_contradicts_the_body_is_refused(front: dict[str, Any]) -> None:
     _rpc_error(_req(front, "tools/list", headers={"mcp-method": "tools/call"}), 400, -32020)
@@ -244,21 +344,13 @@ def test_a_header_that_contradicts_the_body_is_refused(front: dict[str, Any]) ->
                400, -32020)
 
 
-@pytest.mark.parametrize("version", [None, "2025-06-18", "2025-11-25", "2099-01-01"])
+@pytest.mark.parametrize("version", [None, "2099-01-01"])
 def test_any_other_protocol_version_is_refused(front: dict[str, Any], version: str | None) -> None:
     meta = {**META, "io.modelcontextprotocol/protocolVersion": version or V}
     reply = _post(front, {"jsonrpc": "2.0", "id": 9, "method": "tools/list", "params": {"_meta": meta}},
                   headers={"mcp-protocol-version": version})
     error = _rpc_error(reply, 400, -32022)
     assert error["data"] == {"supported": [V], "requested": version or ""}
-
-
-def test_a_classic_initialize_is_refused(front: dict[str, Any]) -> None:
-    reply = _post(front, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-        "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "legacy", "version": "0"}}},
-        headers={"mcp-protocol-version": None, "mcp-method": None})
-    _rpc_error(reply, 400, -32022)
-    assert reply.body["id"] == 1
 
 
 def test_a_request_without_the_envelope_is_refused(front: dict[str, Any]) -> None:

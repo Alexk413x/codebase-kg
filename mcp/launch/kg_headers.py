@@ -1,13 +1,21 @@
-"""`headersHelper` for the HTTP server in `mcp/claude.mcp.json`: prints the request headers as JSON.
+"""Headers helper for the shared HTTP server: prints the request headers as JSON.
 
-Claude Code runs this in the plugin folder on each connect attempt, so it cannot
-see the session's cwd; the server asks the client for its roots instead. This
-sends a random client id the server caches those roots under, the bearer token
-once the server on the port proves to be this user's codebase-kg, and
-`CODEBASE_KG_PATH` when set. Stdlib only, and it always prints valid JSON.
+Claude Code runs this as the `headersHelper` in `mcp/claude.mcp.json`, in the
+plugin folder on each connect attempt, so it cannot see the session's cwd; the
+server asks the client for its roots instead. This sends a random client id the
+server caches those roots under, the bearer token once the server on the port
+proves to be this user's codebase-kg, and `CODEBASE_KG_PATH` when set.
+
+Codex runs it as `http_headers_helper` (see `kg_cli.py codex-config`) in the
+session's folder with no variable of its own and no way to ask for roots. Every
+setting is then an argument: `--port N`, `--home DIR` (the cache folder),
+`--graph PATH`, `--cwd` to send the folder it runs in as `X-Codebase-KG-Cwd`,
+and `--start` to start the server when nothing serves the port.
+
+Stdlib only, and it always prints valid JSON.
 
 While nothing listens on the port, it waits up to `WAIT` seconds for the server
-the SessionStart hook starts. Claude Code sends these headers with its next
+the SessionStart hook starts, or `--start` starts. Claude Code sends these headers with its next
 request, and a request without the token gets 403, which Claude Code records as
 "needs auth" and stops connecting for the session, and for later sessions too.
 """
@@ -25,8 +33,11 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 SHIM = Path(__file__).resolve().parent.parent / "src" / "codebase_kg" / "shim.py"
+START_HOOK = Path(__file__).resolve().parents[2] / "hooks" / "kg_server_start.py"
 WAIT = 3.0
+START_WAIT = 10.0
 POLL = 0.1
+VALUE_OPTIONS = {"--port": "CODEBASE_KG_PORT", "--home": "CODEBASE_KG_CACHE_DIR", "--graph": ""}
 
 
 def _shim() -> Any:
@@ -35,6 +46,27 @@ def _shim() -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _start_hook() -> Any:
+    spec = importlib.util.spec_from_file_location("codebase_kg_server_start", START_HOOK)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def options(argv: list[str]) -> tuple[dict[str, str], set[str]]:
+    """The value options and the flags in `argv`. Anything else is ignored: the helper must still print JSON."""
+    values: dict[str, str] = {}
+    flags: set[str] = set()
+    words = iter(argv)
+    for word in words:
+        if word in VALUE_OPTIONS:
+            values[word] = next(words, "")
+        elif word in ("--cwd", "--start"):
+            flags.add(word)
+    return values, flags
 
 
 def port(shim: Any) -> int:
@@ -57,13 +89,20 @@ def token(shim: Any, at: int, wait: float = WAIT) -> str | None:
         time.sleep(POLL)
 
 
-def headers(wait: float = WAIT) -> dict[str, str]:
+def headers(
+    wait: float = WAIT, graph: str | None = None, cwd: str | None = None, start: bool = False,
+) -> dict[str, str]:
     out = {"X-Codebase-KG-Client": uuid.uuid4().hex}
-    graph = os.environ.get("CODEBASE_KG_PATH", "").strip()
+    graph = (os.environ.get("CODEBASE_KG_PATH", "") if graph is None else graph).strip()
     if graph:
         out["X-Codebase-KG-Graph"] = quote(graph, safe="/\\:")
+    if cwd:
+        out["X-Codebase-KG-Cwd"] = quote(cwd, safe="/\\:")
     try:
         shim = _shim()
+        if start:
+            spawn = shim.spawn_server_outside_job if sys.platform == "win32" else None
+            _start_hook().ensure_server(shim, START_WAIT, spawn)
         found = token(shim, port(shim), wait)
     except Exception:  # noqa: BLE001 - any failure means no token header
         found = None
@@ -72,6 +111,18 @@ def headers(wait: float = WAIT) -> dict[str, str]:
     return out
 
 
+def main(argv: list[str]) -> None:
+    values, flags = options(argv)
+    for name, variable in VALUE_OPTIONS.items():
+        if variable and values.get(name):
+            os.environ[variable] = values[name]
+    if "--port" in values:
+        os.environ.pop("CLAUDE_CODE_MCP_SERVER_URL", None)
+    print(json.dumps(headers(
+        graph=values.get("--graph"), cwd=os.getcwd() if "--cwd" in flags else None, start="--start" in flags,
+    )))
+
+
 if __name__ == "__main__":
-    print(json.dumps(headers()))
+    main(sys.argv[1:])
     sys.exit(0)
