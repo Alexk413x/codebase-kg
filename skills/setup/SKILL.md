@@ -296,8 +296,8 @@ behavior — the session-start notice is what makes that visible instead of sile
 
 ### 11. Codex only — the MCP server
 
-Skip this step unless the user runs Codex. Codex starts no MCP server a plugin declares, and it
-cannot use the HTTP server Claude Code uses. It needs one table in `~/.codex/config.toml`.
+Skip this step unless the user runs Codex. Codex starts no MCP server a plugin declares. It needs one
+table in `~/.codex/config.toml` that connects it to the shared HTTP server Claude Code uses.
 
 When `CLAUDE_PLUGIN_ROOT` is empty, as it is in Codex, the plugin root is the folder two levels
 above this `SKILL.md`. Run:
@@ -309,3 +309,12 @@ uv run --no-project --quiet "<plugin root>/mcp/launch/kg_cli.py" codex-config
 Show the output to the user and tell them to paste it into `~/.codex/config.toml`. Do not edit that
 file yourself. The path holds the plugin version, so the user runs the command again after each
 plugin update.
+
+The table sets `url` and an `http_headers_helper` that runs `mcp/launch/kg_headers.py` with literal
+`--port`, `--cwd` and `--start` arguments. The helper prints the bearer token and the session's folder
+and starts the server when nothing serves the port. It needs the `py` launcher on Windows or `python3`
+elsewhere.
+
+If the HTTP table does not connect, run the same command with `--stdio` and show that table instead.
+It runs the stdio shim, which starts one small process per session and needs neither the HTTP server
+nor `py`. Only one `[mcp_servers.codebase-kg]` table can be in the file.

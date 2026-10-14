@@ -106,8 +106,13 @@ from one tool catalog and one call path (`core.py`):
 - **MCP 2026-07-28 over HTTP for Claude Code**, at `http://127.0.0.1:<server_port>/mcp`. The
   server holds about 26 MB however many sessions connect, plus about 21 MB per busy worker, against
   317 MB for eight shim sessions (measured 2026-10-07 with `mcp/bench/`).
+- **Classic stateless MCP over the same HTTP endpoint for Codex.** Codex opens with `initialize`,
+  so the HTTP front answers a classic protocol version with `core.classic`. Codex has no roots
+  request over stateless HTTP, and its `http_headers_helper` runs in the session's folder, so the
+  helper sends that folder as `X-Codebase-KG-Cwd`. The helper also prints the bearer token, which
+  Codex cannot read from the state file.
 - **Classic MCP over a loopback TCP socket for stdio clients**, through `mcp/launch/kg-shim`, which
-  Codex and sentinel-swarm's role sessions launch.
+  sentinel-swarm's role sessions and a Codex configured with `codex-config --stdio` launch.
 
 ### A server on the standard library
 

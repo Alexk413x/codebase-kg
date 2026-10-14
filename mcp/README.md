@@ -77,8 +77,21 @@ rm .kg-export.json                                                # a snapshot, 
 One server process per machine and server build serves every session. A build is the
 plugin version plus a short digest of the path, size and mtime of every `*.py` in the server package,
 so a dev checkout and an installed copy at the same version never share a server.
-Claude Code reaches it over HTTP, MCP 2026-07-28 (`mcp/claude.mcp.json`, named by `mcpServers` in `.claude-plugin/plugin.json`, and `http_transport.py`). The plugin has no root `.mcp.json`: Codex reads that file, and cannot use its HTTP entry. Stdio clients such as
-Codex launch `mcp/launch/kg-shim`, which runs `shim.py` with the system Python:
+Claude Code reaches it over HTTP, MCP 2026-07-28 (`mcp/claude.mcp.json`, named by `mcpServers` in `.claude-plugin/plugin.json`, and `http_transport.py`). The plugin has no root `.mcp.json`: Codex reads that file, and cannot expand `${user_config.server_port}` in its HTTP entry.
+
+Codex reaches the same HTTP endpoint with a table in `~/.codex/config.toml`, which `kg_cli.py codex-config` prints. Codex opens with a classic `initialize` (protocol 2025-06-18), so `http_transport.py` answers a request that carries a classic protocol version, or an `initialize` with no version, through `core.classic`: plain JSON results with no `resultType` or `_meta`, no `Mcp-Session-Id`, and `notifications/initialized` answered with 202. The classic form has no server-to-client channel to ask for roots, so the session's folder comes from the `X-Codebase-KG-Cwd` header, and a `tools/call` without it returns a tool error. Codex runs `mcp/launch/kg_headers.py` once per connection, in the session's folder, with no environment of its own, so every setting is an argument:
+
+| Argument | Effect |
+|---|---|
+| `--port N` | The port of the server, in place of `CODEBASE_KG_PORT` and `CLAUDE_CODE_MCP_SERVER_URL`. |
+| `--home DIR` | The cache folder, in place of `CODEBASE_KG_CACHE_DIR`. |
+| `--graph PATH` | The explicit graph, in place of `CODEBASE_KG_PATH`. |
+| `--cwd` | Sends the folder the helper runs in as `X-Codebase-KG-Cwd`. |
+| `--start` | Starts the server when nothing serves the port, and waits up to 10 s. |
+
+On Windows, Codex runs the helper in a job object that refuses breakaway and kills every descendant when the helper exits, so `--start` starts the server through WMI (`shim.spawn_server_outside_job`), which creates the process outside that job.
+
+Stdio clients, and Codex with `codex-config --stdio`, launch `mcp/launch/kg-shim`, which runs `shim.py` with the system Python:
 `python3`, else `python`, on macOS and Linux, and `py -3`, else `python`, on Windows (`kg-shim.cmd`),
 where a stock install has no `python3.exe` and both names may be Microsoft Store stubs. The shim is
 stdlib only and does three things:

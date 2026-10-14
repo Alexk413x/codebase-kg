@@ -24,6 +24,7 @@ import time
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import pytest
 from codebase_kg import core, http_transport, shim
@@ -696,6 +697,122 @@ def test_the_helper_does_not_wait_on_another_program(tmp_path: Path) -> None:
         assert time.monotonic() - started < 3.0
     finally:
         holder.close()
+
+
+# --- the helper as Codex runs it: arguments, no environment -------------------
+def _codex_helper(args: list[str], cwd: Path, **extra: str) -> dict[str, str]:
+    """Run the helper the way Codex does: the base interpreter with -I -S, a bare environment, the session's folder."""
+    env = {k: os.environ[k] for k in ("SYSTEMROOT", "PATH", "TEMP", "TMP", "HOME") if k in os.environ}
+    proc = subprocess.run([sys.executable, "-I", "-S", str(HEADERS), *args], capture_output=True, text=True,
+                          cwd=cwd, env={**env, **extra}, timeout=TIMEOUT, check=False)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_the_helper_takes_every_setting_as_an_argument(http_daemon: dict[str, Any], tmp_path: Path) -> None:
+    out = _codex_helper(["--port", str(http_daemon["http_port"]), "--home", str(http_daemon["cache"]), "--cwd",
+                         "--graph", "knowledge/my graph.db"], tmp_path)
+    assert out["Authorization"] == f"Bearer {http_daemon['http_token']}"
+    assert unquote(out["X-Codebase-KG-Cwd"]) == str(tmp_path)
+    assert out["X-Codebase-KG-Graph"] == "knowledge/my%20graph.db"
+
+
+def test_an_argument_beats_the_environment(http_daemon: dict[str, Any], tmp_path: Path) -> None:
+    out = _codex_helper(
+        ["--port", str(http_daemon["http_port"]), "--home", str(http_daemon["cache"]), "--graph", "from-arg.db"],
+        tmp_path, CLAUDE_CODE_MCP_SERVER_URL="http://127.0.0.1:1/mcp", CODEBASE_KG_PATH="from-env.db",
+        CODEBASE_KG_PORT="1", CODEBASE_KG_CACHE_DIR=str(tmp_path / "elsewhere"),
+    )
+    assert out["Authorization"] == f"Bearer {http_daemon['http_token']}"
+    assert out["X-Codebase-KG-Graph"] == "from-arg.db"
+
+
+def test_the_helper_sends_the_cwd_only_when_asked(http_daemon: dict[str, Any], tmp_path: Path) -> None:
+    out = _codex_helper(["--port", str(http_daemon["http_port"]), "--home", str(http_daemon["cache"])], tmp_path)
+    assert "X-Codebase-KG-Cwd" not in out and "Authorization" in out
+
+
+def test_the_helper_ignores_a_word_it_does_not_know(http_daemon: dict[str, Any], tmp_path: Path) -> None:
+    out = _codex_helper(["--bogus", "--port", str(http_daemon["http_port"]), "--home"], tmp_path)
+    assert "X-Codebase-KG-Client" in out
+
+
+def test_the_helper_starts_the_server_when_asked(tmp_path: Path) -> None:
+    cache, port = tmp_path / "cache", _free_port()
+    try:
+        out = _codex_helper(["--port", str(port), "--home", str(cache), "--cwd", "--start"], tmp_path)
+        assert out["Authorization"] == f"Bearer {(cache / 'http-token').read_text(encoding='utf-8').strip()}"
+        assert shim.health(port)[0] == shim.OURS
+    finally:
+        env = {**os.environ, "CODEBASE_KG_CACHE_DIR": str(cache)}
+        subprocess.run([sys.executable, "-I", str(CLI), "server", "stop", "--port", str(port)], env=env,
+                       capture_output=True, timeout=TIMEOUT, check=False)
+
+
+def test_the_helper_starts_no_server_without_start(tmp_path: Path) -> None:
+    port = _free_port()
+    out = _codex_helper(["--port", str(port), "--home", str(tmp_path / "cache")], tmp_path)
+    assert "Authorization" not in out
+    assert shim.health(port)[0] == shim.FREE
+
+
+def test_the_server_start_hook_takes_a_spawner(hook: Any, cache: Path) -> None:
+    fake = _fake_shim(hook, [])
+    mine = fake.build_info()
+    answers = iter([("free", {}), ("free", {})])
+    fake.health = lambda port, timeout=1.0: next(answers, ("codebase-kg", {**mine, "service": "codebase-kg"}))
+    spawned: list[str] = []
+    assert hook.ensure_server(fake, spawn=spawned.append) is None
+    assert spawned == [mine["build"]] and fake.spawned == []
+
+
+def test_the_outside_job_spawner_runs_the_server_through_wmi(
+    cache: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setenv("CODEBASE_KG_PORT", "47999")
+    monkeypatch.setenv("CODEBASE_KG_PATH", "must-not-reach-the-server.db")
+    shim.spawn_server_outside_job(BUILD)
+    (command, kwargs), = calls
+    assert Path(command[0]).name == "powershell.exe" and "Win32_Process" in command[-1]
+    line = kwargs["env"]["KG_COMMAND"]
+    assert "-I -S -c" in line and line.endswith("--serve") and "'CODEBASE_KG_PORT': '47999'" in line
+    assert "must-not-reach-the-server" not in line
+    assert repr(str(shim.log_path(BUILD)))[1:-1] in line
+    assert kwargs["env"]["KG_CWD"] == str(cache)
+
+
+def test_the_outside_job_spawner_reports_a_wmi_failure(cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(command, 2))
+    with pytest.raises(OSError, match="returned 2"):
+        shim.spawn_server_outside_job(BUILD)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="WMI exists only on Windows")
+def test_the_outside_job_spawner_starts_a_server_that_survives(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cache, port = tmp_path / "cache", _free_port()
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(cache))
+    monkeypatch.setenv("CODEBASE_KG_PORT", str(port))
+    cache.mkdir()
+    try:
+        shim.spawn_server_outside_job(BUILD)
+        deadline = time.monotonic() + TIMEOUT
+        while shim.health(port)[0] != shim.OURS and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert shim.health(port)[0] == shim.OURS
+        assert shim.verified_holder(port) is not None
+    finally:
+        subprocess.run([sys.executable, "-I", str(CLI), "server", "stop", "--port", str(port)],
+                       env={**os.environ, "CODEBASE_KG_CACHE_DIR": str(cache)},
+                       capture_output=True, timeout=TIMEOUT, check=False)
 
 
 # --- kg_cli.py server status|stop ----------------------------------------------

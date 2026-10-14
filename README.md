@@ -127,9 +127,9 @@ the committed graph **byte-identical** — not rolled back, never opened for wri
 
 ## The server
 
-One server process per machine and build serves every session. Claude Code reaches it over HTTP at
-`http://127.0.0.1:47821/mcp`; other MCP clients (Codex, any stdio client) launch
-`mcp/launch/kg-shim`, which relays stdio to the same process over a loopback socket. The server
+One server process per machine and build serves every session. Claude Code and Codex reach it over
+HTTP at `http://127.0.0.1:47821/mcp`; other stdio clients, and Codex when you choose the fallback,
+launch `mcp/launch/kg-shim`, which relays stdio to the same process over a loopback socket. The server
 imports only the Python standard library: it runs on your Python 3.10 or later with no venv, starts
 in about 0.2 s and holds about 25 MB while idle.
 
@@ -138,7 +138,19 @@ in about 0.2 s and holds about 25 MB while idle.
   then gives up for that session.
 - **Which repo.** The server asks Claude Code for the session's roots on the first tool call and
   resolves the graph from the first root, as a shim resolves it from its cwd. `CODEBASE_KG_PATH`
-  still names a graph explicitly.
+  still names a graph explicitly. Codex opens with a classic `initialize` and cannot answer a roots
+  request over stateless HTTP, so its headers helper sends the folder it runs in, which is the
+  session's folder, as `X-Codebase-KG-Cwd`. A call that carries no folder gets a tool error.
+- **Codex.** Codex starts no MCP server a plugin declares, so you paste one table into
+  `~/.codex/config.toml`. Run `uv run --no-project --quiet mcp/launch/kg_cli.py codex-config` and
+  paste the output, then restart Codex. The table sets `url` to the HTTP server and
+  `http_headers_helper` to `kg_headers.py` with `--port`, `--cwd` and `--start` as literal
+  arguments, because Codex gives the helper no environment and expands no variable in the command.
+  The helper prints the bearer token and starts the server when nothing serves the port. Add
+  `--port N` or `--home DIR` to `codex-config` to print a table for another port or cache folder.
+  The path in the table holds the plugin version, so run the command again after each update. If
+  the HTTP table does not work on your machine, run `codex-config --stdio` and paste that table
+  instead: it starts one small relay process per session and needs no HTTP server or `py`.
 - **Port.** The plugin setting `server_port` (default 47821) moves it. When another program holds
   the port, the hook prints one line naming the setting. A newer codebase-kg build takes the port
   from an older one; an older build leaves a newer one running.

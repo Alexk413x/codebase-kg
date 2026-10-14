@@ -129,9 +129,9 @@ def test_every_tool_a_skill_allows_is_registered(skill: Path) -> None:
 
 
 # `kg_`-shaped names in the docs that are deliberately not MCP tools: the
-# vendored git hooks, the in-session hooks, the CLI runner, and a config key.
+# vendored git hooks, the in-session hooks, the CLI runner and the headers helper, and a config key.
 NOT_TOOLS = {
-    "kg_pre_commit", "kg_pre_push", "kg_post_edit_check", "kg_search_gate", "kg_path", "kg_cli",
+    "kg_pre_commit", "kg_pre_push", "kg_post_edit_check", "kg_search_gate", "kg_path", "kg_cli", "kg_headers",
 }
 
 

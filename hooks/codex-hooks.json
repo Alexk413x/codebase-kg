@@ -1,5 +1,5 @@
 {
-  "description": "codebase-kg hooks for Codex. The same gates as hooks.json, on the tool names Codex reports: a PreToolUse search gate and push gate on shell commands (each script decides whether the command is a search or a git push), a search-gate credit hook on codebase-kg MCP calls, a PostToolUse nudge on apply_patch, and the SessionStart notice. Codex has no Grep or Glob tool, runs no per-hook `if`, and starts no MCP server from a plugin, so hooks.json entries for those are left out.",
+  "description": "codebase-kg hooks for Codex. The same gates as hooks.json, on the tool names Codex reports: a PreToolUse search gate and push gate on shell commands (each script decides whether the command is a search or a git push), a search-gate credit hook on codebase-kg MCP calls, a PostToolUse nudge on apply_patch, and the SessionStart notice. Codex has no Grep or Glob tool, runs no per-hook `if`, and starts no MCP server from a plugin, so hooks.json entries for those are left out. The headers helper in the Codex config table starts the server.",
   "hooks": {
     "PreToolUse": [
       {
