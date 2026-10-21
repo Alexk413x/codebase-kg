@@ -10,7 +10,8 @@ first four no-op in a repo with no `knowledge/code_graph.db`; the server start r
 | `kg_search_gate.py` | The gate. Denies a search aimed at mapped code with the instruction to query the graph, and keeps doing it — a query buys credit, a located search is free, a repeat always passes. |
 | `kg_push_gate.py` | The push gate. Denies an agent's `git push` while any mapped file is stale against `HEAD`. |
 | `kg_post_edit_check.py` | The nudge. Two signals: the edited file isn't in the graph at all, or enough mapped files have changed since the graph was rebuilt. |
-| `kg_server_start.py` | The server start. Starts the shared HTTP server when nothing answers on the `server_port` setting, or an older build does. One line only when the port belongs to another program or the server does not come up. |
+| `kg_server_start.py` | The server start, and the session register. Starts the shared HTTP server when nothing answers on the `server_port` setting, or an older build does, and registers the session. One line only when the port belongs to another program or the server does not come up. |
+| `kg_session_end.py` | The session unregister, on `SessionEnd`. Deletes the session's registry file; prints nothing. |
 | `kg_session_start.py` | The unwired-clone notice. One line when this clone has the committed checkers but no `core.hooksPath` or no `diff.codegraph.textconv`. Prints; never writes. |
 | `_config.py` | Reads `root` from the committed graph's `meta` table (auto-discovers `knowledge/code_graph.db`); a gitignored `.claude/codebase-kg.local.md` may override. Decides what counts as a source file. |
 
@@ -146,15 +147,24 @@ listening by then:
 - It asks `GET /health` on the port. When this build, or a newer codebase-kg build, answers, it does
   nothing.
 - When nothing answers, or an older codebase-kg build does, it starts this plugin's server detached,
-  under the same lock the shim uses, and waits up to 3 s for `/health` to answer. A newer server
+  under the same lock the shim uses, and waits up to 8 s for `/health` to answer. A newer server
   takes the port from an older one itself.
 - When the port answers as something else, it prints one line naming the `server_port` setting.
-- When the server does not answer in 3 s, it prints one line naming the server's log. The server
-  imports only the standard library and starts in about 0.2 s, so this means it failed to start.
+- When the server does not answer in 8 s, it prints one line naming the server's log. The server
+  imports only the standard library, so this means it failed to start or the machine is very slow.
 
 The server it starts reads the `max_workers` setting from this hook's environment, once. To apply a
 changed `max_workers`, run `kg_cli.py server stop` and restart Claude Code; the README's
 "Changing `max_workers`" section has the steps.
+
+It also registers the session: it writes `sessions/<session_id>.json` in the cache folder with the
+agent's pid, found by walking up from the hook past interpreters and shells. `kg_session_end.py`
+deletes that file on `SessionEnd`. A server that has seen a registered session exits when no session
+has been live, and nothing has used the server, for `CODEBASE_KG_SESSION_GRACE` seconds (default
+300). A new session within that time keeps the server. The server also drops a session whose agent
+pid has exited, so a `SessionEnd` hook that Claude Code cuts short, or a crashed agent, delays the
+exit and does not prevent it. Codex has no `SessionEnd` hook, so `mcp/launch/kg_headers.py` registers
+each Codex session as `codex-<pid>` when it runs with `--start`, and the pid check ends it.
 
 It exits 0 every time and prints nothing when all is well. Stdlib only; it imports
 `mcp/src/codebase_kg/shim.py` by path for the port, the build and the start routine.

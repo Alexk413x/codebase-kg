@@ -25,6 +25,12 @@ exit within `ORPHAN_CHECK_INTERVAL` seconds once their state file is gone or
 names another server, and at once on `POST /shutdown` with the state-file token.
 Each removes its state file if it is still its own.
 
+Agents also register their sessions (`shim.register_session`, called by the
+SessionStart and SessionEnd hooks). Once a server has seen a registered session,
+it exits when none has been live for `CODEBASE_KG_SESSION_GRACE` seconds (default
+300; negative turns this off) and nothing has used it for as long. A server that
+never saw a registered session, such as one only Codex uses, keeps the idle limits above.
+
 The pool size is `pool.max_workers()`, read once at start: a changed
 `max_workers` setting takes effect when the server next starts. With 0 the calls
 run in this process.
@@ -54,6 +60,7 @@ logger = logging.getLogger("codebase_kg.daemon")
 DEFAULT_IDLE_TIMEOUT = 600.0
 DEFAULT_HTTP_IDLE_TIMEOUT = 8 * 3600.0
 ORPHAN_CHECK_INTERVAL = 5.0
+DEFAULT_SESSION_GRACE = 300.0
 TICK = 0.25
 
 
@@ -92,17 +99,21 @@ class Daemon:
     def __init__(
         self, version: str, token: str, timeout: float,
         http_port: int | None = None, http_timeout: float = DEFAULT_HTTP_IDLE_TIMEOUT,
+        session_grace: float = DEFAULT_SESSION_GRACE,
     ) -> None:
         self.version = version
         self.token = token
         self.timeout = timeout
         self.http_port = http_port
         self.http_timeout = http_timeout
+        self.session_grace = session_grace
         self.state: Path | None = None
         self._lock = threading.Lock()
         self._active = 0
         self._last_seen = time.monotonic()
         self._stopping = threading.Event()
+        self._tracking = False
+        self._empty_since: float | None = None
 
     def touch(self) -> None:
         with self._lock:
@@ -125,6 +136,23 @@ class Daemon:
         limit = self.http_timeout if self.http_port is not None else self.timeout
         with self._lock:
             return self._active == 0 and time.monotonic() - self._last_seen >= limit
+
+    def abandoned(self) -> bool:
+        """True once registered sessions have come and none has been live, or has used the server, for the grace period."""
+        if self.session_grace < 0:
+            return False
+        now = time.monotonic()
+        if shim.live_sessions():
+            self._tracking = True
+            self._empty_since = None
+            return False
+        if not self._tracking:
+            return False
+        if self._empty_since is None:
+            self._empty_since = now
+        with self._lock:
+            quiet = self._active == 0 and now - self._last_seen >= self.session_grace
+        return quiet and now - self._empty_since >= self.session_grace
 
     def orphaned(self) -> bool:
         """True once this server's state file is gone or names another server.
@@ -151,6 +179,9 @@ class Daemon:
                 checked = time.monotonic()
                 if self.orphaned():
                     logger.warning("state file %s is gone or not ours; exiting", self.state)
+                    return
+                if self.abandoned():
+                    logger.info("no registered session has been live for %g s; exiting", self.session_grace)
                     return
 
 
@@ -184,6 +215,7 @@ def serve() -> None:
         info["build"], secrets.token_hex(32), idle_timeout(),
         http_port=http_sock.getsockname()[1] if http_sock is not None else None,
         http_timeout=idle_timeout("CODEBASE_KG_HTTP_IDLE_TIMEOUT", DEFAULT_HTTP_IDLE_TIMEOUT),
+        session_grace=idle_timeout("CODEBASE_KG_SESSION_GRACE", DEFAULT_SESSION_GRACE),
     )
     limit = max_workers()
     pool = Pool(limit, timeout=call_timeout()) if limit > 0 else None
@@ -213,7 +245,6 @@ def serve() -> None:
             _start(http, "kg-http", running)
         daemon.wait()
     finally:
-        _remove_if_ours(state, daemon.token)
         for server in running:
             server.shutdown()
         for server in (http, tcp):
@@ -221,6 +252,9 @@ def serve() -> None:
                 server.server_close()
         if http is None and http_sock is not None:
             http_sock.close()
+        # Last, so the state file verifies this server until it frees the port: a
+        # headers helper that finds no state file for a build still answering sends no token.
+        _remove_if_ours(state, daemon.token)
         if pool is not None:
             pool.close()
         logger.info("shutting down")

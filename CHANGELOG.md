@@ -2,6 +2,30 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.14.4] — 2026-10-21 — The server exits with its last session
+
+### Added
+
+- The server exits when the last agent session ends. The `SessionStart` server-start hook registers
+  each Claude Code session (`sessions/<session_id>.json` in the cache folder, with the agent's pid),
+  and the new `SessionEnd` hook `hooks/kg_session_end.py` unregisters it. A server that has seen a
+  registered session exits after `CODEBASE_KG_SESSION_GRACE` seconds (default 300) with no live
+  session and no use, so a session that starts soon after keeps it. It drops a session whose agent
+  process has exited, which covers a crashed agent and a `SessionEnd` hook that did not finish.
+- `mcp/launch/kg_headers.py --start`, which Codex runs on each connect, registers the Codex process as
+  `codex-<pid>`. Codex has no `SessionEnd` hook; the server drops the session when that process exits.
+- `kg_cli.py server sessions|register|unregister`, for an agent without these hooks.
+
+### Fixed
+
+- A session that started while a newer server build took over the port could record the server as
+  needing authentication. The outgoing server deleted its state file before it freed the port, so
+  the headers helper found a codebase-kg it could not verify and sent no token. The server now
+  deletes the state file after it frees the port, and the helper keeps polling while a codebase-kg
+  on the port does not yet verify.
+- The `SessionStart` hook reported that the server did not answer after 3 s, but a cold Python
+  start takes 2 to 5 s on a loaded Windows machine. The hook and the helper now wait up to 8 s.
+
 ## [0.14.3] — 2026-10-14 — Codex uses the shared HTTP server
 
 ### Fixed

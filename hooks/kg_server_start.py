@@ -4,7 +4,11 @@ Claude Code tries to connect to the HTTP server a few times in the first
 seconds of a session, once more as soon as the SessionStart hooks finish, and
 then gives up for the session. So this hook checks `GET /health` on the
 `server_port` setting and, when nothing answers, or an older codebase-kg build
-answers, starts this plugin's build detached and waits up to 3 s for it.
+answers, starts this plugin's build detached and waits up to 8 s for it. A cold
+Python start takes 2 to 5 s on a loaded Windows machine.
+
+It also registers the session (`shim.register_session`), so the server can exit
+once its last session ends; `kg_session_end.py` unregisters it.
 
 It always exits 0 and prints one line only when something is wrong: the port
 belongs to another program, or the server did not come up in time. Stdlib only.
@@ -21,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 SHIM = Path(__file__).resolve().parents[1] / "mcp" / "src" / "codebase_kg" / "shim.py"
-WAIT = 3.0
+WAIT = 8.0
 POLL = 0.1
 
 
@@ -71,10 +75,25 @@ def ensure_server(shim: Any, wait: float = WAIT, spawn: Callable[[str], object] 
     )
 
 
+def register(shim: Any, raw: str) -> None:
+    """Record the hook payload's session, with the agent's pid, so the server can tell when it is unused."""
+    try:
+        session = json.loads(raw).get("session_id")
+    except (ValueError, AttributeError):
+        return
+    if isinstance(session, str):
+        shim.register_session(session, shim.agent_pid())
+
+
 def main() -> None:
     try:
-        sys.stdin.read()
-        message = ensure_server(_shim())
+        raw = sys.stdin.read()
+        shim = _shim()
+        try:
+            register(shim, raw)
+        except OSError:
+            pass
+        message = ensure_server(shim)
     except Exception as exc:  # noqa: BLE001 - the hook reports any failure as a message
         message = f"codebase-kg: could not start the server: {exc}"
     if message:

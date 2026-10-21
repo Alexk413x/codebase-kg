@@ -136,13 +136,15 @@ When the session closes its stdin, the shim exits and does not reconnect.
 | `CODEBASE_KG_SHARED_TIMEOUT` | Seconds the shim waits for the shared server before it falls back. Default 10. |
 | `CODEBASE_KG_IDLE_TIMEOUT` | Seconds the shared server stays up with no connections. Default 600. |
 | `CODEBASE_KG_HTTP_IDLE_TIMEOUT` | Seconds a server that holds the HTTP port stays up with no request and no connection. Default 28800 (8 hours). |
+| `CODEBASE_KG_SESSION_GRACE` | Seconds a server that has seen a registered session waits, with none live and no use, before it exits. Default 300; negative turns it off. |
 | `CODEBASE_KG_MAX_WORKERS` | Worker processes for tool calls, overriding the `max_workers` setting. Default 8; 0 runs calls in the server. |
 | `CODEBASE_KG_CALL_TIMEOUT` | Seconds a worker may take for one call before it is killed. Default 60. |
 | `CODEBASE_KG_PORT` | The HTTP port, overriding the `server_port` setting. 0 lets the OS pick. |
 | `CODEBASE_KG_CACHE_DIR` | Where the state, lock, token and log files live. |
 
 `kg_cli.py server status` prints the build, pid and `max_workers` of the server on the HTTP port;
-`kg_cli.py server stop` stops it, so the next one reads the settings afresh. Run
+`kg_cli.py server stop` stops it, so the next one reads the settings afresh.
+`kg_cli.py server sessions` lists the registered sessions that are live, and `server register --session ID [--pid N]` and `server unregister --session ID` change them, for an agent with no hooks. Run
 `python -m codebase_kg.daemon`, with `src` on the path and no `--serve`, to get a private stdio server.
 
 ## The HTTP front
@@ -217,7 +219,7 @@ server was running.
 | `tcp_transport.py` | Classic MCP over lines: the shims' TCP listener and handshake, and the private stdio server. |
 | `pool.py` / `worker.py` | The elastic worker pool and the worker that runs read and write tools. |
 | `resolve.py` | Which graph a session's calls use. |
-| `control.py` | `kg_cli.py server status` and `server stop`. |
+| `control.py` | `kg_cli.py server status`, `stop`, `sessions`, `register` and `unregister`. |
 | `shim.py` | What stdio clients launch: finds or starts the shared server and relays the session to it. Stdlib only. It also holds the HTTP port, token and `/health` helpers that the hooks and `kg_headers.py` load by path. |
 | `tools.py` | The read-only queries the MCP tools wrap. |
 | `edits.py` | Targeted writes: copy, mutate in one transaction, validate, swap in — or discard, leaving the committed file byte-identical. |

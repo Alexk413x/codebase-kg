@@ -10,12 +10,14 @@ Codex runs it as `http_headers_helper` (see `kg_cli.py codex-config`) in the
 session's folder with no variable of its own and no way to ask for roots. Every
 setting is then an argument: `--port N`, `--home DIR` (the cache folder),
 `--graph PATH`, `--cwd` to send the folder it runs in as `X-Codebase-KG-Cwd`,
-and `--start` to start the server when nothing serves the port.
+and `--start` to start the server when nothing serves the port and to register the
+session (see `register_agent`).
 
 Stdlib only, and it always prints valid JSON.
 
-While nothing listens on the port, it waits up to `WAIT` seconds for the server
-the SessionStart hook starts, or `--start` starts. Claude Code sends these headers with its next
+While nothing listens on the port, or a codebase-kg on it cannot be verified yet
+(a server handing the port to a newer build), it waits up to `WAIT` seconds for the
+server the SessionStart hook starts, or `--start` starts. Claude Code sends these headers with its next
 request, and a request without the token gets 403, which Claude Code records as
 "needs auth" and stops connecting for the session, and for later sessions too.
 """
@@ -34,7 +36,7 @@ from urllib.parse import quote, urlsplit
 
 SHIM = Path(__file__).resolve().parent.parent / "src" / "codebase_kg" / "shim.py"
 START_HOOK = Path(__file__).resolve().parents[2] / "hooks" / "kg_server_start.py"
-WAIT = 3.0
+WAIT = 8.0
 START_WAIT = 10.0
 POLL = 0.1
 VALUE_OPTIONS = {"--port": "CODEBASE_KG_PORT", "--home": "CODEBASE_KG_CACHE_DIR", "--graph": ""}
@@ -78,15 +80,33 @@ def port(shim: Any) -> int:
 
 
 def token(shim: Any, at: int, wait: float = WAIT) -> str | None:
-    """The token, once the port answers as this user's codebase-kg; None if it answers as anything else."""
+    """The token, once the port answers as this user's codebase-kg; None if it answers as anything else.
+
+    A codebase-kg that answers but does not verify is a server handing over the port,
+    so keep polling until the deadline.
+    """
     deadline = time.monotonic() + wait
     while True:
         kind, _ = shim.health(at, timeout=0.5)
         if kind == shim.OURS:
-            return shim.verified_token(at)
-        if kind != shim.FREE or time.monotonic() >= deadline:
+            found = shim.verified_token(at)
+            if found:
+                return found
+        elif kind != shim.FREE:
+            return None
+        if time.monotonic() >= deadline:
             return None
         time.sleep(POLL)
+
+
+def register_agent(shim: Any) -> None:
+    """Register the Codex process that runs this helper, as `codex-<pid>`.
+
+    Codex has no SessionEnd hook. The server drops a session whose pid has exited, so
+    registering is enough. With no pid to watch, the record expires after `shim.SESSION_TTL`.
+    """
+    pid = shim.agent_pid()
+    shim.register_session(f"codex-{pid}" if pid else "codex-unknown", pid)
 
 
 def headers(
@@ -101,6 +121,10 @@ def headers(
     try:
         shim = _shim()
         if start:
+            try:
+                register_agent(shim)
+            except OSError:
+                pass
             spawn = shim.spawn_server_outside_job if sys.platform == "win32" else None
             _start_hook().ensure_server(shim, START_WAIT, spawn)
         found = token(shim, port(shim), wait)
