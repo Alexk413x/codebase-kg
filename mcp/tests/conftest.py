@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -25,6 +26,16 @@ os.environ["CODEBASE_KG_PORT"] = "0"
 os.environ.pop("CLAUDE_PLUGIN_OPTION_SERVER_PORT", None)
 for _name in ("CODEBASE_KG_MAX_WORKERS", "CLAUDE_PLUGIN_OPTION_MAX_WORKERS", "CODEBASE_KG_CALL_TIMEOUT"):
     os.environ.pop(_name, None)
+
+if sys.platform == "win32":
+    # Servers and helpers the tests start would otherwise each open a console window.
+    _popen_init = subprocess.Popen.__init__
+
+    def _popen_without_window(self: subprocess.Popen[bytes], *args: object, **kwargs: object) -> None:
+        kwargs["creationflags"] = int(kwargs.get("creationflags") or 0) | subprocess.CREATE_NO_WINDOW  # type: ignore[call-overload]
+        _popen_init(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    subprocess.Popen.__init__ = _popen_without_window  # type: ignore[method-assign]
 
 
 @pytest.fixture(scope="session")

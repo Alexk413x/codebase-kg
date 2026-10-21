@@ -328,7 +328,144 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
-Connected = tuple[socket.socket, bytes, dict[str, Any]]
+SESSION_TTL = 12 * 3600.0
+_NOT_THE_AGENT = frozenset(("py", "pyw", "bash", "sh", "zsh", "dash", "fish", "cmd", "powershell", "pwsh", "env",
+                            "uv", "uvx", "conhost", "winpty", "timeout"))
+
+
+def _process_table() -> dict[int, tuple[int, str]]:
+    """Every process as `pid -> (parent pid, lower-case name without .exe)`; empty when the system will not say."""
+    rows: list[tuple[int, int, str]] = []
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class Entry(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260),
+            ]
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.Process32FirstW.argtypes = kernel32.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(Entry)]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)
+        if snapshot is None or snapshot == ctypes.c_void_p(-1).value:
+            return {}
+        try:
+            entry = Entry()
+            entry.dwSize = ctypes.sizeof(Entry)
+            more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+            while more:
+                rows.append((entry.th32ProcessID, entry.th32ParentProcessID, entry.szExeFile))
+                more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+        finally:
+            kernel32.CloseHandle(snapshot)
+    else:
+        try:
+            out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,comm="], capture_output=True, text=True,
+                                 timeout=5, check=False).stdout
+        except (OSError, subprocess.SubprocessError):
+            return {}
+        for line in out.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+                rows.append((int(parts[0]), int(parts[1]), parts[2]))
+    table = {}
+    for pid, parent, name in rows:
+        base = re.split(r"[\\/]", name.strip())[-1].lower()
+        table[pid] = (parent, base.removesuffix(".exe"))
+    return table
+
+
+def agent_pid() -> int | None:
+    """The pid of the agent that runs this hook: the nearest ancestor that is not an interpreter or shell.
+
+    None when the chain cannot be read, so a caller must not rely on the pid alone.
+    """
+    table = _process_table()
+    pid = os.getppid()
+    for _ in range(12):
+        found = table.get(pid)
+        if found is None:
+            return None
+        parent, name = found
+        if name not in _NOT_THE_AGENT and not name.startswith("python"):
+            return pid
+        pid = parent
+    return None
+
+
+def sessions_dir() -> Path:
+    return cache_dir() / "sessions"
+
+
+_SESSION_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z_.\-]{0,63}")
+
+
+def _session_file(session: str) -> Path | None:
+    """The registry file for a session id, or None for an id that is not a plain file name."""
+    return sessions_dir() / f"{session}.json" if _SESSION_ID.fullmatch(session) else None
+
+
+def register_session(session: str, pid: int | None) -> bool:
+    """Record that an agent session uses the server. `pid` is the agent's process, or None if unknown."""
+    path = _session_file(session)
+    if path is None:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({"pid": pid, "at": time.time()}), encoding="utf-8")
+    os.replace(tmp, path)
+    return True
+
+
+def unregister_session(session: str) -> bool:
+    path = _session_file(session)
+    if path is None:
+        return False
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def live_sessions() -> list[str]:
+    """The registered sessions that are still running; a session whose agent exited, or whose record is stale, is dropped.
+
+    A session with no known pid stays until `SESSION_TTL` after it registered.
+    """
+    found: list[str] = []
+    try:
+        names = sorted(os.listdir(sessions_dir()))
+    except OSError:
+        return found
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        path = sessions_dir() / name
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            pid, at = record.get("pid"), float(record.get("at") or 0.0)
+        except (OSError, ValueError, AttributeError, TypeError):
+            continue
+        alive = pid_alive(pid) if isinstance(pid, int) else time.time() - at < SESSION_TTL
+        if alive:
+            found.append(name[:-5])
+        else:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    return found
+
+
+Connected =tuple[socket.socket, bytes, dict[str, Any]]
 
 
 def handshake(state: dict[str, Any], hello: dict[str, Any]) -> Connected:

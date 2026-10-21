@@ -372,6 +372,23 @@ def test_shutdown_needs_the_servers_own_state_token(tmp_path: Path) -> None:
         _stop(proc)
 
 
+def test_a_stopping_server_keeps_its_state_file_until_it_frees_the_port(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    proc = _start(cache, tmp_path)
+    try:
+        state = _state(cache)
+        port = state["http_port"]
+        file = cache / f"server-{BUILD}.json"
+        assert _request(port, "POST", "/shutdown", {"Authorization": f"Bearer {state['token']}"})[0] == 200
+        deadline = time.monotonic() + TIMEOUT
+        while time.monotonic() < deadline and shim.health(port, timeout=0.5)[0] == shim.OURS:
+            assert file.exists(), "the port still answered after the state file was removed"
+        proc.wait(timeout=TIMEOUT)
+        assert not file.exists()
+    finally:
+        _stop(proc)
+
+
 def test_an_http_server_outlives_the_shim_idle_timeout(tmp_path: Path) -> None:
     cache = tmp_path / "cache"
     proc = _start(cache, tmp_path, CODEBASE_KG_IDLE_TIMEOUT="0.5")
@@ -689,6 +706,24 @@ def test_the_helper_waits_for_a_server_that_is_starting(tmp_path: Path) -> None:
         _stop(proc)
 
 
+def test_the_helper_keeps_polling_while_a_codebase_kg_does_not_verify() -> None:
+    """A server handing the port over answers /health after its state file is gone."""
+    fake = _load(SRC_SHIM, "shim_for_unverified")
+    fake.health = lambda port, timeout=1.0: (fake.OURS, {})
+    tokens = iter([None, None, "tok"])
+    fake.verified_token = lambda port: next(tokens, None)
+    assert helper_module().token(fake, 1, wait=5.0) == "tok"
+
+
+def test_the_helper_gives_up_on_a_codebase_kg_that_never_verifies() -> None:
+    fake = _load(SRC_SHIM, "shim_for_never_verified")
+    fake.health = lambda port, timeout=1.0: (fake.OURS, {})
+    fake.verified_token = lambda port: None
+    started = time.monotonic()
+    assert helper_module().token(fake, 1, wait=0.5) is None
+    assert time.monotonic() - started < 3.0
+
+
 def test_the_helper_does_not_wait_on_another_program(tmp_path: Path) -> None:
     holder = _Holder(None, body=b"<html>not us</html>")
     try:
@@ -743,6 +778,7 @@ def test_the_helper_starts_the_server_when_asked(tmp_path: Path) -> None:
         out = _codex_helper(["--port", str(port), "--home", str(cache), "--cwd", "--start"], tmp_path)
         assert out["Authorization"] == f"Bearer {(cache / 'http-token').read_text(encoding='utf-8').strip()}"
         assert shim.health(port)[0] == shim.OURS
+        assert list((cache / "sessions").glob("codex-*.json"))
     finally:
         env = {**os.environ, "CODEBASE_KG_CACHE_DIR": str(cache)}
         subprocess.run([sys.executable, "-I", str(CLI), "server", "stop", "--port", str(port)], env=env,

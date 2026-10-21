@@ -134,7 +134,7 @@ imports only the Python standard library: it runs on your Python 3.10 or later w
 in about 0.2 s and holds about 25 MB while idle.
 
 - **Starting it.** A `SessionStart` hook starts the server when nothing answers `GET /health` on the
-  port, and waits up to 3 s. Claude Code retries the connection for about 7 s after a session starts,
+  port, and waits up to 8 s. Claude Code retries the connection for about 7 s after a session starts,
   then gives up for that session.
 - **Which repo.** The server asks Claude Code for the session's roots on the first tool call and
   resolves the graph from the first root, as a shim resolves it from its cwd. `CODEBASE_KG_PATH`
