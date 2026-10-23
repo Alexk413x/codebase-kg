@@ -33,7 +33,7 @@ Everything here is a question the file cannot answer about itself — it needs t
 - **Counterpart problems** — a `counterpart` whose target file or id is missing, or that the peer
   graph doesn't link back to (a reciprocity break — `${CLAUDE_PLUGIN_ROOT}/SCHEMA.md` §9).
 - **External link problems** (`external_link_issues`) — a link that is malformed (not
-  `<db-file>#<node-id>`, or with an absolute `<db-file>` or one that has a `..` segment), or that
+  `<db-file>#<node-id>`, or with an absolute `<db-file>`), or that
   names a node the peer graph does not contain. Report these: the `error`-severity ones count against `ok`,
   so skipping them lets you report "clean" over a payload that says `ok: false`. The `warning`-
   severity ones (peer absent or unreadable) are unknown, not broken.
@@ -111,7 +111,7 @@ Counterpart issues (<n>):
 - <node-id>: <not reciprocal | target id not in peer graph | file not found>  → run link
 
 External link issues (<n>):
-- <node-id>: <target> — <malformed (including an absolute or `..` path) | names a node the peer graph does not contain>  → run link
+- <node-id>: <target> — <malformed (including an absolute path) | names a node the peer graph does not contain>  → run link
 - <node-id>: <target> — peer graph absent or unreadable (unknown, not broken)
 
 Guaranteed by the store (not checked, cannot occur): <echo kg_validate's guaranteed_by_schema

@@ -453,17 +453,13 @@ ESCAPING_TARGETS = [
     "c:other.db#x",
     "//host/share/other.db#x",
     r"\host\share\other.db#x",
-    "../other.db#x",
-    "sub/../../other.db#x",
-    r"sub\..\other.db#x",
-    "knowledge/../other.db#x",
     "knowledge//etc/other.db#x",
 ]
 
 
 @pytest.mark.parametrize("bad", ESCAPING_TARGETS)
 def test_a_target_that_leaves_the_knowledge_directory_is_refused(bad) -> None:
-    with pytest.raises(LinkError, match=r"relative to knowledge/|'\.\.' segment"):
+    with pytest.raises(LinkError, match=r"relative to knowledge/"):
         links.split_target(bad)
 
 
@@ -475,8 +471,8 @@ def test_parse_refuses_an_escaping_target_in_both_shapes(bad) -> None:
         ExternalLink.parse({"target": bad, "kind": "tests"})
 
 
-@pytest.mark.parametrize("ok", ["g.db#x", "sub/g.db#x", "a..b.db#x", "g.db#../x"])
-def test_dots_inside_a_name_or_the_node_id_are_not_an_escape(ok) -> None:
+@pytest.mark.parametrize("ok", ["g.db#x", "sub/g.db#x", "a..b.db#x", "g.db#../x", "../g.db#x", "../../peer/knowledge/g.db#x"])
+def test_dots_in_a_name_a_node_id_or_a_relative_climb_are_allowed(ok) -> None:
     links.split_target(ok)
 
 
@@ -492,19 +488,19 @@ def test_the_writer_names_the_node_when_a_target_escapes_knowledge(
         )
 
 
-def test_the_codec_refuses_an_escaping_target() -> None:
+def test_the_codec_refuses_an_absolute_target() -> None:
     doc = {
         "codebase": "x",
         "root": "src",
-        "nodes": [{"id": "a", "kind": "K", "external_links": ["../other.db#x"]}],
+        "nodes": [{"id": "a", "kind": "K", "external_links": ["/etc/other.db#x"]}],
     }
-    with pytest.raises(codec.DecodeError, match=r"'\.\.' segment"):
+    with pytest.raises(codec.DecodeError, match="relative to knowledge/"):
         codec.from_dict(doc)
 
 
 def test_insert_refuses_an_escaping_target(conn) -> None:
     with pytest.raises(LinkError):
-        links.insert(conn, "a", ExternalLink("../other.db#x"))
+        links.insert(conn, "a", ExternalLink("/etc/other.db#x"))
 
 
 @pytest.mark.parametrize("bad", ESCAPING_TARGETS)
@@ -522,3 +518,11 @@ def test_resolve_never_opens_a_database_for_an_escaping_target(
     monkeypatch.setattr(sqlite3, "connect", refuse)
     assert links.resolve(knowledge, bad) is Resolution.MALFORMED
     assert links.resolve(knowledge, f"{outside.as_posix()}#x") is Resolution.MALFORMED
+
+
+def test_resolve_follows_a_relative_climb_to_a_sibling_checkout(tmp_path: Path) -> None:
+    _screen_graph(tmp_path / "peer" / "knowledge" / "g.db", ["x"])
+    knowledge = tmp_path / "me" / "knowledge"
+    knowledge.mkdir(parents=True)
+    assert links.resolve(knowledge, "../../peer/knowledge/g.db#x") is Resolution.OK
+    assert links.resolve(knowledge, "../../peer/knowledge/g.db#nope") is Resolution.DANGLING

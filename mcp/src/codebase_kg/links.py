@@ -32,10 +32,10 @@ A target is `<db-file>#<node-id>` where `<db-file>` is relative to the project's
 `knowledge/` directory -- never absolute. An absolute path is a fact about one
 machine; committed into a shared artifact it breaks on the next clone and reads
 as a dangling link to everyone except its author. The rule is enforced, not
-advisory: `resolve` opens whatever file the target names, so an absolute path
-(drive letter, leading slash, UNC) or a `..` segment would let a committed link
-point it at any SQLite file on the machine. `split_target` raises `LinkError`
-for both and `resolve` reports `MALFORMED` without touching the filesystem.
+advisory: `split_target` raises `LinkError` for an absolute path (drive letter,
+leading slash, UNC) and `resolve` reports `MALFORMED` without touching the
+filesystem. A relative path may climb with `..`: a graph links to a sibling
+checkout as `../../other-repo/knowledge/code_graph.db#node`.
 
 `kind` names what the link means from the source's side -- `implements`,
 `tests`, `documents`. Empty is allowed and means unspecified; it is not a
@@ -143,15 +143,13 @@ def _check_db_file(target: str, db_file: str) -> None:
         raise LinkError(
             f"{target!r}: <db-file> must be relative to knowledge/, not an absolute path"
         )
-    if ".." in db_file.split("/"):
-        raise LinkError(f"{target!r}: <db-file> must not contain a '..' segment")
 
 
 def split_target(target: str) -> tuple[str, str]:
     """`"code_graph.db#rpn_screen"` -> `("code_graph.db", "rpn_screen")`.
 
-    Raises `LinkError` when either half is empty, when `<db-file>` is absolute
-    (drive letter, leading slash, UNC), or when it has a `..` segment.
+    Raises `LinkError` when either half is empty or when `<db-file>` is absolute
+    (drive letter, leading slash, UNC).
 
     The table's CHECK rejects a missing or leading `#`, but SQLite's `instr`
     cannot also express "and something follows it" -- so `code_graph.db#` is writable, and it resolves to

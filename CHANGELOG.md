@@ -2,6 +2,15 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.15.1] — 2026-10-23 — Link targets may climb with `..`
+
+### Fixed
+
+- A link target with a `..` segment is allowed again. 0.15.0 refused it, which made a graph that
+  links to a sibling checkout (`../../other-repo/knowledge/code_graph.db#node`) impossible to
+  rebuild, and `kg_validate` reported every such link as malformed. An absolute `<db-file>` (drive
+  letter, leading slash, UNC) is still refused on every write path and reported as malformed.
+
 ## [0.15.0] — 2026-10-23 — Review fixes, PowerShell push gate and server start
 
 ### Added

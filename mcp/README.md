@@ -43,7 +43,7 @@ each tool's description says so, because picking the wrong one is how this surfa
 |---|---|
 | `kg_upsert_node(nodes)` | Creates or updates node(s). An unknown key is refused with a did-you-mean hint, and the tool schema sets `additionalProperties` to false. Only the keys supplied change; `null` clears a parity field; `anchors` / `edges` / `external_links` / `references` replace the whole list. A file the node anchors with no baseline gets one; `"rebaseline": true` re-hashes the node's files, which clears them for every node anchored there. |
 | `kg_delete_node(ids, dry_run=True, cascade_inbound=False)` | Previews what cascades (anchors, outbound edges, external links, baselines of files no other node anchors) and what blocks (inbound edges, `ON DELETE RESTRICT`), then deletes. |
-| `kg_add_link(node_id, target, kind='')` | Points a node at `<db-file>#<node-id>` in another committed graph. Refused if `<db-file>` is absolute or contains `..`, or if the peer graph is present and lacks that node. |
+| `kg_add_link(node_id, target, kind='')` | Points a node at `<db-file>#<node-id>` in another committed graph. Refused if `<db-file>` is absolute, or if the peer graph is present and lacks that node. |
 | `kg_remove_link(node_id, target)` | Drops one such pointer; the node is untouched. |
 | `kg_add_reference(node_id, url, kind='', title='', path=None, symbol=None)` | Records where a fact the node depends on is documented. `path` / `symbol` must equal one of the node's anchors, or the write is refused. |
 | `kg_remove_reference(node_id, url, path=None, symbol=None)` | Drops the node's reference(s) to `url`, or only the one with that narrowing. |
@@ -231,7 +231,7 @@ server was running.
 | `codec.py` | The JSON interchange shape shared by `build` and `export`. |
 | `coverage.py` | Declared coverage: the `covers` and `exempt` patterns and the check against them. |
 | `staleness.py` | The one comparison that decides whether a mapped file has drifted. |
-| `links.py` | Cross-graph links: target parsing, the refusal of absolute and `..` targets, resolution against the peer graph. |
+| `links.py` | Cross-graph links: target parsing, the refusal of absolute targets, resolution against the peer graph. |
 | `clean.py` | The `description` contract (no ticket refs, dates or change narrative) and its scrubber. |
 | `writer.py` | Transactional, deterministic build. Validates first; writes to a temp file and renames. |
 | `store.py` | `CodeGraph` — read-only query facade over one connection. |
