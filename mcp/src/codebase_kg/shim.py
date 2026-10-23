@@ -670,15 +670,6 @@ def shared_connection(
             _release_lock(build)
 
 
-def _binary_stdio() -> None:
-    if sys.platform == "win32":
-        import msvcrt
-
-        # A text-mode fd rewrites \n as \r\n, which corrupts frames in both directions.
-        msvcrt.setmode(0, os.O_BINARY)
-        msvcrt.setmode(1, os.O_BINARY)
-
-
 def _write_all(fd: int, data: bytes) -> None:
     view = memoryview(data)
     while view:
@@ -830,7 +821,6 @@ class Relay:
         self._eof = threading.Event()
 
     def run(self, link: _Link) -> int:
-        _binary_stdio()
         self._link = link
         threading.Thread(target=self._read_client, daemon=True).start()
         while True:

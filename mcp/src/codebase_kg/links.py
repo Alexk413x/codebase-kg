@@ -68,11 +68,6 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-#: Bumped whenever the table, the URI convention or the resolution rules change.
-#: Every copy carries it, so "are these two graphs speaking the same mechanism?"
-#: is one comparison rather than a diff of two files in two repositories.
-LINKS_SPEC_VERSION = 1
-
 #: What `<db-file>` is resolved against. The knowledge directory, not the repo
 #: root: every graph in a project lives there together, so a peer is named by
 #: its filename alone and nothing has to know how deep the directory sits or
@@ -153,11 +148,6 @@ def split_target(target: str) -> tuple[str, str]:
     return db_file, node_id
 
 
-def format_target(db_file: str, node_id: str) -> str:
-    """Build a canonical target from its two halves."""
-    return normalize_target(f"{db_file}{SEPARATOR}{node_id}")
-
-
 @dataclass(frozen=True, order=True)
 class ExternalLink:
     """One row of `external_link`, without its owning node."""
@@ -173,14 +163,6 @@ class ExternalLink:
         canonical = normalize_target(self.target)
         if canonical != self.target:
             object.__setattr__(self, "target", canonical)
-
-    @property
-    def db_file(self) -> str:
-        return split_target(self.target)[0]
-
-    @property
-    def node_id(self) -> str:
-        return split_target(self.target)[1]
 
     def as_dict(self) -> dict[str, str]:
         return {"target": self.target, "kind": self.kind}
@@ -334,17 +316,6 @@ class Resolution(str, Enum):
     PEER_UNREADABLE = "peer-unreadable"
     #: The peer graph is readable and does not contain that node.
     DANGLING = "dangling"
-
-    @property
-    def is_error(self) -> bool:
-        """Only a link that is *provably* broken fails a validation run.
-
-        The two soft outcomes are soft for the same reason: we could not check.
-        Failing on them would mean a repo without the peer plugin installed can
-        never pass validation, which would make an optional dependency mandatory
-        by the back door.
-        """
-        return self in (Resolution.MALFORMED, Resolution.DANGLING)
 
 
 def peer_node_table(con: sqlite3.Connection) -> str | None:

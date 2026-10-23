@@ -65,13 +65,6 @@ def _git(proj: Path, *args: str) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
-def _same_dir(a: Path, b: Path) -> bool:
-    try:
-        return os.path.normcase(str(a.resolve())) == os.path.normcase(str(b.resolve()))
-    except OSError:
-        return False
-
-
 def _hooks_dir(proj: Path, configured: str) -> Path | None:
     """The dir holding the vendored checkers, or None if this repo has none.
 
@@ -123,8 +116,6 @@ def advice(proj: Path) -> str | None:
     hooks = _hooks_dir(proj, configured)
     if hooks is None:
         return None
-    if configured and not _same_dir(proj / configured, hooks):
-        return None  # this repo points its hooks somewhere else on purpose
 
     textconv = _git(proj, "config", "--get", "diff.codegraph.textconv")
     if configured and textconv:

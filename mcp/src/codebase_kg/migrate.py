@@ -39,7 +39,6 @@ class MigrationReport:
     nodes: int = 0
     edges: int = 0
     anchors: int = 0
-    hashed: int = 0
     descriptions_scrubbed: int = 0
     chars_removed: int = 0
     dropped_edges: list[dict[str, str]] = field(default_factory=list)
@@ -185,7 +184,6 @@ def convert(
     report.nodes = build.nodes
     report.edges = build.edges
     report.anchors = build.anchors
-    report.hashed = build.hashed
     report.dropped_edges = [{"src": s, "dst": d} for s, d in build.dropped_edges]
     return report
 

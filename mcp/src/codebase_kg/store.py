@@ -574,10 +574,3 @@ class CodeGraph:
                 " AND id NOT IN (SELECT dst FROM edge)"
             ).fetchone()["n"]
         )
-
-    def is_anchored(self, path: str) -> bool:
-        """Does any node anchor on this exact repo-relative path? Indexed probe."""
-        return (
-            self._q("SELECT 1 FROM anchor WHERE path = ? LIMIT 1", (path,)).fetchone()
-            is not None
-        )

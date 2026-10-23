@@ -89,9 +89,6 @@ _SHELL_SEARCH = re.compile(
 # nonexistent path made `all(t.is_file())` false and re-triggered the gate on
 # an otherwise located search.
 _REDIRECT_OP = re.compile(r"^(?:[0-9]*(?:>>|>|<)|&>>?)")
-# `2>&1`, `>&2`, `1>&2` — duplicates a file descriptor, names no path at all,
-# so neither this token nor a following one is an operand.
-_REDIRECT_DUP = re.compile(r"^[0-9]*>&[0-9]*$")
 
 # The plugin's own MCP tools, under either name the host gives the server
 # (`mcp__codebase-kg__*` standalone, `mcp__plugin_codebase-kg_codebase-kg__*`
@@ -480,10 +477,6 @@ class ShellSearch:
         # searches for the same terms are the same question, however phrased.
         self.terms: list[str] = []
 
-    @property
-    def targets(self) -> list[Path]:
-        return [t for c in self.clauses for t in c.targets]
-
 
 def _value_flag(word: str, tok: str) -> tuple[str, str | None] | None:
     """If `tok` is a flag of `word` that takes a value: (its canonical name, the
@@ -575,8 +568,6 @@ def parse_shell_search(command: str, proj: Path) -> ShellSearch | None:
                     out.terms.append(tok)
                 pending = None
                 continue
-            if _REDIRECT_DUP.match(tok):
-                continue  # e.g. "2>&1" — duplicates a descriptor, names no path
             redirect = None if isinstance(tok, _Quoted) else _REDIRECT_OP.match(tok)
             if redirect:
                 if redirect.end() == len(tok):

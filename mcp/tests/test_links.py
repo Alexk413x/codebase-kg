@@ -89,10 +89,6 @@ def test_this_copy_matches_the_published_ddl() -> None:
     assert links.EXTERNAL_LINK_DDL == PUBLISHED_DDL
 
 
-def test_this_copy_declares_the_spec_version_it_implements() -> None:
-    assert links.LINKS_SPEC_VERSION == 1
-
-
 def test_the_table_is_part_of_this_graphs_schema() -> None:
     con = sqlite3.connect(":memory:")
     con.executescript(DDL)
@@ -211,7 +207,7 @@ def test_a_present_peer_holding_the_node_resolves(
 
 def test_an_absent_peer_is_a_warning_because_cartographer_is_optional(tmp_path: Path) -> None:
     outcome = links.resolve(tmp_path, "cartographer_graph.db#rpn-main")
-    assert outcome is Resolution.PEER_ABSENT and not outcome.is_error
+    assert outcome is Resolution.PEER_ABSENT
 
 
 @pytest.mark.parametrize("table, declare", PEER_SHAPES)
@@ -224,7 +220,7 @@ def test_a_present_peer_missing_the_node_is_an_error(
         tmp_path / "cartographer_graph.db", ["rpn-main"], table=table, declare=declare
     )
     outcome = links.resolve(tmp_path, "cartographer_graph.db#typo")
-    assert outcome is Resolution.DANGLING and outcome.is_error
+    assert outcome is Resolution.DANGLING
 
 
 def test_a_declared_node_table_beats_the_probe(tmp_path: Path) -> None:
@@ -244,7 +240,7 @@ def test_a_declared_node_table_beats_the_probe(tmp_path: Path) -> None:
 def test_a_file_that_is_not_a_graph_is_unknown_not_broken(tmp_path: Path) -> None:
     (tmp_path / "cartographer_graph.db").write_bytes(b"not a database")
     outcome = links.resolve(tmp_path, "cartographer_graph.db#x")
-    assert outcome is Resolution.PEER_UNREADABLE and not outcome.is_error
+    assert outcome is Resolution.PEER_UNREADABLE
 
 
 def test_a_database_with_no_entity_table_is_unknown_not_broken(tmp_path: Path) -> None:
@@ -254,7 +250,7 @@ def test_a_database_with_no_entity_table_is_unknown_not_broken(tmp_path: Path) -
     con.commit()
     con.close()
     outcome = links.resolve(tmp_path, "cartographer_graph.db#x")
-    assert outcome is Resolution.PEER_UNREADABLE and not outcome.is_error
+    assert outcome is Resolution.PEER_UNREADABLE
 
 
 def test_this_graph_names_its_own_entity_table_so_a_peer_can_resolve_into_it(
@@ -271,7 +267,7 @@ def test_this_graph_names_its_own_entity_table_so_a_peer_can_resolve_into_it(
     ).fetchone() == ("node",), "declared, not merely probeable"
     con.close()
     assert links.resolve(db.parent, "code_graph.db#rpn_screen") is Resolution.OK
-    assert links.resolve(db.parent, "code_graph.db#gone").is_error
+    assert links.resolve(db.parent, "code_graph.db#gone") is Resolution.DANGLING
 
 
 # --- round trip and both directions -------------------------------------------
