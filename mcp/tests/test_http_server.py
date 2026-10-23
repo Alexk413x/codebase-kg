@@ -243,10 +243,10 @@ def test_a_client_is_asked_for_its_roots_once(tmp_path: Path) -> None:
     assert clients.connection(headers, {}) is bound
 
 
-def test_a_root_that_is_not_a_local_file_is_asked_for_again(tmp_path: Path) -> None:
+def test_a_root_that_is_not_a_local_file_is_refused(tmp_path: Path) -> None:
     answer = {"inputResponses": {http_transport.ROOTS_REQUEST: {"roots": [{"uri": "https://x/"}]}}}
-    again = http_transport.Clients().connection({"x-codebase-kg-client": "c"}, answer)
-    assert isinstance(again, dict) and again["resultType"] == "input_required"
+    refused = http_transport.Clients().connection({"x-codebase-kg-client": "c"}, answer)
+    assert isinstance(refused, dict) and refused["isError"] is True
 
 
 def test_the_client_cache_is_bounded(tmp_path: Path) -> None:

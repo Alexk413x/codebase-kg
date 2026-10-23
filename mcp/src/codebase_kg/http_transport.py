@@ -124,8 +124,13 @@ class Clients:
             if key is not None and key in self.bound:
                 self.bound.move_to_end(key)
                 return self.bound[key]
-        root = root_path(params.get("inputResponses"))
+        responses = params.get("inputResponses")
+        root = root_path(responses)
         if root is None:
+            if isinstance(responses, dict) and ROOTS_REQUEST in responses:
+                return core.error_result(
+                    "codebase-kg: the client's roots include no local folder. Send an absolute X-Codebase-KG-Cwd header."
+                )
             return {"resultType": "input_required", "inputRequests": {ROOTS_REQUEST: {"method": "roots/list"}}}
         conn = _new(root, graph)
         if key is not None:
@@ -155,7 +160,8 @@ def _new(cwd: Path, graph: str | None) -> resolve.Connection:
 
 def _authorized(value: str, expected: str) -> bool:
     scheme, _, token = value.partition(" ")
-    return bool(expected) and scheme.lower() == "bearer" and hmac.compare_digest(token.strip(), expected)
+    return bool(expected) and scheme.lower() == "bearer" and hmac.compare_digest(
+        token.strip().encode("utf-8", "surrogatepass"), expected.encode("utf-8", "surrogatepass"))
 
 
 class HttpServer(ThreadingHTTPServer):
@@ -400,7 +406,13 @@ class Handler(BaseHTTPRequestHandler):
         conn = None
         if msg["method"] == "tools/call":
             conn = classic_connection({h: self.headers.get(h) for h in (GRAPH_HEADER, CWD_HEADER)})
-        self._json(200, core.classic(self.srv.core, conn, msg))
+        try:
+            reply = core.classic(self.srv.core, conn, msg)
+        except Exception:
+            logger.exception("classic request failed")
+            self._rpc_error(request_id, core.INTERNAL_ERROR, "Internal error")
+            return
+        self._json(200, reply)
 
     def _unsupported(self, request_id: Any, requested: str) -> None:
         self._rpc_error(request_id, UNSUPPORTED_VERSION, "Unsupported protocol version",
@@ -419,7 +431,11 @@ class Handler(BaseHTTPRequestHandler):
             found = self.srv.clients.connection(headers, params)
             if not isinstance(found, resolve.Connection):
                 return found
-            return self.srv.core.call_tool(found, params.get("name"), params.get("arguments"))
+            try:
+                return self.srv.core.call_tool(found, params.get("name"), params.get("arguments"))
+            except Exception as exc:
+                logger.exception("tool call failed")
+                return core.error_result(f"Error calling tool {params.get('name')!r}: {exc}")
         return None
 
 
@@ -470,6 +486,9 @@ def claim_port(port: int, mine: dict[str, Any]) -> socket.socket | None:
             "port %d belongs to another program; set the codebase-kg server_port setting "
             "to a free port. Serving the shims only.", port,
         )
+        return None
+    if kind == shim.UNRESPONSIVE:
+        logger.warning("port %d accepts connections but did not answer /health; serving the shims only", port)
         return None
     if not shim.outranks(mine, theirs):
         logger.info("codebase-kg %s holds port %d; serving the shims only", theirs.get("build"), port)

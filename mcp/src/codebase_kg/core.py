@@ -34,7 +34,7 @@ INSTRUCTIONS: str = CATALOG["instructions"]
 SERVER_INFO = {"name": "codebase-kg", "version": shim.package_version()}
 
 CLASSIC_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
-PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS = -32700, -32600, -32601, -32602
+PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR = -32700, -32600, -32601, -32602, -32603
 NO_CWD = "codebase-kg: the request names no working directory. Send an absolute X-Codebase-KG-Cwd header."
 EMPTY_LISTS = {"prompts/list": "prompts", "resources/list": "resources",
                "resources/templates/list": "resourceTemplates"}

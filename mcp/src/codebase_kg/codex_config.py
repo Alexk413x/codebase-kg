@@ -58,7 +58,7 @@ def entry(port: int | None = None, home: str | None = None, platform: str = sys.
 def stdio_entry(platform: str = sys.platform) -> str:
     return (
         "[mcp_servers.codebase-kg]\n"
-        f"command = '{launcher(platform)}'\n"
+        f"command = {toml_string(str(launcher(platform)))}\n"
         "startup_timeout_sec = 60\n"
     )
 

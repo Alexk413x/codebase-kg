@@ -30,7 +30,8 @@ from .schema import (
 )
 
 _LEADING_DOT_SLASH = re.compile(r"^(?:\./|/)+")
-_WORD = re.compile(r"[A-Za-z0-9]+")
+_WORD = re.compile(r"[^\W_]+")
+_LIKE_SPECIAL = re.compile(r"([!%_])")
 # Shortest token that is worth matching as a prefix (see `search_ids`).
 _MIN_PREFIX = 3
 # SQLite refuses more than 32766 bound parameters, so IN-lists are chunked.
@@ -47,6 +48,11 @@ def _reference(row: sqlite3.Row) -> Reference:
         url=row["url"], kind=row["kind"], title=row["title"],
         path=row["path"], symbol=row["symbol"],
     )
+
+
+def _contains(text: str) -> str:
+    """A LIKE pattern matching `text` as a literal substring."""
+    return "%" + _LIKE_SPECIAL.sub(lambda m: "!" + m.group(1), text) + "%"
 
 
 def discover_graph(start: Path | None = None) -> Path | None:
@@ -363,8 +369,8 @@ class CodeGraph:
         if hits:
             return hits
         rows = self._q(
-            "SELECT id FROM node WHERE id LIKE ? ORDER BY length(id), id LIMIT ?",
-            (f"%{text.strip()}%", limit),
+            "SELECT id FROM node WHERE id LIKE ? ESCAPE '!' ORDER BY length(id), id LIMIT ?",
+            (_contains(text.strip()), limit),
         ).fetchall()
         return [r["id"] for r in rows]
 
@@ -376,7 +382,8 @@ class CodeGraph:
         ids = [
             r["id"]
             for r in self._q(
-                "SELECT id FROM node WHERE kind LIKE ? ORDER BY id", (f"%{kind}%",)
+                "SELECT id FROM node WHERE kind LIKE ? ESCAPE '!' ORDER BY id",
+                (_contains(kind),),
             )
         ]
         return self.nodes(ids)

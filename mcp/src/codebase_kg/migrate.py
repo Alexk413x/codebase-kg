@@ -259,6 +259,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     target = Path(args.out).resolve() if args.out else source.parent / "code_graph.db"
+    if not args.out and target.exists():
+        sys.stderr.write(
+            f"[codebase-kg] {target} already exists and would be replaced. "
+            "Pass -o to name the output path.\n"
+        )
+        return 1
     tmp_target = target
     if args.dry_run:
         import tempfile

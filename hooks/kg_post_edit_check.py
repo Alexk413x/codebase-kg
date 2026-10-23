@@ -85,6 +85,13 @@ def _write_state(proj: Path, state: dict[str, object]) -> None:
         pass
 
 
+def _graph_stamp(graph: Path) -> int | None:
+    try:
+        return graph.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 def _emit(message: str) -> None:
     print(json.dumps({"systemMessage": message}))
 
@@ -167,14 +174,20 @@ def _check(fp: str, proj: Path, cfg: dict[str, object], graph: Path) -> bool:
     """Nudge for one edited file. True when a message was sent, so one call sends at most one."""
     edited = Path(fp).resolve()
     state = _read_state(proj)
+    stamp = _graph_stamp(graph)
 
     # Touching the graph itself clears the pending counter.
     if _same(edited, graph) or edited.name == GRAPH_FILENAME:
-        _write_state(proj, {"pending": 0, "reported": []})
+        _write_state(proj, {"pending": 0, "reported": [], "graph_stamp": stamp})
         return False
 
     if not is_source_file(edited, proj, cfg):
         return False
+
+    # A refresh writes the graph through `kg_upsert_node` or the CLI, not through
+    # an Edit, so a changed file is the only sign the counter's edits are covered.
+    if state.get("graph_stamp") not in (None, stamp):
+        state = {}
 
     rel = _rel_to_root(edited, proj, str(cfg.get("root") or ""))
     reported = [str(r) for r in state.get("reported", []) if isinstance(r, str)]
@@ -183,7 +196,7 @@ def _check(fp: str, proj: Path, cfg: dict[str, object], graph: Path) -> bool:
     # Signal 1: this file is not in the map. Report once per file per session.
     if rel is not None and rel not in reported and not is_anchored(graph, rel):
         reported.append(rel)
-        _write_state(proj, {"pending": pending, "reported": reported[-50:]})
+        _write_state(proj, {"pending": pending, "reported": reported[-50:], "graph_stamp": stamp})
         _emit(
             f"codebase-kg: no node in {graph.name} anchors on {rel}. "
             f"Run /codebase-kg:refresh to add it, so the graph keeps answering "
@@ -191,7 +204,7 @@ def _check(fp: str, proj: Path, cfg: dict[str, object], graph: Path) -> bool:
         )
         return True
 
-    _write_state(proj, {"pending": pending, "reported": reported})
+    _write_state(proj, {"pending": pending, "reported": reported, "graph_stamp": stamp})
 
     # Signal 2: enough mapped files have changed that descriptions may have drifted.
     # `or 5` before the coercion, not after: a falsy `nudge_every` has always

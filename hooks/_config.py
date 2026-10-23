@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import sys
 from pathlib import Path
 
 DEFAULTS: dict[str, object] = {
@@ -95,10 +96,46 @@ def load_config(proj: Path) -> dict[str, object]:
     local = proj / ".claude" / "codebase-kg.local.md"
     try:
         if local.is_file():
-            cfg.update(_parse_frontmatter(local.read_text(encoding="utf-8")))
-    except OSError:
+            parsed = _parse_frontmatter(local.read_text(encoding="utf-8-sig"))
+            if "kg_path" in parsed and "graph_path" not in parsed:
+                parsed["graph_path"] = parsed["kg_path"]
+            cfg.update(parsed)
+    except (OSError, ValueError):
         pass
     return cfg
+
+
+def as_local_path(raw: str) -> Path:
+    """`/c/Users/...` is how Git Bash writes `C:/Users/...`."""
+    m = re.match(r"^/([A-Za-z])/(.*)$", raw)
+    if sys.platform == "win32" and m:
+        return Path(f"{m.group(1)}:/{m.group(2)}")
+    return Path(raw)
+
+
+_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def strip_heredocs(command: str) -> str:
+    """The command with every heredoc body removed.
+
+    A heredoc body is data, not commands — a commit message that discusses
+    `grep` is not a search. An unterminated one swallows the rest, which errs
+    toward not gating.
+    """
+    lines = command.splitlines()
+    kept: list[str] = []
+    i = 0
+    while i < len(lines):
+        kept.append(lines[i])
+        match = _HEREDOC.search(lines[i])
+        i += 1
+        if match:
+            delim = match.group(2)
+            while i < len(lines) and lines[i].strip() != delim:
+                i += 1
+            i += 1  # the closing delimiter is not a command either
+    return "\n".join(kept)
 
 
 def find_graph(proj: Path, cfg: dict[str, object]) -> Path | None:

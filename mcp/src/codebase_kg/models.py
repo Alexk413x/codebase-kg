@@ -12,9 +12,16 @@ duplicated git and was the entire source of the old maintenance burden.
 
 from __future__ import annotations
 
+import posixpath
 from dataclasses import dataclass, field
 
 from .links import ExternalLink
+
+
+def posix_path(path: str) -> str:
+    """`path` with forward slashes and no `.`, `..` or doubled separators in the middle."""
+    out = path.replace("\\", "/")
+    return posixpath.normpath(out) if out else out
 
 
 @dataclass(frozen=True)
@@ -40,8 +47,9 @@ class Anchor:
         # In __post_init__ rather than in parse(), so direct construction
         # normalizes too — otherwise the invariant would hold only for anchors
         # that happened to come from text.
-        if "\\" in self.path:
-            object.__setattr__(self, "path", self.path.replace("\\", "/"))
+        normalized = posix_path(self.path)
+        if normalized != self.path:
+            object.__setattr__(self, "path", normalized)
 
     @classmethod
     def parse(cls, text: str) -> Anchor:
@@ -81,7 +89,7 @@ class Reference:
     def __post_init__(self) -> None:
         for name in ("url", "kind", "title"):
             object.__setattr__(self, name, str(getattr(self, name) or "").strip())
-        path = (self.path or "").strip().replace("\\", "/") or None
+        path = posix_path((self.path or "").strip()) or None
         object.__setattr__(self, "path", path)
         object.__setattr__(self, "symbol", (self.symbol or "").strip() or None)
 
@@ -166,6 +174,17 @@ class Node:
     # Where the platform facts this node depends on are documented. In author
     # order, like anchors.
     references: list[Reference] = field(default_factory=list)
+
+    def tidy_parity_fields(self) -> None:
+        """Make an empty parity field `None` and the counterpart path posix-separated.
+
+        The CHECK constraints test `IS NULL`, so an empty string is a value to
+        SQL and absent to `clean.parity_problems`; settling it first keeps the
+        two answers the same.
+        """
+        self.parity = (self.parity or "").strip() or None
+        self.counterpart = (self.counterpart or "").strip().replace("\\", "/") or None
+        self.divergence = (self.divergence or "").strip() or None
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {

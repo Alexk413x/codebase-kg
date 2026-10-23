@@ -49,7 +49,7 @@ def read_any_version(path: Path) -> tuple[int, Meta, list[Node], dict[str, str]]
     `source` table) and a v3 one both read through the same path.
     """
     try:
-        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
     except sqlite3.Error as exc:
         raise UpgradeError(f"cannot open {path}: {exc}") from exc
     conn.row_factory = sqlite3.Row
@@ -167,6 +167,13 @@ def main(argv: list[str] | None = None) -> int:
         version, meta, nodes, sources = read_any_version(target)
     except UpgradeError as exc:
         sys.stderr.write(f"[codebase-kg] {exc}\n")
+        return 1
+
+    if version > SCHEMA_VERSION:
+        sys.stderr.write(
+            f"[codebase-kg] {target} is schema v{version}, newer than the v{SCHEMA_VERSION} "
+            "this version writes; update the plugin. Nothing was written.\n"
+        )
         return 1
 
     if version == SCHEMA_VERSION and not (args.covers or args.exempt or args.force):

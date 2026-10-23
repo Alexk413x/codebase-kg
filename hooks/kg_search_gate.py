@@ -59,11 +59,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _config import (
     DEFAULTS,
     IGNORE_DIRS,
+    as_local_path,
     find_graph,
     graph_meta,
     is_anchored,
     load_config,
     project_dir,
+    strip_heredocs,
 )
 
 _SEARCH_TOOLS = {"Grep", "Glob"}
@@ -339,31 +341,6 @@ NON_SOURCE_BUNDLES = (
 )
 
 
-_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
-
-
-def strip_heredocs(command: str) -> str:
-    """The command with every heredoc body removed.
-
-    A heredoc body is data, not commands — a commit message that discusses
-    `grep` is not a search. An unterminated one swallows the rest, which errs
-    toward not gating.
-    """
-    lines = command.splitlines()
-    kept: list[str] = []
-    i = 0
-    while i < len(lines):
-        kept.append(lines[i])
-        match = _HEREDOC.search(lines[i])
-        i += 1
-        if match:
-            delim = match.group(2)
-            while i < len(lines) and lines[i].strip() != delim:
-                i += 1
-            i += 1  # the closing delimiter is not a command either
-    return "\n".join(kept)
-
-
 def _split_clauses(command: str) -> list[tuple[str, bool]]:
     """Each clause of a shell command, with whether its stdin is a pipe.
 
@@ -436,6 +413,10 @@ def _split_clauses(command: str) -> list[tuple[str, bool]]:
     return out
 
 
+class _Quoted(str):
+    """A token that was quoted, so `"<Button"` is a pattern and not a redirect."""
+
+
 def _tokens(clause: str) -> list[str]:
     """Best-effort argv, with quotes stripped.
 
@@ -451,31 +432,28 @@ def _tokens(clause: str) -> list[str]:
     out: list[str] = []
     for tok in toks:
         if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in "\"'":
-            tok = tok[1:-1]
+            tok = _Quoted(tok[1:-1])
         out.append(tok)
     return out
 
 
-def _effective_cwd(command: str, proj: Path) -> Path:
-    """Where the search actually runs, following a leading `cd`.
+def _after_cd(toks: list[str], cwd: Path) -> Path:
+    """Where the next clause runs: a `cd` moves later clauses, never earlier ones.
 
     The hook is told the SESSION's directory, which is not where a command that
     starts `cd elsewhere && ...` looks. Without this the gate denied searches of
     unrelated repos using this repo's graph — an answer the graph could not have
     given.
     """
-    cwd = proj
-    for clause, _piped in _split_clauses(command):
-        toks = _tokens(clause)
-        if len(toks) >= 2 and toks[0] == "cd":
-            candidate = Path(toks[1]).expanduser()
-            if not candidate.is_absolute():
-                candidate = cwd / candidate
-            try:
-                cwd = candidate.resolve()
-            except OSError:
-                return cwd
-    return cwd
+    if len(toks) < 2 or toks[0] != "cd":
+        return cwd
+    candidate = as_local_path(toks[1]).expanduser()
+    if not candidate.is_absolute():
+        candidate = cwd / candidate
+    try:
+        return candidate.resolve()
+    except OSError:
+        return cwd
 
 
 class SearchClause:
@@ -551,13 +529,14 @@ def _is_unexpanded(raw: str) -> bool:
 def parse_shell_search(command: str, proj: Path) -> ShellSearch | None:
     """What a shell command searches, or None if it is not a search at all."""
     command = strip_heredocs(command)
-    cwd = _effective_cwd(command, proj)
+    cwd = proj
     out = ShellSearch()
     found_search = False
     for clause, piped in _split_clauses(command):
         toks = _tokens(clause)
         if not toks:
             continue
+        cwd = _after_cd(toks, cwd)
         word = toks[0].lower().lstrip("./\\")
         if word == "sudo" and len(toks) > 1:
             toks = toks[1:]
@@ -598,7 +577,7 @@ def parse_shell_search(command: str, proj: Path) -> ShellSearch | None:
                 continue
             if _REDIRECT_DUP.match(tok):
                 continue  # e.g. "2>&1" — duplicates a descriptor, names no path
-            redirect = _REDIRECT_OP.match(tok)
+            redirect = None if isinstance(tok, _Quoted) else _REDIRECT_OP.match(tok)
             if redirect:
                 if redirect.end() == len(tok):
                     skip_next = True  # bare operator; the NEXT token is its target
@@ -665,7 +644,7 @@ def parse_shell_search(command: str, proj: Path) -> ShellSearch | None:
             # reading it literally instead joined it under `cwd`, turning an
             # out-of-repo search into a bogus path this project's gate then
             # claimed as its own.
-            p = Path(raw).expanduser()
+            p = as_local_path(raw).expanduser()
             clause_out.targets.append(p if p.is_absolute() else cwd / p)
     return out if found_search else None
 
@@ -737,7 +716,7 @@ def clause_is_exempt(clause: SearchClause, cfg: dict[str, object]) -> bool:
 
 
 def shell_search_is_gated(
-    command: str, proj: Path, cfg: dict[str, object] | None = None
+    command: str, proj: Path, cfg: dict[str, object] | None = None, root: str = ""
 ) -> bool:
     """Is this shell command a search of THIS repo with no file named yet?
 
@@ -771,13 +750,9 @@ def shell_search_is_gated(
     ]
     if not targets:
         return False  # no path operand: reading stdin, not the tree
-    inside: list[Path] = []
-    for t in targets:
-        try:
-            t.resolve().relative_to(proj)
-        except (ValueError, OSError):
-            continue  # outside this repo — not ours to gate
-        inside.append(t)
+    # Outside this repo, outside the graph's `root`, or in an ignored dir: not
+    # ours to gate.
+    inside = [t for t in targets if _reaches_mapped_code(t, proj, root)]
     if not inside:
         return False
     # Every in-repo target already names a file → located. A directory, or a
@@ -805,6 +780,10 @@ def searches_mapped_code(
     candidate = Path(raw).expanduser()
     if not candidate.is_absolute():
         candidate = proj / candidate
+    return _reaches_mapped_code(candidate, proj, root)
+
+
+def _reaches_mapped_code(candidate: Path, proj: Path, root: str) -> bool:
     try:
         rel = candidate.resolve().relative_to(proj)
     except (ValueError, OSError):
@@ -931,7 +910,7 @@ def _run(data: dict[str, object]) -> None:
     # does it already name the file.
     if tool in _SHELL_TOOLS:
         command = tool_input.get("command")
-        if not isinstance(command, str) or not shell_search_is_gated(command, proj, cfg):
+        if not isinstance(command, str) or not shell_search_is_gated(command, proj, cfg, root):
             return
     else:
         if not searches_mapped_code(tool_input, proj, root):

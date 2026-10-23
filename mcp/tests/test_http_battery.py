@@ -188,11 +188,11 @@ def test_the_cwd_header_needs_no_roots(front: dict[str, Any]) -> None:
     assert data["count"] == 1
 
 
-def test_a_root_that_is_not_a_file_asks_again(front: dict[str, Any]) -> None:
+def test_a_root_that_is_not_a_file_is_refused(front: dict[str, Any]) -> None:
     reply = _req(front, "tools/call", {"name": "kg_search", "arguments": {"query": "x"},
                                        "inputResponses": {ROOTS_KEY: {"roots": [{"uri": "https://x/"}]}}},
                  headers={"x-codebase-kg-client": "c3"})
-    _input_required(reply)
+    _tool_error(reply)
 
 
 @pytest.mark.parametrize(("name", "args"), [

@@ -37,6 +37,8 @@ def status(port: int) -> dict[str, object]:
         return {"ok": True, "port": port, "running": False}
     if kind == shim.OTHER:
         return {"ok": False, "port": port, "error": f"port {port} belongs to another program"}
+    if kind == shim.UNRESPONSIVE:
+        return {"ok": False, "port": port, "error": f"port {port} accepts connections but did not answer /health"}
     return {"ok": True, "port": port, "running": True, **{k: reply.get(k) for k in ("build", "pid", "max_workers")}}
 
 

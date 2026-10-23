@@ -52,7 +52,14 @@ def serve_lines(
                 pass
 
     def call(msg: dict[str, Any]) -> None:
-        reply = core.classic(engine, conn, msg)
+        try:
+            reply = core.classic(engine, conn, msg)
+        except Exception:
+            logger.exception("request failed")
+            reply = None if "id" not in msg else {
+                "jsonrpc": "2.0", "id": msg["id"],
+                "error": {"code": core.INTERNAL_ERROR, "message": "Internal error"},
+            }
         if reply is not None:
             write(reply)
 
@@ -94,7 +101,9 @@ def accept(line: bytes, token: str, version: str) -> resolve.Connection:
     if not isinstance(hello, dict):
         raise ValueError("malformed handshake")  # noqa: TRY004 - callers catch ValueError
     offered = hello.get("token")
-    if not isinstance(offered, str) or not hmac.compare_digest(offered, token):
+    if not isinstance(offered, str) or not hmac.compare_digest(
+        offered.encode("utf-8", "surrogatepass"), token.encode("utf-8", "surrogatepass"),
+    ):
         raise ValueError("bad token")
     if hello.get("version") != version:
         raise ValueError(f"version mismatch: server is {version}, client is {hello.get('version')}")

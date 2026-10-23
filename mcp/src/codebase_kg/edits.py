@@ -38,6 +38,7 @@ that kept one would make the next `/codebase-kg:refresh` fail.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
 import shutil
 import sqlite3
@@ -208,6 +209,7 @@ def apply(path: str | Path, mutate: Mutate) -> dict[str, Any]:
     tmp = Path(tmp_name)
     try:
         shutil.copyfile(target, tmp)
+        copied = hashlib.sha256(tmp.read_bytes()).digest()
         conn = sqlite3.connect(str(tmp))
         try:
             conn.row_factory = sqlite3.Row
@@ -237,6 +239,15 @@ def apply(path: str | Path, mutate: Mutate) -> dict[str, Any]:
             raise EditError(
                 "the edit is valid SQL but breaks the graph, so it was rolled back. "
                 "New findings: " + "; ".join(new)
+            )
+        try:
+            current = hashlib.sha256(target.read_bytes()).digest()
+        except OSError:
+            current = None
+        if current != copied:
+            raise EditError(
+                f"{target} changed while the edit was running, so it was not written. "
+                "Run the edit again."
             )
         try:
             writer.replace_file(tmp, target)
@@ -412,7 +423,7 @@ def _parse_anchors(raw: object, node_id: str) -> list[Anchor]:
         if isinstance(item, str):
             out.append(Anchor.parse(item))
         elif isinstance(item, Mapping):
-            path = str(item.get("path", "")).strip()
+            path = str(item.get("path") or "").strip()
             symbol = item.get("symbol")
             out.append(Anchor(path=path, symbol=str(symbol) if symbol else None))
         else:
@@ -480,6 +491,7 @@ def _merge(current: Node | None, patch: Mapping[str, Any]) -> Node:
             setattr(merged, name, None if name in {"parity", "counterpart", "divergence"} else "")
         else:
             setattr(merged, name, str(value))
+    merged.tidy_parity_fields()
     if "anchors" in patch:
         merged.anchors = _parse_anchors(patch["anchors"] or [], node_id)
     if "edges" in patch:

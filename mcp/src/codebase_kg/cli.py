@@ -14,6 +14,7 @@ carry an env var.
 
 from __future__ import annotations
 
+import codecs
 import sys
 from pathlib import Path
 from typing import TextIO
@@ -51,6 +52,28 @@ def use_utf8(*streams: TextIO) -> None:
             reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, OSError, ValueError):
             continue
+
+
+def decode_text(data: bytes) -> str:
+    """Decode UTF-8, with or without a BOM, or UTF-16 when it opens with a BOM.
+
+    PowerShell redirection writes UTF-16 with a BOM, and an editor may add a
+    UTF-8 one; neither is a reason to fail or to read mojibake.
+    """
+    if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return data.decode("utf-16")
+    return data.decode("utf-8-sig")
+
+
+def read_stdin() -> str:
+    """All of stdin as text, decoded by `decode_text` and not by the console code page.
+
+    On Windows a piped stdin decodes as cp1252, which turns UTF-8 input into mojibake.
+    """
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is None:
+        return sys.stdin.read()
+    return decode_text(buffer.read())
 
 
 def write_out(text: str) -> None:

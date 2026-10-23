@@ -66,10 +66,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("args", nargs="?", help="JSON object of arguments (default: read stdin, or none)")
     ns = ap.parse_args(argv)
 
-    raw = ns.args if ns.args is not None else ("" if sys.stdin.isatty() else sys.stdin.read())
     try:
+        raw = ns.args if ns.args is not None else ("" if sys.stdin.isatty() else cli.read_stdin())
         call_args = json.loads(raw) if raw.strip() else {}
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:
         return _fail(f"arguments are not JSON: {exc}")
     if not isinstance(call_args, dict):
         return _fail("arguments must be a JSON object")

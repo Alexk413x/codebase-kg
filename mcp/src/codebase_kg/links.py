@@ -371,6 +371,10 @@ def peer_node_table(con: sqlite3.Connection) -> str | None:
     return None
 
 
+def _quote(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
 def resolve(knowledge_dir: str | Path, target: str) -> Resolution:
     """Follow a link into its peer graph and report what was found there.
 
@@ -386,7 +390,7 @@ def resolve(knowledge_dir: str | Path, target: str) -> Resolution:
     if not peer.is_file():
         return Resolution.PEER_ABSENT
     try:
-        con = sqlite3.connect(f"file:{peer.as_posix()}?mode=ro", uri=True)
+        con = sqlite3.connect(f"{peer.resolve().as_uri()}?mode=ro", uri=True)
     except sqlite3.Error:
         return Resolution.PEER_UNREADABLE
     try:
@@ -394,7 +398,7 @@ def resolve(knowledge_dir: str | Path, target: str) -> Resolution:
         if table is None:
             return Resolution.PEER_UNREADABLE
         row = con.execute(
-            f"SELECT 1 FROM {table} WHERE id = ?",  # name from the peer's own schema
+            f"SELECT 1 FROM {_quote(table)} WHERE id = ?",
             (node_id,),
         ).fetchone()
     except sqlite3.Error:

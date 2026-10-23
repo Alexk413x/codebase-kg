@@ -336,9 +336,9 @@ def kg_parity_gaps(
         if wanted is not None:
             s = wanted
             if s == "only":
-                if not n.parity.endswith("-only"):
+                if not n.parity.lower().endswith("-only"):
                     continue
-            elif s != n.parity:
+            elif s != n.parity.lower():
                 continue
         gaps.append(
             {
@@ -424,8 +424,13 @@ def _word_pattern(segment: str) -> re.Pattern[str]:
     `re`'s internal cache holds 512 patterns; a graph with more distinct symbols
     than that recompiles on every anchor. An explicit memo keeps the hot loop of
     `kg_validate` compiling each symbol once.
+
+    A boundary applies only at an end that is a word character: `\\b` before
+    `@Model` or after `operator==` could never match.
     """
-    return re.compile(r"\b" + re.escape(segment) + r"\b")
+    head = r"\b" if re.match(r"\w", segment[0]) else ""
+    tail = r"\b" if re.match(r"\w", segment[-1]) else ""
+    return re.compile(head + re.escape(segment) + tail)
 
 
 def _symbol_in_source(symbol: str, src: str) -> bool:

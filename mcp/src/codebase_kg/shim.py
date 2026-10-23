@@ -194,21 +194,39 @@ def http_token(create: bool = False) -> str | None:
     if token or not create:
         return token or None
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        return http_token()
     token = secrets.token_hex(32)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(token)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(token)
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            existing = http_token()
+            if existing:
+                return existing
+            os.replace(tmp, path)
+        except OSError:
+            # A filesystem without hard links.
+            os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
     return token
 
 
-FREE, OURS, OTHER = "free", "codebase-kg", "other"
+FREE, OURS, OTHER, UNRESPONSIVE = "free", "codebase-kg", "other", "unresponsive"
 
 
 def health(port: int, timeout: float = 1.0) -> tuple[str, dict[str, Any]]:
-    """What answers `GET /health` on the port: `free`, `codebase-kg` with its reply, or `other`."""
+    """What answers `GET /health` on the port.
+
+    `free`, `codebase-kg` with its reply, `unresponsive` for a listener that accepts the
+    connection and then times out, or `other` for anything else.
+    """
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     try:
         # Windows retries a refused loopback connect for about a second rather than
@@ -222,8 +240,8 @@ def health(port: int, timeout: float = 1.0) -> tuple[str, dict[str, Any]]:
         conn.request("GET", "/health", headers={"Host": f"127.0.0.1:{port}"})
         response = conn.getresponse()
         body = response.read(_CHUNK)
-    except ConnectionRefusedError:
-        return FREE, {}
+    except socket.timeout:
+        return UNRESPONSIVE, {}
     except (OSError, http.client.HTTPException):
         return OTHER, {}
     finally:
@@ -404,6 +422,8 @@ def sessions_dir() -> Path:
     return cache_dir() / "sessions"
 
 
+_REPLACE_TRIES = 50
+_REPLACE_WAIT = 0.02
 _SESSION_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z_.\-]{0,63}")
 
 
@@ -420,6 +440,13 @@ def register_session(session: str, pid: int | None) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps({"pid": pid, "at": time.time()}), encoding="utf-8")
+    for _ in range(_REPLACE_TRIES):
+        try:
+            os.replace(tmp, path)
+            return True
+        except PermissionError:
+            # Windows refuses to replace a file another process has open, such as the server listing sessions.
+            time.sleep(_REPLACE_WAIT)
     os.replace(tmp, path)
     return True
 
@@ -428,11 +455,15 @@ def unregister_session(session: str) -> bool:
     path = _session_file(session)
     if path is None:
         return False
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return False
-    return True
+    for _ in range(_REPLACE_TRIES):
+        try:
+            path.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+        except PermissionError:
+            time.sleep(_REPLACE_WAIT)
+    return False
 
 
 def live_sessions() -> list[str]:
@@ -510,7 +541,10 @@ def _take_lock(build: str) -> bool:
     except FileExistsError:
         try:
             abandoned = time.time() - lock.stat().st_mtime > max(CONNECT_BUDGET, SPAWN_BUDGET) * 2
-        except OSError:
+            if not abandoned:
+                holder = lock.read_text(encoding="utf-8").strip()
+                abandoned = holder.isdigit() and not pid_alive(int(holder))
+        except (OSError, ValueError):
             return False
         if abandoned:
             try:
@@ -939,16 +973,21 @@ class Relay:
             link.set_timeout(None)
         except OSError:
             return False
-        with self._lock:
-            queued, self._queue = self._queue, []
-            try:
+        while True:
+            with self._lock:
+                queued, self._queue = self._queue, []
                 for line, messages in queued:
                     self._record(line, messages)
+                if not queued:
+                    self._link = link
+                    closing = self._eof.is_set()
+                    break
+            try:
+                for line, _ in queued:
                     link.send(line)
-            except OSError:
+            except (OSError, ValueError):
+                # A dead link ends the read loop, which answers every recorded request with an error.
                 pass
-            self._link = link
-            closing = self._eof.is_set()
         if closing:
             link.close_write()
         return True

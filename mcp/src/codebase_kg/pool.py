@@ -208,10 +208,12 @@ class Pool:
             while True:
                 if self._closed:
                     raise WorkerError("codebase-kg worker pool is shut down")
-                if self._idle:
+                while self._idle:
                     worker = self._idle.pop()
-                    self._busy.add(worker)
-                    return worker
+                    if worker.proc.poll() is None:
+                        self._busy.add(worker)
+                        return worker
+                    worker.kill()
                 if len(self._busy) + self._starting < self.limit:
                     self._starting += 1
                     break
