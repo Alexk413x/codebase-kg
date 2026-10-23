@@ -23,7 +23,7 @@ import kg_search_gate as gate
 RUNNER = ROOT / "mcp" / "launch" / "kg_cli.py"
 
 
-def _manifest(folder: str) -> dict[str, object]:
+def _manifest(folder: str) -> dict[str, Any]:
     return json.loads((ROOT / folder / "plugin.json").read_text(encoding="utf-8"))
 
 
@@ -198,7 +198,7 @@ def codex_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return proj
 
 
-def _codex(proj: Path, tool: str, tool_input: dict[str, Any], **extra: Any) -> dict[str, Any] | None:
+def _codex(proj: Path, tool: str, tool_input: dict[str, Any], **extra: Any) -> dict[str, Any]:
     payload = {
         "hook_event_name": "PreToolUse", "model": "m", "permission_mode": "bypassPermissions",
         "session_id": "s", "turn_id": "t", "tool_use_id": f"u-{tool}-{len(str(tool_input))}",
@@ -220,6 +220,7 @@ def _decision(result: dict[str, Any] | None) -> str | None:
 
 def test_a_codex_shell_search_is_denied(codex_repo: Path, capsys: pytest.CaptureFixture[str]):
     result = _gate(_codex(codex_repo, "Bash", {"command": "grep -rn Ranker src"}), capsys)
+    assert result is not None
     assert _decision(result) == "deny"
     assert "committed code graph" in result["hookSpecificOutput"]["permissionDecisionReason"]
 
@@ -240,6 +241,7 @@ def test_a_codex_subagent_search_gets_advice_not_a_denial(
         codex_repo, "Bash", {"command": "grep -rn Ranker src"}, agent_id="a1", agent_type="worker"
     )
     result = _gate(payload, capsys)
+    assert result is not None
     assert _decision(result) is None
     assert "committed code graph" in result["hookSpecificOutput"]["additionalContext"]
 
