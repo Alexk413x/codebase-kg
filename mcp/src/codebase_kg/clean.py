@@ -27,7 +27,11 @@ from .schema import MAX_DESCRIPTION
 # The trailing `(?:/\d+)*` catches the range shorthand real graphs use —
 # `ACME-305/306/308` is three tickets, and matching only the first left `(/306/308)`
 # behind as debris.
-_TICKET = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d+(?:/\d+)*\b")
+# The lookahead skips standard names that share the shape (`SHA-256`, `UTF-8`).
+_TICKET = re.compile(
+    r"\b(?!(?:SHA\d*|MD\d|UTF|ISO|AES|RSA|CRC\d*|TLS|SSL|UTC|GMT|WGS|IPV|ECMA)-)"
+    r"[A-Z][A-Z0-9]{1,9}-\d+(?:/\d+)*\b"
+)
 
 # Dates in the shapes that show up in hand-written prose.
 _DATE = re.compile(

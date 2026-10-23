@@ -29,6 +29,7 @@ from .schema import (
     split_identifier,
 )
 
+_LEADING_DOT_SLASH = re.compile(r"^(?:\./|/)+")
 _WORD = re.compile(r"[A-Za-z0-9]+")
 # Shortest token that is worth matching as a prefix (see `search_ids`).
 _MIN_PREFIX = 3
@@ -391,7 +392,7 @@ class CodeGraph:
         applying the suffix rule to those few rows gives the same answers as
         `path LIKE '%/needle'` without that pattern's full scan of `anchor`.
         """
-        needle = path.replace("\\", "/").strip().lstrip("./")
+        needle = _LEADING_DOT_SLASH.sub("", path.replace("\\", "/").strip())
         rows = self._q(
             "SELECT node_id, path, symbol FROM anchor WHERE base = ? ORDER BY node_id, ord",
             (needle.rsplit("/", 1)[-1],),

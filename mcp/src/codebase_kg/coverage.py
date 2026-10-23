@@ -163,6 +163,7 @@ class CoverageReport:
     declared: bool = False
     covered: int = 0
     gaps: list[str] = field(default_factory=list)
+    gap_total: int = 0
     exempt: int = 0
     out_of_scope: int = 0
     truncated: bool = False
@@ -171,7 +172,7 @@ class CoverageReport:
         d: dict[str, object] = {
             "declared": self.declared,
             "covered": self.covered,
-            "gap_count": len(self.gaps),
+            "gap_count": self.gap_total,
             "gaps": self.gaps,
             "exempt": self.exempt,
             "out_of_scope": self.out_of_scope,
@@ -218,10 +219,12 @@ def classify(
             report.covered += 1
         elif matches_any(rel, exempt_re):
             report.exempt += 1
-        elif len(report.gaps) < limit:
-            report.gaps.append(rel)
         else:
-            report.truncated = True
+            report.gap_total += 1
+            if len(report.gaps) < limit:
+                report.gaps.append(rel)
+            else:
+                report.truncated = True
     return report
 
 

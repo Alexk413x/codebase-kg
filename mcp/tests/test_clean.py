@@ -95,3 +95,9 @@ def test_scrub_empty_is_empty() -> None:
 def test_scrub_leaves_already_clean_text_untouched() -> None:
     text = "Ranks the feed by freshness and per-source weight."
     assert clean.scrub(text) == (text, [])
+
+
+def test_standard_names_are_not_tickets() -> None:
+    text = "Encodes as UTF-8 and hashes with SHA-256."
+    assert clean.problems(text) == []
+    assert clean.scrub(text) == (text, [])

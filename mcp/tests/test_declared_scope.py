@@ -211,3 +211,11 @@ def test_pre_push_ignore_dirs_still_apply_without_a_declaration() -> None:
     # No `covers` → the extension deny-list and IGNORE_DIRS are all there is.
     assert not kg_pre_push.is_source(".githooks/pre-push", root="", graph_rel=None)
     assert kg_pre_push.is_source("src/Main.kt", root="", graph_rel=None)
+
+
+def test_gap_count_counts_every_gap_past_the_listing_cap() -> None:
+    files = [f"src/F{i}.kt" for i in range(60)]
+    report = classify(files, set(), ["src/*.kt"], [], limit=50)
+    assert len(report.gaps) == 50
+    assert report.truncated
+    assert report.to_dict()["gap_count"] == 60

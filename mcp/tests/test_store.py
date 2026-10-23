@@ -194,6 +194,22 @@ def test_by_path_returns_the_matching_anchors(sample_db: Path) -> None:
         g.close()
 
 
+def test_by_path_keeps_the_dot_in_a_dot_directory(tmp_path: Path) -> None:
+    db = tmp_path / "code_graph.db"
+    node = Node(
+        id="ci", kind="Workflow", description="Runs the checks.",
+        anchors=[Anchor(".github/workflows/ci.yml", "ci")],
+    )
+    build(db, Meta(codebase="test", root="", generated="2026-08-01"), [node])
+    g = CodeGraph(db)
+    try:
+        assert [n.id for n, _ in g.by_path(".github/workflows/ci.yml")] == ["ci"]
+        assert [n.id for n, _ in g.by_path("./.github/workflows/ci.yml")] == ["ci"]
+        assert g.by_path("../workflows/ci.yml") == []
+    finally:
+        g.close()
+
+
 def test_similar_ids_suggests_on_a_partial(sample_db: Path) -> None:
     g = CodeGraph(sample_db)
     try:

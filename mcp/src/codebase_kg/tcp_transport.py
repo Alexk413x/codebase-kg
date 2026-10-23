@@ -59,10 +59,10 @@ def serve_lines(
     while True:
         raw = lines.readline(MAX_MESSAGE)
         if not raw:
-            return
+            break
         if not raw.endswith(b"\n") and len(raw) >= MAX_MESSAGE:
             logger.warning("a message over %d bytes; closing the session", MAX_MESSAGE)
-            return
+            break
         if not raw.strip():
             continue
         try:
