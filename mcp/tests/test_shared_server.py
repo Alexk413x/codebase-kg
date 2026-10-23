@@ -606,7 +606,7 @@ def test_a_shim_of_another_build_does_not_reuse_a_running_daemon(
         spawned.append(build)
         return Exited()
 
-    monkeypatch.setattr(shim, "spawn_server", spawn)
+    monkeypatch.setattr(shim, "spawn_server_detached", spawn)
     hello = {"version": other, "cwd": str(tmp_path), "graph_path": None}
     try:
         assert shim.shared_connection(other, hello, budget=5) is None
@@ -875,7 +875,7 @@ def test_a_shim_that_spawned_the_server_waits_past_the_connect_budget(
         def poll(self) -> None:
             return None
 
-    monkeypatch.setattr(shim, "spawn_server", lambda build: _Running())
+    monkeypatch.setattr(shim, "spawn_server_detached", lambda build: _Running())
     monkeypatch.setattr(shim, "SPAWN_BUDGET", 1.0)
     ready = object()
     monkeypatch.setattr(

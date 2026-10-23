@@ -125,8 +125,7 @@ def headers(
                 register_agent(shim)
             except OSError:
                 pass
-            spawn = shim.spawn_server_outside_job if sys.platform == "win32" else None
-            _start_hook().ensure_server(shim, START_WAIT, spawn)
+            _start_hook().ensure_server(shim, START_WAIT)
         found = token(shim, port(shim), wait)
     except Exception:  # noqa: BLE001 - any failure means no token header
         found = None

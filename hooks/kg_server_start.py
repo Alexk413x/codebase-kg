@@ -44,7 +44,7 @@ def _serving(shim: Any, port: int, mine: dict[str, Any]) -> bool:
 
 
 def ensure_server(shim: Any, wait: float = WAIT, spawn: Callable[[str], object] | None = None) -> str | None:
-    """Start the server, with `spawn` or `shim.spawn_server`, if it is needed. Returns the line to print, or None."""
+    """Start the server, with `spawn` or `shim.spawn_server_detached`, if it is needed. Returns the line to print, or None."""
     port = shim.http_port()
     mine = shim.build_info()
     kind, theirs = shim.health(port, timeout=0.5)
@@ -60,7 +60,7 @@ def ensure_server(shim: Any, wait: float = WAIT, spawn: Callable[[str], object] 
     locked = shim._take_lock(build)
     try:
         if locked:
-            (spawn or shim.spawn_server)(build)
+            (spawn or shim.spawn_server_detached)(build)
         deadline = time.monotonic() + wait
         while time.monotonic() < deadline:
             if _serving(shim, port, mine):

@@ -581,7 +581,7 @@ def _fake_shim(hook: Any, answers: list[tuple[str, dict[str, Any]]]) -> Any:
     calls = iter(answers)
     last = answers[-1] if answers else ("free", {})
     real.health = lambda port, timeout=1.0: next(calls, last)
-    real.spawn_server = lambda build: spawned.append(build)
+    real.spawn_server_detached = lambda build: spawned.append(build)
     real.spawned = spawned
     return real
 

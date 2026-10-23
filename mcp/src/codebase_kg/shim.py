@@ -632,6 +632,22 @@ def spawn_server_outside_job(build: str) -> None:
         raise OSError(f"WMI could not start the server (Win32_Process.Create returned {done.returncode})")
 
 
+def spawn_server_detached(build: str) -> subprocess.Popen[bytes] | None:
+    """Start the server where no host job can end it, or fall back to `spawn_server`.
+
+    On Windows the WMI start is tried first: a plain child of a host that closes its job
+    with the session leaves no server behind, and the job may refuse breakaway.
+    Returns None when WMI started it, because there is no process handle to poll.
+    """
+    if sys.platform == "win32":
+        try:
+            spawn_server_outside_job(build)
+            return None
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return spawn_server(build)
+
+
 def shared_connection(
     build: str, hello: dict[str, Any], budget: float = CONNECT_BUDGET,
     cancel: threading.Event | None = None,
@@ -659,7 +675,7 @@ def shared_connection(
                 if cancel and cancel.is_set():
                     return None
                 try:
-                    server = spawn_server(build)
+                    server = spawn_server_detached(build)
                 except OSError:
                     return None
                 deadline = max(deadline, time.monotonic() + SPAWN_BUDGET)

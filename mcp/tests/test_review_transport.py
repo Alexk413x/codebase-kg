@@ -419,3 +419,33 @@ def test_unregister_session_gives_up_on_a_file_that_stays_locked(cache: Path, mo
 
     monkeypatch.setattr(Path, "unlink", locked)
     assert not shim.unregister_session("s1")
+
+
+def test_detached_spawn_prefers_the_wmi_start_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(shim, "spawn_server_outside_job", lambda build: calls.append("wmi"))
+    monkeypatch.setattr(shim, "spawn_server", lambda build: calls.append("plain"))
+    assert shim.spawn_server_detached(BUILD) is None
+    assert calls == ["wmi"]
+
+
+@pytest.mark.parametrize("error", [OSError("no WMI"), subprocess.TimeoutExpired("powershell", 1)])
+def test_detached_spawn_falls_back_when_wmi_fails(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
+    started = object()
+
+    def wmi(build: str) -> None:
+        raise error
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(shim, "spawn_server_outside_job", wmi)
+    monkeypatch.setattr(shim, "spawn_server", lambda build: started)
+    assert shim.spawn_server_detached(BUILD) is started
+
+
+def test_detached_spawn_uses_the_plain_start_off_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    started = object()
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(shim, "spawn_server_outside_job", lambda build: pytest.fail("WMI is Windows only"))
+    monkeypatch.setattr(shim, "spawn_server", lambda build: started)
+    assert shim.spawn_server_detached(BUILD) is started
