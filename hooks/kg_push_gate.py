@@ -48,6 +48,9 @@ _COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c[A-Za-z]*$")
 _GIT_OPTS_WITH_VALUE = {"-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 _PUSH_OPTS_WITH_VALUE = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
 _MAX_DEPTH = 3
+_PS_ENV = re.compile(r"\$env:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*", re.IGNORECASE)
+_PS_CD = re.compile(r"(?<![\w-])(?:Set-Location|Push-Location|sl|pushd)(?![\w-])", re.IGNORECASE)
+_PS_CONTINUATION = re.compile(r"`\r?\n")
 
 
 class Push(NamedTuple):
@@ -59,6 +62,19 @@ class Push(NamedTuple):
 def _program(token: str) -> str:
     name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
     return name.removesuffix(".exe")
+
+
+def powershell_to_shell(command: str) -> str:
+    """A PowerShell command rewritten so `find_pushes` can read it.
+
+    `$env:NAME = value` becomes `export NAME=value`, `Set-Location` and its aliases
+    become `cd`, a trailing backtick joins its line, and backslashes become
+    slashes so Windows paths survive the POSIX lexer.
+    """
+    command = _PS_CONTINUATION.sub(" ", command)
+    command = _PS_ENV.sub(lambda m: f"export {m.group(1)}=", command)
+    command = _PS_CD.sub("cd", command)
+    return command.replace("\\", "/")
 
 
 def _segments(command: str) -> list[list[str]]:
@@ -246,7 +262,8 @@ def deny_reason(stale: list[str], graph_rel: str) -> str:
 
 
 def _run(data: dict[str, object]) -> None:
-    if data.get("tool_name") != "Bash":
+    tool = data.get("tool_name")
+    if tool not in ("Bash", "PowerShell"):
         return
     tool_input = data.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
@@ -257,7 +274,7 @@ def _run(data: dict[str, object]) -> None:
     cwd = data.get("cwd")
     base = Path(cwd) if isinstance(cwd, str) and cwd else Path.cwd()
     try:
-        pushes = find_pushes(command, base)
+        pushes = find_pushes(powershell_to_shell(command) if tool == "PowerShell" else command, base)
     except ValueError:
         return
     checked: dict[Path, tuple[list[str], str] | None] = {}

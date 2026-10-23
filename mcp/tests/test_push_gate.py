@@ -374,3 +374,42 @@ def test_an_unreadable_graph_allows_the_push(
     payload = {"tool_name": "Bash", "tool_input": {"command": "git push"}, "cwd": str(repo)}
     _run_main(monkeypatch, json.dumps(payload))
     assert capsys.readouterr().out == ""
+
+
+def _ps(command: str, cwd: Path, capsys: pytest.CaptureFixture) -> str:
+    payload = {"tool_name": "PowerShell", "tool_input": {"command": command}, "cwd": str(cwd)}
+    gate._run(payload)
+    return capsys.readouterr().out
+
+
+def test_a_powershell_push_is_denied_when_stale(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    repo = _make_repo(tmp_path, drift=(KNOWN,))
+    out = json.loads(_ps("git push origin main", repo, capsys))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_powershell_env_assignments_travel_with_the_push(tmp_path: Path) -> None:
+    command = gate.powershell_to_shell("$env:KG_STALE_ACK = 3; git push")
+    (push,) = gate.find_pushes(command, tmp_path)
+    assert push.env == {"KG_STALE_ACK": "3"}
+
+
+def test_powershell_set_location_moves_the_push_directory(tmp_path: Path) -> None:
+    command = gate.powershell_to_shell(r"Set-Location pkg\sub; git push")
+    (push,) = gate.find_pushes(command, tmp_path)
+    assert push.cwd == tmp_path / "pkg" / "sub"
+
+
+def test_powershell_backtick_continuation_and_ack(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    repo = _make_repo(tmp_path, drift=(KNOWN,))
+    assert _ps("$env:KG_STALE_ACK = 1\ngit `\n  push origin main", repo, capsys) == ""
+
+
+def test_hooks_json_routes_powershell_git_commands_to_the_push_gate() -> None:
+    config = json.loads((Path(gate.__file__).parent / "hooks.json").read_text(encoding="utf-8"))
+    rules = {h.get("if"): h["command"] for m in config["hooks"]["PreToolUse"] for h in m["hooks"]}
+    assert "kg_push_gate.py" in rules["PowerShell(git *)"]
