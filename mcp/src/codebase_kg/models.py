@@ -37,7 +37,7 @@ def posix_path(path: str) -> str:
 
 @dataclass(frozen=True)
 class Anchor:
-    """A symbol pointer into source: `path#Symbol` (SCHEMA.md §4.1).
+    """A symbol pointer into source: `path#Symbol` (SCHEMA.md §6.1).
 
     `symbol` is None for a whole-file anchor (a manifest, a config file).
 

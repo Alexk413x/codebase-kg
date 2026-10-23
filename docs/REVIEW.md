@@ -117,8 +117,10 @@ diff.
 
 ## File size
 
-Every refresh re-commits the whole file; SQLite does not delta-compress well.
-On a graph of a few hundred nodes that is a few hundred KB per changed refresh —
-noise at the scale of a source repo, but it is monotonic. If it ever matters,
-`git gc --aggressive` packs the history, and the JSON export is always available
-as a smaller archival form.
+Git stores each committed version of the file whole, compressed on its own, until it packs
+the repository. Packing (`git gc`, or a push) delta-compresses a version against earlier ones.
+In a test with a generated 500-node graph (a 370 KB file), a second version with five changed
+descriptions added 2.3 KiB to a repository whose first version packed to 58 KiB. A loose,
+unpacked history grows by the full compressed file per commit. If the size ever matters,
+`git gc --aggressive` packs the history, and the JSON export is always available as a smaller
+archival form.

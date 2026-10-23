@@ -45,7 +45,7 @@ These are locked — change them only with a deliberate reason.
 | Question | Decision | Note |
 |---|---|---|
 | **Storage format** | Committed SQLite (`code_graph.db`) | Constant-time open, write-time integrity, persisted FTS5. Supersedes "Markdown-as-source". |
-| **Human readability** | Explicitly a non-goal | The artifact is AI-consumed. It is not read raw and not reviewed in diffs. |
+| **Human readability** | Explicitly a non-goal | The artifact is AI-consumed. It is not read raw. A textconv driver renders it as JSON in `git diff` for review, but no workflow depends on it. |
 | **Plugin name** | `codebase-kg` | Unchanged **on purpose** — see "The rename we didn't do". Skills `/codebase-kg:query\|build\|refresh\|audit\|link\|validate`, plus `setup`, which only the user invokes; MCP server `codebase-kg`. |
 | **MCP tool names** | `kg_*` | Unchanged, same reason. |
 | **Repo layout** | Standalone plugin at root | `.claude-plugin/plugin.json`. It installs from the `alexk413x` marketplace (`Alexk413x/marketplace`), which reads this repo's `release` branch. |
@@ -93,9 +93,9 @@ The artifact is a map of code structure, so the file and schema were renamed
 (`KNOWLEDGE_GRAPH.md` → `code_graph.db`, `summary` → `description`). The rename **stops there**.
 
 The MCP tools stay `kg_*` and the plugin stays `codebase-kg`, because renaming them buys nothing and
-costs a working install. Precedent: the `a11y-plugin` → `accessibility-tools` marketplace rename
-left Acme-iOS pointing at a nonexistent marketplace, silently disabling two plugins until it was
-found weeks later. Renaming `codebase-kg` would repeat that across three repos plus user settings.
+costs a working install. Precedent: an earlier plugin rename left a consuming repo pointing at a
+nonexistent marketplace entry and silently disabled two plugins until someone found it weeks later.
+Renaming `codebase-kg` would repeat that across three repos plus user settings.
 
 ## One server, two transports
 
@@ -133,7 +133,10 @@ A shim sends its cwd in a handshake. Claude Code speaks MCP 2026-07-28 over HTTP
 sessions, and its `headersHelper` runs in the plugin folder, so neither can carry the cwd. Instead
 the helper sends a random client id, and the server answers that client's first tool call with an
 `InputRequiredResult` asking for roots. Claude Code answers with the session's cwd; the server caches
-it under the client id. Measured: the extra round trip costs about 10 ms, once per connection.
+it under the client id. Measured: the extra round trip costs about 10 ms, once per connection. When
+the answer holds no usable local folder (an empty list, or only UNC roots), the server returns an
+error result that tells the client to send an absolute `X-Codebase-KG-Cwd` header. It does not ask
+again.
 
 Two rules follow from Claude Code's behaviour, measured against Claude Code 2.1.293 on 2026-10-07:
 
@@ -142,7 +145,18 @@ Two rules follow from Claude Code's behaviour, measured against Claude Code 2.1.
   tries. The `SessionStart` hook starts the server; Claude Code retries as the hooks finish.
 - **The server must outlive the sessions.** Claude Code sends each call to whatever holds the port
   and never re-runs anything that could start a server mid-session. So a server that holds the HTTP
-  port exits only after 8 hours with no request.
+  port exits after 8 hours with no request, with one exception. The `SessionStart` and `SessionEnd`
+  hooks register each session. Once the server has seen a registered session, it exits when no
+  session has been live, and nothing has used the server, for 300 s (`CODEBASE_KG_SESSION_GRACE`; a
+  negative value turns this off). A server that never saw a registered session, such as one only
+  Codex uses, keeps the 8-hour limit. `kg_cli.py server register`, `unregister` and `sessions`
+  serve an agent that has no hooks.
+
+The server logs how it ends to `server-<build>.log` in its cache directory. The log records each
+signal the server receives, a heartbeat every 10 minutes with the number of calls in flight, the pid
+of the process that started it, and any crash traceback. A log that stops with no exit line means
+something killed the process outright. `kg_cli.py server start` starts a server when none answers and
+waits for it; `server status` and `server stop` check and end it.
 
 The bearer token is one per user and outlives each server, because Claude Code keeps the headers it
 got at connect and sends them to a server that restarted since. It is sent only to a server whose
@@ -222,8 +236,8 @@ Two rules came out of it, and the `setup` skill follows both:
 
 ## Principles carried from the author's existing plugins
 
-- **Advisory by default** (the a11y-plugin rule — hard gates cause workarounds). The one gate is
-  the push check on stale mapped files.
+- **Advisory by default** (hard gates cause workarounds). The one gate is the push check on stale
+  mapped files.
 - **Source over tickets** — the graph is a code mirror, verified against source.
 - **Comprehensive updates** — a partial refresh is what causes drift.
 

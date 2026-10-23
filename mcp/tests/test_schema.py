@@ -98,7 +98,7 @@ def test_orphan_anchor_is_impossible(conn: sqlite3.Connection) -> None:
 
 
 def test_line_number_anchor_is_impossible(conn: sqlite3.Connection) -> None:
-    # SCHEMA.md §4.1 — line numbers are the #1 drift source, so the store
+    # SCHEMA.md §6.1 — line numbers are the #1 drift source, so the store
     # refuses them outright rather than trusting the author to remember.
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(

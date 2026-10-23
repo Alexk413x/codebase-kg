@@ -1,11 +1,12 @@
 # hooks/
 
-Five Claude Code hooks. All ship with the plugin — there is **nothing to install per repo**. The
-first four no-op in a repo with no `knowledge/code_graph.db`; the server start runs in every session.
+Six Claude Code hook scripts. All ship with the plugin — there is **nothing to install per repo**.
+The search gate, the push gate, the post-edit nudge and the unwired-clone notice no-op in a repo with
+no `knowledge/code_graph.db`. The server start and the session end run in every session.
 
 | File | Role |
 |---|---|
-| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob`, on `Bash` and `PowerShell` calls that an `if` rule names as a search (`Bash(grep *)`, `PowerShell(Select-String *)`, one rule per search word), and asynchronously on the codebase-kg MCP tools → `kg_search_gate.py`; `Bash(git *)` calls → `kg_push_gate.py`; PostToolUse on `Edit\|Write` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_server_start.py`, then `kg_session_start.py`. Each hook runs `py -3` when the `py` launcher exists, else `python3`, else `python`. |
+| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob`, on `Bash` and `PowerShell` calls that an `if` rule names as a search (`Bash(grep *)`, `PowerShell(Select-String *)`, one rule per search word), and asynchronously on the codebase-kg MCP tools → `kg_search_gate.py`; `Bash(git *)` calls → `kg_push_gate.py`; PostToolUse on `Edit\|Write` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_server_start.py`, then `kg_session_start.py`; SessionEnd → `kg_session_end.py`. Each hook runs `py -3` when the `py` launcher exists, else `python3`, else `python`. |
 | `codex-hooks.json` | The same hooks for Codex, named by `hooks` in `.codex-plugin/plugin.json`: the search gate and push gate on `Bash`, the credit hook on codebase-kg MCP calls, the nudge on `apply_patch`, and the session notice. It has no `if`, `Grep`, `Glob` or `PowerShell` entry, because Codex ignores `if` and reports shell commands as `Bash`, so each script decides for itself whether a command is a search or a push. It has no server start hook: the `--start` option of `mcp/launch/kg_headers.py`, which the Codex config table runs as its headers helper, or the stdio shim starts the server. `commandWindows` runs `py -3`, `command` runs `python3`. |
 | `kg_search_gate.py` | The gate. Denies a search aimed at mapped code with the instruction to query the graph, and keeps doing it — a query buys credit, a located search is free, a repeat always passes. |
 | `kg_push_gate.py` | The push gate. Denies an agent's `git push` while any mapped file is stale against `HEAD`. |
@@ -13,7 +14,9 @@ first four no-op in a repo with no `knowledge/code_graph.db`; the server start r
 | `kg_server_start.py` | The server start, and the session register. Starts the shared HTTP server when nothing answers on the `server_port` setting, or an older build does, and registers the session. One line only when the port belongs to another program or the server does not come up. |
 | `kg_session_end.py` | The session unregister, on `SessionEnd`. Deletes the session's registry file; prints nothing. |
 | `kg_session_start.py` | The unwired-clone notice. One line when this clone has the committed checkers but no `core.hooksPath` or no `diff.codegraph.textconv`. Prints; never writes. |
-| `_config.py` | Reads `root` from the committed graph's `meta` table (auto-discovers `knowledge/code_graph.db`); a gitignored `.claude/codebase-kg.local.md` may override. Decides what counts as a source file. |
+| `_config.py` | Reads `root`, `covers` and `exempt` from the committed graph's `meta` table (auto-discovers `knowledge/code_graph.db`); a gitignored `.claude/codebase-kg.local.md` may override. Decides what counts as a source file. Holds the helpers the hooks share: state files, the deny output, the `SKIP_KG` test. |
+| `_shell_search.py` | The search gate's shell-command parsing: which clauses of a Bash or PowerShell command are searches, where each looks and for what. The gate decision stays in `kg_search_gate.py`. |
+| `_shim_loader.py` | Loads `mcp/src/codebase_kg/shim.py` by path, for the hooks that start or register with the server. |
 
 ## The search gate (PreToolUse)
 
@@ -37,13 +40,22 @@ Three ways through, each inferred from what the agent actually did:
 
 - **No-ops** when the repo has no graph, when `SKIP_KG` is set, when `search_gate` is `off`, and when
   the search is scoped outside the graph's `root` or into an ignored dir (`node_modules`, `build`, …).
+  An ignored dir stays in scope when a `covers` pattern of the graph can match a file beneath it, at
+  any depth: `build`, `out`, `target`, `dist` and `vendor` do not hide a path that `covers` names. A
+  pattern that opens with a wildcard, such as `**/*.py`, does not bring in `node_modules`, `.venv` or
+  `vendor`.
+- **Allows the search when the server is down.** A denial that nothing can clear strands the agent,
+  because no query buys credit while no server answers. When the gate would deny and nothing answers as
+  codebase-kg on the `server_port` port, it allows the search. It adds one notice per session that names
+  `kg_cli.py server start`.
 - **Leaves non-source searches alone.** A search whose file-name filters can only match files no graph
   anchors — `find -name Info.plist`, `--include='*.xcconfig'`, `Glob **/*.png`, anything scoped
   inside an `.xcodeproj` or `.xcassets` — is not a question for the graph. The list is
   `NON_SOURCE_EXT` in `kg_search_gate.py` plus the repo's `exclude_ext`.
 - **Reads shell commands the way the shell does.** A flag's value (`-A 20`, `--include x`) is not a
   path, and an unexpanded `$VAR` or `$(…)` is no evidence either way, so neither can turn a grep of one
-  known file into a "still hunting" denial.
+  known file into a "still hunting" denial. A heredoc body is data, not a command. The parser lives in
+  `_shell_search.py`.
 - **Fails open.** A malformed payload or an unreadable graph lets the search through. An unwritable
   state file degrades the deny to a **warn**, because the escape hatch lives in that file: a denial
   that cannot be recorded is one a repeat could not be recognised against.
@@ -71,13 +83,19 @@ files with the total count.
 
 - **Detects the push by parsing the command.** It finds `git push` after `&&`, `||`, `;`, `|`, a
   newline, `cd <dir>`, `git -C <dir>`, `git -c k=v`, an env prefix (`SKIP_KG=1 git push`), `env`,
-  `command`, and `bash -c '…'`. `git commit -m "push"`, `git stash push` and `echo git push` are not a
-  push. Claude Code starts the hook only for Bash commands that match `Bash(git *)`.
+  `command`, control keywords such as `if` and `then`, and `bash -c '…'` (also `-lc`).
+  `git commit -m "push"`, `git stash push` and `echo git push` are not a push, and a heredoc body is
+  not scanned. A Git Bash path such as `/c/Users/…` after `cd` or `git -C` resolves to its Windows
+  drive path. Claude Code starts the hook only for Bash commands that match `Bash(git *)` and
+  PowerShell commands that match `PowerShell(git *)`. For PowerShell the hook reads `$env:NAME = value`
+  as an env prefix, `Set-Location` and its aliases as `cd`, and a trailing backtick as a line join.
 - **Uses the pre-push hook's comparison.** The hook loads `git-hooks/kg_pre_push.py` by path and
   compares every anchored file against `HEAD`, so both agree on what is stale.
 - **Ways through.** `SKIP_KG=1`, or `KG_STALE_ACK=<n>` naming the stale count, in the command's env
-  prefix (or an earlier `export`) or in the environment of the Claude Code process. `--no-verify` does
-  not pass: it skips git hooks, and the point is that an agent cannot skip the check silently.
+  prefix (or an earlier `export`) or in the environment of the Claude Code process. A push that only
+  deletes refs (`git push --delete`, `git push origin :branch`) passes, because it publishes no
+  commits. `--no-verify` does not pass: it skips git hooks, and the point is that an agent cannot skip
+  the check silently.
 - **Fails open.** A parse error, an unreadable graph or any other error allows the push. The git hook
   still blocks it.
 - **The agent refreshes.** When this hook denies, the agent runs `/codebase-kg:refresh` in its own
@@ -90,15 +108,19 @@ files with the total count.
 broken). Two signals, strongest first:
 
 1. **The edited file is not anchored by any node.** A fact, not a guess — the map has a hole exactly
-   where you're working. Reported the first time you touch that file, once per file.
+   where you're working. Reported the first time you touch that file, once per file. The graph's
+   `covers` and `exempt` patterns decide whether the file counts as source.
 2. **`nudge_every` edits to already-mapped files** (default 5). A weaker heuristic for descriptions
    drifting.
 
 Also:
 
-- Editing the `code_graph.db` **resets** the counter (you kept it in sync).
-- **No-ops** when the repo has no graph, when `post_edit_nudge: false`, when the edited file is a
-  doc/config (`.md`, `.json`, …) or lives in an ignored dir (`.git`, `node_modules`, `build`, …).
+- The counter **resets** when the graph file changes, whether you edit it or `kg_upsert_node` or the
+  CLI writes it (you kept it in sync).
+- **No-ops** when the repo has no graph, when `post_edit_nudge: false`, and when the edited file is a
+  doc/config (`.md`, `.json`, …) or lives in an ignored dir (`.git`, `node_modules`, `build`, …). The
+  extension and directory lists apply only when the graph declares no `covers`.
+- Does **not** honor `SKIP_KG`. To silence it, set `post_edit_nudge: false`.
 
 Both hooks keep state in the OS temp dir — the nudge keyed by project, the gate by project +
 session. **Nothing is written into the repo.**
@@ -132,8 +154,8 @@ Silent unless **all** of these hold:
   codebase-kg release older than the installed plugin, **or** it names a codebase-kg folder that no
   longer exists. The last two name `/codebase-kg:setup`, which restamps the pin.
 
-And never when `core.hooksPath` already points somewhere other than that dir — that repo made a
-deliberate choice, and nagging it toward clobbering its own config is worse than saying nothing.
+And never when `core.hooksPath` points at a folder that lacks the vendored checkers — that repo made
+a deliberate choice, and nagging it toward clobbering its own config is worse than saying nothing.
 `SKIP_KG` silences it like the rest. Any error exits silently; a session never fails to start
 because of this.
 
@@ -148,14 +170,17 @@ listening by then:
   nothing.
 - When nothing answers, or an older codebase-kg build does, it starts this plugin's server detached,
   under the same lock the shim uses, and waits up to 8 s for `/health` to answer. A newer server
-  takes the port from an older one itself.
+  takes the port from an older one itself. On Windows the hook starts the server through WMI so the
+  host's job object cannot end it with the session, and falls back to a plain detached start.
 - When the port answers as something else, it prints one line naming the `server_port` setting.
 - When the server does not answer in 8 s, it prints one line naming the server's log. The server
   imports only the standard library, so this means it failed to start or the machine is very slow.
 
 The server it starts reads the `max_workers` setting from this hook's environment, once. To apply a
 changed `max_workers`, run `kg_cli.py server stop` and restart Claude Code; the README's
-"Changing `max_workers`" section has the steps.
+"Changing `max_workers`" section has the steps. `kg_cli.py server start` starts the server by hand.
+The server writes `server-<build>.log` in the cache folder. It records the pid that started it, the
+signals it receives, a heartbeat every 10 minutes and a line at exit.
 
 It also registers the session: it writes `sessions/<session_id>.json` in the cache folder with the
 agent's pid, found by walking up from the hook past interpreters and shells. `kg_session_end.py`
@@ -167,7 +192,7 @@ exit and does not prevent it. Codex has no `SessionEnd` hook, so `mcp/launch/kg_
 each Codex session as `codex-<pid>` when it runs with `--start`, and the pid check ends it.
 
 It exits 0 every time and prints nothing when all is well. Stdlib only; it imports
-`mcp/src/codebase_kg/shim.py` by path for the port, the build and the start routine.
+`mcp/src/codebase_kg/shim.py` by path (`_shim_loader.py`) for the port, the build and the start routine.
 
 ## Config — optional per-dev override only (gitignored `.claude/codebase-kg.local.md`)
 
@@ -183,7 +208,8 @@ See `../templates/codebase-kg.local.md.example`.
 | `post_edit_nudge` | `true` | master off-switch for the nudge |
 | `nudge_every` | `5` | edits to mapped files between periodic nudges |
 | `root` | from the graph | only paths under here count |
-| `graph_path` | `knowledge/code_graph.db` | where the graph lives (`kg_path` still read) |
+| `graph_path` | `knowledge/code_graph.db` | where the graph lives (`kg_path` is an alias) |
 
-`SKIP_KG=1` in the environment silences the search gate and the commit-time staleness check for that
-shell, for a change that deliberately outruns the graph.
+`SKIP_KG=1` in the environment silences the search gate, the push gate, the unwired-clone notice and
+the `pre-commit` and `pre-push` checks for that shell, for a change that deliberately outruns the
+graph. It does not silence the post-edit nudge, the server start or the session end.

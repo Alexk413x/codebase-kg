@@ -435,7 +435,7 @@ def _word_pattern(segment: str) -> re.Pattern[str]:
 def _symbol_in_source(symbol: str, src: str) -> bool:
     """True when the anchor's symbol appears in the source.
 
-    A `Type.method` anchor (SCHEMA.md §4.1) rarely appears literally — check
+    A `Type.method` anchor (SCHEMA.md §6.1) rarely appears literally — check
     each dotted segment on its own word boundary instead.
     """
     for seg in symbol.split("."):

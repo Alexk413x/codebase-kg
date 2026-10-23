@@ -32,8 +32,9 @@ Everything here is a question the file cannot answer about itself — it needs t
   "unchanged".
 - **Counterpart problems** — a `counterpart` whose target file or id is missing, or that the peer
   graph doesn't link back to (a reciprocity break — `${CLAUDE_PLUGIN_ROOT}/SCHEMA.md` §9).
-- **External link problems** (`external_link_issues`) — a link that is malformed, or that names a
-  node the peer graph does not contain. Report these: the `error`-severity ones count against `ok`,
+- **External link problems** (`external_link_issues`) — a link that is malformed (not
+  `<db-file>#<node-id>`, or with an absolute `<db-file>` or one that has a `..` segment), or that
+  names a node the peer graph does not contain. Report these: the `error`-severity ones count against `ok`,
   so skipping them lets you report "clean" over a payload that says `ok: false`. The `warning`-
   severity ones (peer absent or unreadable) are unknown, not broken.
 - **Reference problems** (`reference_issues`) — a documentation reference whose `path` or `symbol`
@@ -110,7 +111,7 @@ Counterpart issues (<n>):
 - <node-id>: <not reciprocal | target id not in peer graph | file not found>  → run link
 
 External link issues (<n>):
-- <node-id>: <target> — <malformed | names a node the peer graph does not contain>  → run link
+- <node-id>: <target> — <malformed (including an absolute or `..` path) | names a node the peer graph does not contain>  → run link
 - <node-id>: <target> — peer graph absent or unreadable (unknown, not broken)
 
 Guaranteed by the store (not checked, cannot occur): <echo kg_validate's guaranteed_by_schema
@@ -130,8 +131,9 @@ not mean the descriptions are still true. Say "clean against source as of `<gene
   be resolved to files (wrong `root`, or source not checked out). Say so; don't imply the anchors
   are fine.
 - `coverage.gaps` is capped at 50 entries; `coverage.truncated` is **present only when the cap was
-  hit** — it is not a boolean that is always there. When it is present, report the list as truncated
-  rather than reporting 50 as the total.
+  hit** — it is not a boolean that is always there. `coverage.gap_count` is the full number of gaps,
+  also when the list is capped. When `truncated` is present, report the list as truncated and use
+  `gap_count` as the total, not 50.
 - When `coverage.declared` is false the payload ships its own `coverage.warning`. Quote it rather
   than paraphrasing, so the skill and the tool cannot drift apart.
 - `changed_since_built` is deliberately **not** part of `ok`. A changed file is a prompt to re-read,

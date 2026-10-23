@@ -115,7 +115,7 @@ def node_problems(node: object) -> list[str]:
             issues.append("an anchor has no path")
         elif is_line_number(anchor.symbol):
             issues.append(
-                f"anchor '{anchor}' looks like a line number — SCHEMA.md §4.1 requires a symbol"
+                f"anchor '{anchor}' looks like a line number — SCHEMA.md §6.1 requires a symbol"
             )
 
     node_links = list(getattr(node, "links", []))

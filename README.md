@@ -46,8 +46,8 @@ Each repo gets a committed `knowledge/code_graph.db`. A node is a row:
 
 For a paired codebase the node also carries `parity` / `counterpart` / `divergence`, linking it to
 the peer repo's graph. See **[`SCHEMA.md`](SCHEMA.md)** for the full spec and
-**[`docs/examples/EXAMPLE_GRAPH.json`](docs/examples/EXAMPLE_GRAPH.json)** for a worked iOS↔Android
-slice.
+**[`docs/examples/EXAMPLE_GRAPH.json`](https://github.com/Alexk413x/codebase-kg/blob/main/docs/examples/EXAMPLE_GRAPH.json)**
+for a worked iOS↔Android slice.
 
 **`description` is one short line — what it is and what it does.** It carries no ticket ids, no
 dates and no account of what changed; that content duplicates git and is the whole reason the
@@ -101,7 +101,8 @@ run from the CLI only, so their definitions cost no context in a session that do
 | `kg_validate` | advisory drift check against real source: anchors that no longer resolve, declared coverage gaps, and files edited since the graph was built |
 
 Run a CLI-only tool with `query`, which prints the same JSON the tool returned over MCP. Arguments
-go in one JSON object with the tool's parameter names:
+go in one JSON object with the tool's parameter names. To read the object from stdin, pass `-` as the
+argument. Without `-`, `query` never reads stdin.
 
 ```bash
 uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" query kg_stats
@@ -114,9 +115,9 @@ command, so they need no extra permission.
 
 | write | does |
 |---|---|
-| `kg_upsert_node(nodes)` | creates or updates node(s); only the fields you supply change |
+| `kg_upsert_node(nodes)` | creates or updates node(s); only the fields you supply change; an unknown key is refused with a did-you-mean hint |
 | `kg_delete_node(ids, dry_run=true, cascade_inbound=false)` | previews the blast radius, then deletes |
-| `kg_add_link(node_id, target, kind)` | points a node at a node in another committed graph |
+| `kg_add_link(node_id, target, kind)` | points a node at a node in another committed graph; refuses a target that is an absolute path or contains `..` |
 | `kg_remove_link(node_id, target)` | drops one such pointer |
 | `kg_add_reference(node_id, url, kind, title, path, symbol)` | records where a fact the node depends on is documented |
 | `kg_remove_reference(node_id, url, path, symbol)` | drops a node's reference(s) to a url |
@@ -135,12 +136,15 @@ in about 0.2 s and holds about 25 MB while idle.
 
 - **Starting it.** A `SessionStart` hook starts the server when nothing answers `GET /health` on the
   port, and waits up to 8 s. Claude Code retries the connection for about 7 s after a session starts,
-  then gives up for that session.
+  then gives up for that session. On Windows the hook starts the server outside the host's job object
+  when WMI allows it, so the host cannot end the server with the session. To start the server by hand,
+  run `kg_cli.py server start`. It waits up to 15 s for the server to answer.
 - **Which repo.** The server asks Claude Code for the session's roots on the first tool call and
   resolves the graph from the first root, as a shim resolves it from its cwd. `CODEBASE_KG_PATH`
   still names a graph explicitly. Codex opens with a classic `initialize` and cannot answer a roots
   request over stateless HTTP, so its headers helper sends the folder it runs in, which is the
-  session's folder, as `X-Codebase-KG-Cwd`. A call that carries no folder gets a tool error.
+  session's folder, as `X-Codebase-KG-Cwd`. A call that carries no folder, or whose roots include no
+  local folder, gets a tool error that tells the client to send `X-Codebase-KG-Cwd`.
 - **Codex.** Codex starts no MCP server a plugin declares, so you paste one table into
   `~/.codex/config.toml`. Run `uv run --no-project --quiet mcp/launch/kg_cli.py codex-config` and
   paste the output, then restart Codex. The table sets `url` to the HTTP server and
@@ -151,6 +155,17 @@ in about 0.2 s and holds about 25 MB while idle.
   The path in the table holds the plugin version, so run the command again after each update. If
   the HTTP table does not work on your machine, run `codex-config --stdio` and paste that table
   instead: it starts one small relay process per session and needs no HTTP server or `py`.
+  Codex sets `CLAUDE_PLUGIN_ROOT` for plugin hooks but not for the commands an agent runs, and the
+  skills call their scripts through it. To set it, add this to `~/.codex/config.toml`, with the path to
+  the plugin folder:
+
+  ```toml
+  [shell_environment_policy]
+  inherit = "core"
+
+  [shell_environment_policy.set]
+  CLAUDE_PLUGIN_ROOT = '/absolute/path/to/codebase-kg'
+  ```
 - **Port.** The plugin setting `server_port` (default 47821) moves it. When another program holds
   the port, the hook prints one line naming the setting. A newer codebase-kg build takes the port
   from an older one; an older build leaves a newer one running.
@@ -158,8 +173,14 @@ in about 0.2 s and holds about 25 MB while idle.
   and any foreign `Origin`, and needs a bearer token that only your user account can read. The
   `headersHelper` (`mcp/launch/kg_headers.py`) sends that token only after the server on the port
   proves, through its state file, to be yours.
-- **Lifetime.** A server that holds the HTTP port exits after 8 hours with no request; a shim-only
-  server exits after 10 minutes with no connection.
+- **Lifetime.** The `SessionStart` and `SessionEnd` hooks register and unregister each Claude Code
+  session. A server that has seen a registered session exits after 300 s
+  (`CODEBASE_KG_SESSION_GRACE`) with no live session and no use, so a session that starts within that
+  time keeps it. A server that has seen none exits after 8 hours with no request if it holds the HTTP
+  port, and after 10 minutes with no connection if it serves only shims.
+- **Log.** The server writes `server-<build>.log` in the cache folder. It records the pid that started
+  the server, each signal the server receives, a heartbeat line every 10 minutes, a Python traceback
+  on a fatal error and a `process exiting` line when the process ends.
 - **Workers.** The server runs each tool call on a worker process: a plain Python interpreter of
   about 21-24 MB. A call that finds no idle worker starts one, up to the `max_workers` setting
   (default 8); later calls wait for a free one. A worker exits after 60 s with no call, so an idle
@@ -195,13 +216,20 @@ Once per repo:
 uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" migrate knowledge/KNOWLEDGE_GRAPH.md
 ```
 
-It **converts, not regenerates** — ids, kinds, anchors, edges and parity survive verbatim. It
-scrubs ticket refs, dates and change narrative out of the summaries, drops any dangling edges, and
-reports everything it changed. The markdown file is left untouched; delete it once you are happy.
+It converts rather than regenerates: ids, kinds, anchors, edges and parity survive verbatim. It
+scrubs ticket refs, dates and change narrative out of the summaries, drops any dangling edges and
+reports everything it changed. The markdown file stays untouched. Add `--dry-run` to see the report
+without writing the graph. When the output file exists, `migrate` stops; pass `--force` to
+overwrite it or `-o` to write elsewhere. See
+[`docs/MIGRATION.md`](https://github.com/Alexk413x/codebase-kg/blob/main/docs/MIGRATION.md) for the
+report and the steps after it.
 
 Add `*.db binary diff=codegraph` and `code_graph.db binary diff=codegraph` to the repo's
-`.gitattributes` and commit the result, then run `/codebase-kg:setup` — it wires the staleness checks
-and the textconv driver that makes the graph show up as a readable diff in review.
+`.gitattributes` and commit the result. A repo with other `.db` files names the graph path instead:
+`knowledge/code_graph.db binary diff=codegraph`. Then run `/codebase-kg:setup`. It wires the staleness
+checks and the textconv driver that shows the graph as a readable diff in review. See
+[`docs/REVIEW.md`](https://github.com/Alexk413x/codebase-kg/blob/main/docs/REVIEW.md) for diffs and
+merges.
 
 ### Already on a `code_graph.db`?
 
@@ -213,6 +241,10 @@ uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" upgrade --covers 'ap
 ```
 
 Every node, anchor and edge is preserved verbatim; the upgrade only adds what v3 can answer.
+`upgrade` refuses a graph with a newer schema than the plugin writes.
+
+A graph built before self-edges were allowed rejects a node that points at itself. Rebuild it with
+`kg_cli.py upgrade --force` to accept one.
 
 ## Layout
 
@@ -220,18 +252,27 @@ Every node, anchor and edge is preserved verbatim; the upgrade only adds what v3
 codebase-kg/
 ├── .claude-plugin/
 │   └── plugin.json           # plugin manifest (name: codebase-kg)
+├── .codex-plugin/
+│   └── plugin.json           # Codex manifest; names hooks/codex-hooks.json
 ├── SCHEMA.md                 # ← the spec: node shape, anchors, parity, the description contract
 ├── README.md
-├── docs/
+├── CHANGELOG.md
+├── LICENSE
+├── docs/                     # development branch only; the release branch omits it
 │   ├── DESIGN.md             # locked design decisions, genericity rules, principles
+│   ├── MIGRATION.md          # moving a repo from KNOWLEDGE_GRAPH.md to code_graph.db
+│   ├── REVIEW.md             # reviewing and merging a committed code_graph.db
 │   ├── RELEASING.md          # release checklist — the tag is load-bearing, not bookkeeping
 │   └── examples/EXAMPLE_GRAPH.json
 ├── templates/
 │   ├── code_graph.template.json
 │   └── codebase-kg.local.md.example
 ├── skills/                   # query / build / refresh / audit / link / validate, and setup (user-invoked only)
-├── mcp/                      # the query server (one shared process per machine) + build/export/migrate CLIs; claude.mcp.json registers its HTTP endpoint, with launch/kg_headers.py as the headersHelper
-├── hooks/                    # Claude Code hooks: the search gate, the push gate, the post-edit nudge, the unwired-clone notice, the server start
+├── mcp/
+│   ├── src/codebase_kg/      # the server and the CLIs (module map in mcp/README.md)
+│   ├── launch/               # kg_cli.py (CLI runner), kg-shim and kg-shim.cmd (stdio relay), kg_headers.py (HTTP headers helper)
+│   └── claude.mcp.json       # registers the HTTP endpoint, with kg_headers.py as the headersHelper
+├── hooks/                    # Claude Code and Codex hooks: the search gate, the push gate, the post-edit nudge, the unwired-clone notice, the server start, the session end
 └── git-hooks/                # advisory pre-commit + pre-push staleness checks and install.sh, vendored into any repo (stdlib-only)
 ```
 
@@ -242,13 +283,16 @@ it already has — slower, and blind to the components a search string does not 
 
 The **search gate** (`hooks/kg_search_gate.py`, a `PreToolUse` hook) fixes that. In any repo that has
 a `knowledge/code_graph.db`, a `Grep`, `Glob`, or shell `grep`/`rg`/`find -name` aimed at mapped code
-is denied with the instruction to query the graph first. A codebase-kg query clears the next
+is denied with the instruction to query the graph first. The gate reads the graph's
+`covers` patterns to decide what counts as mapped code. A codebase-kg query clears the next
 `gate_credit` searches (default 3); when that credit runs out, the gate denies again. A search scoped
 to a file the graph anchors is never gated. Inside a subagent, the gate adds the instruction to the
 subagent's context instead of denying.
 
 No search is ever permanently blocked: if the graph does not cover what you need, run the same
-search again and it goes through, however you reword the command.
+search again and it goes through, however you reword the command. When the gate would deny a search
+and nothing answers as codebase-kg on the server port, it allows the search and says so once per
+session. The message names `kg_cli.py server start`.
 
 It ships with the plugin, so there is nothing to install — it activates in every repo that has a
 graph, and stays silent in every repo that does not. `SKIP_KG=1` silences it for a shell;
@@ -267,13 +311,15 @@ the anchored files to confirm behavior.
 Two advisory layers, both pointing at the same fix (`/codebase-kg:refresh`):
 
 - **In-session nudge** (`hooks/`): while Claude edits source, it says so the first time you touch a
-  file no node covers, and periodically once enough mapped files have changed.
+  file no node covers, and periodically once enough mapped files have changed. It reads the graph's
+  `covers` and `exempt` patterns. The edit counter resets when the graph file changes.
 - **Push gate for agents** (`hooks/kg_push_gate.py`, a `PreToolUse` hook on Bash): when an agent runs
   `git push` (also `git -C <dir> push`, chained, or env-prefixed) while any mapped file is stale
   against `HEAD`, the hook denies the call. The reason lists the stale files and tells the agent to run
   `/codebase-kg:refresh`, commit the graph and push again. `SKIP_KG=1` and a matching
-  `KG_STALE_ACK=<n>` pass it. `--no-verify` does not, because it skips git hooks and not this one. The
-  hook fails open on any error. It uses the pre-push hook's comparison, so both agree on what is stale.
+  `KG_STALE_ACK=<n>` pass it, and so does a push that only deletes refs. `--no-verify` does not, because
+  it skips git hooks and not this one. The hook fails open on any error. It uses the pre-push hook's
+  comparison, so both agree on what is stale.
 - **Commit/push checks** (`git-hooks/`): installed per-repo via `/codebase-kg:setup`. They compare
   the change set against the graph and report three things: source no node covers, deleted files the
   graph still anchors on, and mapped files whose contents no longer match the digest recorded when
@@ -282,7 +328,8 @@ Two advisory layers, both pointing at the same fix (`/codebase-kg:refresh`):
   drift. Both also report the **repo-wide** total, which no change set can see: a file that drifts
   and is never re-derived is named once and then never again. Commit-time is one line and never
   blocks; push-time blocks on every stale mapped file (`KG_STALE_ACK=<n>`, `SKIP_KG=1` or
-  `--no-verify` to get past it). The block tells you to run `/codebase-kg:refresh`, commit the
+  `--no-verify` to get past it) and passes a push that only deletes refs. A file git renames counts as
+  a deletion of its old path. The block tells you to run `/codebase-kg:refresh`, commit the
   graph and push again. They're stdlib-only and vendored into the repo, so they run for every clone and CI.
 
 ### One command per clone
@@ -293,7 +340,8 @@ commit the checkers, the wrappers and the `.gitattributes` line and still hand e
 inert hooks and `Binary files differ`, with no error anywhere to say so.
 
 `/codebase-kg:setup` therefore vendors `git-hooks/install.sh` into the repo alongside the checkers.
-Everyone who clones runs it once:
+Everyone who clones runs it once, from the hooks folder `/codebase-kg:setup` chose (`.githooks` by
+default):
 
 ```sh
 sh .githooks/install.sh
@@ -310,7 +358,8 @@ protection git is providing.
 
 Neither checks a date. An earlier version blocked pushes when the graph's `refreshed:` header wasn't
 today; that measured whether someone edited the file, not whether the nodes matched the code — and
-it went wrong in practice. See [`docs/DESIGN.md`](docs/DESIGN.md).
+it went wrong in practice. See
+[`docs/DESIGN.md`](https://github.com/Alexk413x/codebase-kg/blob/main/docs/DESIGN.md).
 
 Because refresh reads the peer graph, two linked repos stay **eventually consistent**: each side
 reconciles parity when *it* commits, so you only ever manage one repo's commit at a time.

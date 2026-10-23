@@ -5,7 +5,8 @@
 
 - **source files no node covers** — code nobody mapped, whether this change added it or only
   touched it;
-- **deleted source files the graph still anchors on** — pointers into code that is gone;
+- **deleted source files the graph still anchors on** — pointers into code that is gone. A file that
+  git renames counts as a deletion of its old path;
 - **mapped files whose contents no longer match the digest recorded when the graph was built**
   (SCHEMA.md §6.3) — the anchor still resolves, so nothing else notices, but the description may no
   longer fit.
@@ -34,8 +35,8 @@ the graph update is still in front of you, and staged-against-HEAD is a comparis
 available.
 
 `pre-push` checks the commits being **pushed**, against the upstream branch. That range is empty
-once you have pushed — so the check goes quiet at precisely the moment someone thinks to look at it.
-It is still worth having for the commits it does see, but it is not the one to rely on.
+once you have pushed, so its change-set findings go quiet at the moment someone thinks to look at
+them. Its repo-wide total does not depend on the range, and that total is what blocks the push.
 
 ## The repo-wide total
 
@@ -59,7 +60,7 @@ itself got 113 stale files where the truth was 47.
 `pre-push` exits non-zero when any **mapped file is stale**: its contents no longer match the digest
 recorded when the graph was built. The gate covers every stale file, including the files this push
 touches. Nothing else blocks — not the change-set findings, not an error inside the check itself,
-and never `pre-commit`.
+and never `pre-commit`. A push that only deletes refs publishes no commits, so it passes.
 
 A commit is provisional; a push is publication. The remote records the code, and a graph that lags
 the code at that point stays wrong for everyone who reads it. To push, refresh the graph first, or
@@ -97,9 +98,9 @@ rather than recording it. The hooks say the graph needs attention; a person or a
 | File | Role |
 |---|---|
 | `kg_pre_push.py` | The check — **stdlib only** (sqlite3 included), **no codebase-kg dependency**, so it vendors into any repo. Reads `root` from the committed graph's `meta` table (auto-discovers the graph; an optional, gitignored `.claude/codebase-kg.local.md` may override). No committed config file required. |
-| `pre-push` | Thin `sh` wrapper that runs `kg_pre_push.py` next to it and **propagates its exit status**, so the stale-file gate is a gate. Guards against a missing interpreter or checker rather than letting either block a push. |
+| `pre-push` | Thin `sh` wrapper that runs `kg_pre_push.py` next to it and **propagates its exit status**, so the stale-file gate is a gate. It uses the first of `py -3`, `python3` and `python` that runs, because `python3` can be a Microsoft Store stub on Windows. Guards against a missing interpreter or checker rather than letting either block a push. |
 | `kg_pre_commit.py` | The same check over the staged change set, plus the one-line repo-wide total. Imports the coverage and staleness rules from `kg_pre_push.py` rather than repeating them, so there is one implementation to keep in step with `codebase_kg/coverage.py` and `codebase_kg/staleness.py`. |
-| `pre-commit` | Thin `sh` wrapper, honouring `SKIP_KG`. |
+| `pre-commit` | Thin `sh` wrapper, honouring `SKIP_KG`. It picks the interpreter the way `pre-push` does. |
 | `install.sh` | Per-clone wiring: `core.hooksPath`, the exec bits, and the three `diff.codegraph.*` settings. Vendored beside the checkers, because the settings it writes are the ones git never clones. |
 
 ## What the old gate got wrong
@@ -144,7 +145,9 @@ re-running changes nothing that is already correct. It:
   no message at all;
 - runs the driver against the real graph **before** configuring it, and leaves it unset if it did
   not render JSON — a broken textconv does not fall back to "Binary files differ", it makes
-  `git diff` fail outright, so an unverified driver is worse than none;
+  `git diff` fail outright, so an unverified driver is worse than none. A probe that fails, for
+  example offline, also removes a driver that an earlier run set. Run the script again when the
+  probe can succeed;
 - registers `diff.codegraph.textconv`, `.binary` and `.cachetextconv` once it works.
   `.cachetextconv` is skipped when the clone has no git identity: its cache lives in a notes ref,
   which needs one, and without it git fails the whole diff rather than skipping the cache.
@@ -153,8 +156,10 @@ The textconv command it writes is a **tag-pinned** remote, so it means the same 
 machine:
 
 ```
-uvx --quiet --from "git+https://github.com/Alexk413x/codebase-kg.git@codebase-kg--v0.5.4#subdirectory=mcp" codebase-kg-export
+uvx --quiet --from "git+https://github.com/Alexk413x/codebase-kg.git@codebase-kg--v<version>#subdirectory=mcp" codebase-kg-export
 ```
+
+`<version>` is the plugin version that `/codebase-kg:setup` stamped into `install.sh`.
 
 `--quiet` is load-bearing: without it uv prints resolution lines into the body of every diff. The tag
 is load-bearing too — this command runs on every diff of the graph and must not change under the repo
@@ -167,6 +172,7 @@ Overrides, all per-clone and none needing an edit to the committed file:
 | `KG_VERSION` | pin a different published tag |
 | `KG_SOURCE` | a different `uvx --from` source entirely |
 | `KG_TEXTCONV` | replace uvx — e.g. `KG_TEXTCONV="python -m codebase_kg.export"` when the package is already installed, which is faster across a long `git log -p` |
+| `KG_GRAPH_PATH` | the graph to probe and to check in `.gitattributes`, relative to the repo root (default `knowledge/code_graph.db`) |
 
 If the plugin repo is private, `uvx` needs credentials for it. Someone with access and a credential
 helper is fine; anyone else should use `KG_TEXTCONV`.
@@ -191,16 +197,17 @@ sh .githooks/install.sh
 Commit `.githooks/` and the `.gitattributes` line. Then every other clone needs only the one command
 above.
 
-**Repo that already has a `pre-push`:** don't overwrite it. Copy `kg_pre_push.py` in and add two
+**Repo that already has a `pre-push`:** don't overwrite it. Copy `kg_pre_push.py` in and add these
 lines near the top — **before anything that reads stdin**, since git feeds the pushed refs there and
 this check consumes them:
 
 ```sh
-if command -v python3 >/dev/null 2>&1; then PY=python3
-elif command -v python >/dev/null 2>&1; then PY=python
-else PY=""; fi
+PY=
+for candidate in "py -3" python3 python; do
+  if $candidate -c "" </dev/null >/dev/null 2>&1; then PY=$candidate; break; fi
+done
 if [ -n "$PY" ] && [ -f "$(dirname "$0")/kg_pre_push.py" ]; then
-  "$PY" "$(dirname "$0")/kg_pre_push.py" || exit $?
+  $PY "$(dirname "$0")/kg_pre_push.py" || exit $?
 fi
 ```
 
@@ -217,7 +224,7 @@ the call, capture the status and re-raise it at the end instead of exiting inlin
 ```sh
 kg_status=0
 if [ -n "$PY" ] && [ -f "$(dirname "$0")/kg_pre_push.py" ]; then
-  "$PY" "$(dirname "$0")/kg_pre_push.py" || kg_status=$?
+  $PY "$(dirname "$0")/kg_pre_push.py" || kg_status=$?
 fi
 
 # ... the repo's own gates ...
@@ -229,9 +236,14 @@ If you want the reporting without the gate, keep `|| true`; the repo-wide total 
 
 ## What counts as source
 
-Same rules as the in-session hook: files under the graph's `root`, excluding docs/config extensions
-(`.md`, `.json`, `.yaml`, …) and ignored directories (`.git`, `node_modules`, `build`, `Pods`,
-`DerivedData`, …). The graph file itself never triggers it.
+Same rules as the in-session hook. Files must lie under the graph's `root`, and the graph file itself
+never triggers a finding.
+
+- **The graph declares `covers`.** The `covers` patterns decide, and `exempt` subtracts. The
+  declaration outranks the ignored-directory list, so a `covers` pattern that names `build`, `out`,
+  `target`, `dist` or `vendor` keeps those files in scope at any depth.
+- **The graph declares none.** The checks exclude docs and config extensions (`.md`, `.json`,
+  `.yaml`, …) and ignored directories (`.git`, `node_modules`, `build`, `Pods`, `DerivedData`, …).
 
 A modification to an already-mapped file is reported only when its bytes no longer match the digest
 recorded at build time. The status letter alone is not the signal — reporting every `M` would fire on

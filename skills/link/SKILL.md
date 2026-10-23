@@ -49,8 +49,8 @@ work or decide which side is "right."
 ## Prerequisites
 
 - Both repos have a `code_graph.db` (run `build`, or migrate, on each side first).
-- Both codebases are readable locally. The peer path is `meta.counterpart` (or
-  `.claude/codebase-kg.local.md`). A port may only be *readable* on this OS (e.g. iOS source on
+- Both codebases are readable locally. The peer path is `meta.counterpart`. The
+  `.claude/codebase-kg.local.md` file does not carry it. A port may only be *readable* on this OS (e.g. iOS source on
   Windows) — reading is all this skill needs.
 
 ## The three legal shapes — the store enforces them
@@ -79,7 +79,8 @@ Both sides change, so expect two export/build cycles.
 
 Use `kg_upsert_node` only for **touching up a few nodes afterwards** — one pair that turned out to
 be divergent, one flag that was wrong. It writes the same three fields (`parity`, `counterpart`,
-`divergence`), atomically, and `null` clears one. It re-validates the graph before landing, which
+`divergence`), atomically, and `null` clears one. It refuses a key it does not know and reports
+that nothing was written. It re-validates the graph before landing, which
 means it will refuse a link the peer graph does not reciprocate — the check that makes parity worth
 having, arriving before the write rather than in the next `kg_validate` run.
 
@@ -108,8 +109,9 @@ placement, and wiring:
 
 ### 4. Write reciprocal links
 On each node set `parity`, `counterpart` (`<peer-graph-relative-path>#<peer-node-id>`, e.g.
-`../../acme-ios/knowledge/code_graph.db#saved_article`), and `divergence` (divergent only). Make
-links **reciprocal**: if A→B then B→A.
+`../../acme-ios/knowledge/code_graph.db#saved_article`), and `divergence` (divergent only). Write the
+path with forward slashes: the writer converts backslashes. An empty string counts as unset, so
+leave a field out or use `null` rather than `""`. Make links **reciprocal**: if A→B then B→A.
 
 ### 5. Build both sides, then validate reciprocity
 Build each graph. Run `kg_validate` on each side (the peer is opened automatically from

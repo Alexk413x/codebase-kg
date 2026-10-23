@@ -21,7 +21,8 @@ mcp/launch/kg-shim text eol=lf
 # renders the graph as its JSON export, so `git diff` / `show` / `log -p` show
 # which nodes changed instead of "Binary files differ". Without the driver
 # nothing breaks — git falls back to treating it as opaque. The driver lives in
-# .git/config, which git never clones, so each clone configures it once:
-#     sh .githooks/install.sh        (or /codebase-kg:setup, or docs/REVIEW.md)
+# .git/config, which git never clones, so each clone configures it once. In a repo
+# that vendors the hooks, run `sh .githooks/install.sh` from the hooks folder;
+# /codebase-kg:setup vendors them. See docs/REVIEW.md.
 *.db binary diff=codegraph
 code_graph.db binary diff=codegraph

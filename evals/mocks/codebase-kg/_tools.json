@@ -197,7 +197,7 @@
     {
       "name": "kg_find_by_link",
       "title": "Kg Find By Link",
-      "description": "Reverse lookup across graphs: which code node(s) link to a node in another\ncommitted graph in this repo — typically a screen in `cartographer/baselines/baseline.db`.\n\nUse when you have a screen and want the code behind it. Accepts a full\n`<db-file>#<node-id>` target or a bare peer node id. See cartographer's\ndocs/GRAPH-LINKS.md for the convention.",
+      "description": "Reverse lookup across graphs: which code node(s) link to a node in another\ncommitted graph in this repo — typically a screen in `baselines/baseline.db`.\n\nUse when you have a screen and want the code behind it. Accepts a full\n`<db-file>#<node-id>` target or a bare peer node id.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -477,7 +477,7 @@
     {
       "name": "kg_add_link",
       "title": "Kg Add Link",
-      "description": "Point a code node at a node in another committed graph in this repo —\ntypically a screen in `cartographer/baselines/baseline.db`. The inverse of `kg_find_by_link`.\nSee cartographer's docs/GRAPH-LINKS.md for the target convention. An empty\n`kind` is honest for a link nobody has characterised.\n\nRefused if the peer graph is present and does not contain that node, so a\ntypo'd target cannot be committed.",
+      "description": "Point a code node at a node in another committed graph in this repo —\ntypically a screen in `baselines/baseline.db`. The inverse of `kg_find_by_link`.\nAn empty `kind` is honest for a link nobody has characterised.\n\nRefused if the peer graph is present and does not contain that node, so a\ntypo'd target cannot be committed.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,

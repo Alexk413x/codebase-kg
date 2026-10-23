@@ -229,11 +229,10 @@ def kg_find_by_link(
     ],
 ) -> dict[str, Any]:
     """Reverse lookup across graphs: which code node(s) link to a node in another
-    committed graph in this repo — typically a screen in `cartographer/baselines/baseline.db`.
+    committed graph in this repo — typically a screen in `baselines/baseline.db`.
 
     Use when you have a screen and want the code behind it. Accepts a full
-    `<db-file>#<node-id>` target or a bare peer node id. See cartographer's
-    docs/GRAPH-LINKS.md for the convention."""
+    `<db-file>#<node-id>` target or a bare peer node id."""
     return _read("kg_find_by_link", {"target": target})
 
 
@@ -418,9 +417,8 @@ def kg_add_link(
     ] = "",
 ) -> dict[str, Any] | ToolResult:
     """Point a code node at a node in another committed graph in this repo —
-    typically a screen in `cartographer/baselines/baseline.db`. The inverse of `kg_find_by_link`.
-    See cartographer's docs/GRAPH-LINKS.md for the target convention. An empty
-    `kind` is honest for a link nobody has characterised.
+    typically a screen in `baselines/baseline.db`. The inverse of `kg_find_by_link`.
+    An empty `kind` is honest for a link nobody has characterised.
 
     Refused if the peer graph is present and does not contain that node, so a
     typo'd target cannot be committed."""

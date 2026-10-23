@@ -9,7 +9,7 @@ defect from "`kg_validate` reports it afterwards" to "the write fails":
 - `edge.dst` is a foreign key → **a dangling edge cannot be written.**
 - `anchor.node_id` is a foreign key → an orphan anchor cannot be written.
 - `node.id` is the primary key → duplicate ids cannot be written.
-- The `parity`/`counterpart`/`divergence` CHECKs encode SCHEMA.md §8 in the
+- The `parity`/`counterpart`/`divergence` CHECKs encode SCHEMA.md §9 in the
   file itself → an inconsistent parity triple cannot be written.
 - `length(description) <= 240` → the field cannot grow back into a summary.
 
@@ -154,7 +154,7 @@ CREATE TABLE node (
     CHECK (id <> ''),
     CHECK (kind <> ''),
     CHECK (length(description) <= {MAX_DESCRIPTION}),
-    -- SCHEMA.md §8: the only three parity shapes.
+    -- SCHEMA.md §9: the only three parity shapes.
     CHECK (parity IS NULL
            OR parity IN ('matched', 'divergent')
            OR parity LIKE '%-only'),
@@ -191,12 +191,12 @@ CREATE TABLE anchor (
     symbol  TEXT,
     PRIMARY KEY (node_id, ord),
     CHECK (path <> ''),
-    -- Paths are stored posix-normalized (see models.Anchor.parse), so readers
+    -- Paths are stored posix-normalized (see models.Anchor.__post_init__), so readers
     -- can compare them directly instead of each re-normalizing on the way out.
     -- char(92) is a backslash — spelled this way to avoid escaping ambiguity in
     -- both the Python source and the SQL string literal.
     CHECK (instr(path, char(92)) = 0),
-    -- SCHEMA.md §4.1: symbol anchors, never line numbers.
+    -- SCHEMA.md §6.1: symbol anchors, never line numbers.
     CHECK (symbol IS NULL OR symbol NOT GLOB '[0-9]*')
 ) WITHOUT ROWID;
 

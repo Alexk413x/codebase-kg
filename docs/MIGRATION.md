@@ -11,6 +11,10 @@ uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" migrate knowledge/KN
 
 To see the report without writing the file, add `--dry-run`.
 
+The command writes `code_graph.db` beside the markdown file. It refuses to overwrite an existing
+output and exits with status 1, even with `--dry-run`. To replace the existing graph, add
+`--force`. To write somewhere else, pass `-o <path>`.
+
 It **converts rather than regenerates**. Ids, kinds, anchors, edges, sections and parity come across
 verbatim — that structure is real work and there is no reason to re-derive it. Regeneration would
 also confound three variables at once (a new store, a differently-worded graph, and genuine code
@@ -21,7 +25,7 @@ drift), making any difference impossible to attribute.
 | | |
 |---|---|
 | `summary` → `description` | Scrubbed of ticket refs, dates and change narrative, then trimmed to ≤ 240 chars at a sentence boundary. That content duplicated git and was the entire maintenance burden (`SCHEMA.md` §5). |
-| per-node `updated` dates | **Dropped.** Hand-maintained dates that nothing can verify. Staleness is now answered by checking anchors against source. |
+| per-node `updated` dates | **Dropped.** Hand-maintained dates that nothing can verify. Staleness comes from checking anchors against source. |
 | header refresh log | **Dropped.** Replaced by a single `generated` date. |
 | dangling edges | **Dropped and listed.** The store's foreign keys make them unwritable. |
 | inconsistent parity triples | **Normalized and listed.** The store accepts only the three legal shapes (`SCHEMA.md` §9). |

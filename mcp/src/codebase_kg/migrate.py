@@ -70,7 +70,7 @@ def _retarget_counterpart(counterpart: str) -> str:
 
 
 def _normalize_parity(node: Node, report: MigrationReport) -> None:
-    """Force the parity triple into one of the three legal shapes (SCHEMA.md §8).
+    """Force the parity triple into one of the three legal shapes (SCHEMA.md §9).
 
     The old format allowed inconsistent combinations because nothing enforced
     them; the store's CHECK constraints do, so anything that would be rejected is
@@ -125,7 +125,7 @@ def _normalize_parity(node: Node, report: MigrationReport) -> None:
 
 
 def _normalize_anchors(node: Node, report: MigrationReport) -> None:
-    """Drop line-number symbols (SCHEMA.md §4.1) and empty anchors."""
+    """Drop line-number symbols (SCHEMA.md §6.1) and empty anchors."""
     kept: list[Anchor] = []
     for a in node.anchors:
         if not a.path:

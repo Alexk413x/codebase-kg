@@ -76,8 +76,8 @@ else
     warn "  clobber it. Either point it here, or add these two lines to the"
     warn "  pre-commit and pre-push in '$current' (pre-push: before anything that"
     warn "  reads stdin):"
-    warn "    if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi"
-    warn "    \"\$PY\" \"$hooks_rel/kg_pre_commit.py\" || true   # kg_pre_push.py in pre-push"
+    warn "    for PY in 'py -3' python3 python; do \$PY -c '' >/dev/null 2>&1 && break; done"
+    warn "    \$PY \"$hooks_rel/kg_pre_commit.py\"   # kg_pre_push.py in pre-push"
     status=1
   fi
 fi

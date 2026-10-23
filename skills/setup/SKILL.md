@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Wire codebase-kg into the current repo in one pass — pre-commit and pre-push staleness checks, the textconv driver that makes the committed graph readable in git diffs, and a committed install.sh so every other clone gets the same wiring from one command. Idempotent, non-destructive to existing hooks, and safe to re-run any time to repair or update the wiring.
+description: Wires codebase-kg into the current repo in one pass. It installs pre-commit and pre-push staleness checks, the textconv driver that makes the committed graph readable in git diffs, and a committed install.sh so every other clone gets the same wiring from one command. It is idempotent, leaves existing hooks intact, and is safe to re-run to repair or update the wiring. Runs only when the user invokes /codebase-kg:setup.
 argument-hint: "[repo path | empty = current repo]"
 disable-model-invocation: true
 ---
@@ -10,6 +10,7 @@ disable-model-invocation: true
 One command for everything a repo needs. Run it after `/codebase-kg:build`, and again whenever the
 wiring needs repairing — every step below is idempotent and none of them overwrite work that is
 already there.
+
 ## What is already handled without this command
 
 The **search gate** and the **post-edit nudge** ship inside the plugin (`hooks/hooks.json`) and need
@@ -33,8 +34,8 @@ override it (see `templates/codebase-kg.local.md.example`).
 ### 3. Detect the repo's hooks setup
 Run `git config core.hooksPath`:
 
-- **Set** (e.g. `.githooks`) → that's the hooks dir.
-- **Unset** → use `.githooks/`. Do **not** run `git config core.hooksPath` yourself here; step 9 runs
+- **Set** (e.g. `.githooks`) → that's the hooks dir. Call it `<hooks dir>` below.
+- **Unset** → use `.githooks/` as `<hooks dir>`. Do **not** run `git config core.hooksPath` yourself here; step 9 runs
   the committed installer, which sets it in this clone the same way it will in every other one. One
   implementation, exercised by the person who wired the repo. (`.git/hooks/` is not committed, so
   other clones would not get it either way.)
@@ -77,7 +78,8 @@ Stamp the pin after copying:
 
 The stamp is a starting value, not a live link. `install.sh` is committed, so the pin only moves when
 someone re-runs this command and commits the change — which is what a pin is for. Anyone can override
-per-clone with `KG_VERSION=` or `KG_TEXTCONV=` without editing the committed file.
+per-clone with `KG_VERSION=`, `KG_SOURCE=`, `KG_TEXTCONV=` or `KG_GRAPH_PATH=` (the graph the
+installer probes, default `knowledge/code_graph.db`) without editing the committed file.
 
 **Tell the user if the plugin repo is private.** `install.sh` defaults to
 `uvx --from git+https://github.com/Alexk413x/codebase-kg.git@…`, which only resolves for someone with
@@ -93,8 +95,11 @@ override for anyone who has the package locally.
 - **Existing `pre-commit`** → **do not overwrite it.** Add these lines near the top:
   ```sh
   [ -n "$SKIP_KG" ] || {
-    if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
-    "$PY" "$(dirname "$0")/kg_pre_commit.py" || true
+    PY=
+    for candidate in "py -3" python3 python; do
+      if $candidate -c "" </dev/null >/dev/null 2>&1; then PY=$candidate; break; fi
+    done
+    [ -z "$PY" ] || $PY "$(dirname "$0")/kg_pre_commit.py" || true
   }
   ```
 
@@ -103,17 +108,20 @@ override for anyone who has the package locally.
   `chmod +x` it.
 - **Existing `pre-push` that already calls `kg_pre_push.py`** → leave it as it is, unless the call
   ends in `|| true`. Then remove `|| true`, so the call can block the push.
-- **Existing `pre-push`** → **do not overwrite it.** Add these two lines near the top (**before
+- **Existing `pre-push`** → **do not overwrite it.** Add this block near the top (**before
   anything that reads stdin** — git feeds the pushed refs there and the checker consumes them). If
   it already contains an older blocking KG-freshness check, replace that block with this call:
   ```sh
-  if command -v python3 >/dev/null 2>&1; then PY=python3
-  elif command -v python >/dev/null 2>&1; then PY=python
-  else PY=""; fi
+  PY=
+  for candidate in "py -3" python3 python; do
+    if $candidate -c "" </dev/null >/dev/null 2>&1; then PY=$candidate; break; fi
+  done
   if [ -n "$PY" ] && [ -f "$(dirname "$0")/kg_pre_push.py" ]; then
-    "$PY" "$(dirname "$0")/kg_pre_push.py" || exit $?
+    $PY "$(dirname "$0")/kg_pre_push.py" || exit $?
   fi
   ```
+  The `py` launcher comes first because `python3` on Windows can be a Microsoft Store stub that
+  exists on `PATH` and fails when it runs. Each candidate must run before the block selects it.
   **Do not append `|| true` here.** The checker returns non-zero for exactly one thing — a stale
   mapped file, including files this push touches — and catches its own errors so a bug in it can never fail a push.
   Swallowing the status leaves the reporting and removes the gate. The interpreter and file guards
@@ -138,7 +146,7 @@ repo has other `.db` files:
 
 - **The code graph is the only `.db`** → `*.db binary diff=codegraph` plus
   `code_graph.db binary diff=codegraph`, so a `graph_path` override still matches.
-- **The repo has other graphs** (a driver corpus, a cartographer map, an app database) → add **only**
+- **The repo has other graphs** (a driver corpus, a screen map, an app database) → add **only**
   the specific path: `knowledge/code_graph.db binary diff=codegraph`. A blanket `*.db` would capture
   them too, and git applies the LAST matching pattern — so a `*.db binary diff=codegraph` written
   underneath an existing `*_driver_graph.db binary diff=drivergraph` silently reroutes that graph
@@ -154,7 +162,7 @@ git on macOS and Linux with no message at all**. The check never runs, and nothi
 did not. Check what is in the index, not what is on disk:
 
 ```sh
-git ls-files -s -- .githooks/pre-commit .githooks/pre-push .githooks/kg_pre_commit.py .githooks/kg_pre_push.py
+git ls-files -s -- <hooks dir>/pre-commit <hooks dir>/pre-push <hooks dir>/kg_pre_commit.py <hooks dir>/kg_pre_push.py
 ```
 
 Any line starting `100644` needs correcting. `chmod +x` alone does not fix it on Windows, where
@@ -162,7 +170,7 @@ Any line starting `100644` needs correcting. `chmod +x` alone does not fix it on
 travels:
 
 ```sh
-git update-index --chmod=+x .githooks/pre-commit .githooks/pre-push .githooks/kg_pre_commit.py .githooks/kg_pre_push.py
+git update-index --chmod=+x <hooks dir>/pre-commit <hooks dir>/pre-push <hooks dir>/kg_pre_commit.py <hooks dir>/kg_pre_push.py
 ```
 
 That stages a mode change. Tell the user it needs committing along with the rest of the wiring;
@@ -175,7 +183,7 @@ Everything that is per-clone — `core.hooksPath` and the three `diff.codegraph.
 step 4, from the repo root:
 
 ```sh
-sh .githooks/install.sh
+sh <hooks dir>/install.sh
 ```
 
 It sets `core.hooksPath`, `chmod +x`s the four hook files, registers the textconv driver, and then
@@ -193,7 +201,7 @@ uvx --quiet --from "git+https://github.com/Alexk413x/codebase-kg.git@codebase-kg
 ```
 
 - **Never `${CLAUDE_PLUGIN_ROOT}`.** That expands to a version-stamped local cache path
-  (`…/.claude/plugins/cache/codebase-kg/codebase-kg/0.5.2/mcp`) and is written into `.git/config`
+  (`…/.claude/plugins/cache/codebase-kg/codebase-kg/<version>/mcp`) and is written into `.git/config`
   verbatim. It resolves on exactly one machine, and breaks there on the next plugin update. Git
   reports nothing when a textconv command is missing — it just shows the binary fallback.
 - **A tag, never a branch.** This runs on every diff of the graph; it must not change under the repo
@@ -209,7 +217,7 @@ hooks. Report that outcome as a skip, not as success.
 in the shell that just ran `git config` tests the value set one line earlier, and passes no matter
 how machine-local that value is.
 
-Commit the wiring first (`.githooks/`, the mode changes, `.gitattributes`), then:
+Commit the wiring first (`<hooks dir>`, the mode changes, `.gitattributes`), then:
 
 ```sh
 # Diff a range that actually touched the graph. HEAD~1..HEAD is usually the
@@ -222,11 +230,11 @@ git clone --shared --no-checkout . "$TMP/kgverify"
 # .gitattributes is what routes the graph to diff=codegraph. Omit it and
 # check-attr resolves to nothing, so the diff falls back to "Binary files
 # differ" no matter how correct the wiring is — a confident false failure.
-git -C "$TMP/kgverify" sparse-checkout set --no-cone .githooks knowledge .gitattributes
+git -C "$TMP/kgverify" sparse-checkout set --no-cone <hooks dir> knowledge .gitattributes
 git -C "$TMP/kgverify" checkout
 # Run it from inside the clone. install.sh anchors on its own location, but
 # staying out here hides a regression if that ever breaks again.
-(cd "$TMP/kgverify" && sh .githooks/install.sh)
+(cd "$TMP/kgverify" && sh <hooks dir>/install.sh)
 git -C "$TMP/kgverify" check-attr diff -- knowledge/code_graph.db
 git -C "$TMP/kgverify" diff "$OLD" "$NEW" -- knowledge/code_graph.db | head -20
 rm -rf "$TMP"
@@ -250,49 +258,21 @@ Then tell the user what is now live:
   clears the next `gate_credit` searches (default 3), and a repeat of a denied search always passes.
 - **Post-edit nudge** (from the plugin, no install): advisory, points at `/codebase-kg:refresh`.
 - **Unwired-clone notice** (from the plugin, no install): at session start, a clone of this repo with
-  no `core.hooksPath` or no `diff.codegraph.textconv` gets one line naming `sh .githooks/install.sh`.
+  no `core.hooksPath` or no `diff.codegraph.textconv` gets one line naming `sh <hooks dir>/install.sh`.
   It only prints — it never writes git config, because git leaves `.git/config` out of a clone
   precisely so that cloning cannot cause code to run.
 - **Git hooks** (installed here): they answer "does this change move the code away from the map?" —
   `pre-commit` over what is staged, `pre-push` over what is being pushed. Both also report the
   repo-wide staleness total, which no change set can see: a file that drifts and is never re-derived
   is named once and then never again. `pre-commit` is advisory and adds one line for that total.
-  `pre-push` blocks on one thing only — mapped files that have drifted and that this push does not
-  touch. That is zero in a repo kept current; release it with `KG_STALE_ACK=<count>` (the count is
+  `pre-push` blocks on one thing only — any mapped file that has drifted, including the files this
+  push touches. That is zero in a repo kept current; release it with `KG_STALE_ACK=<count>` (the count is
   in the message and the ack expires when it moves), `SKIP_KG=1`, or `git push --no-verify`.
   `SKIP_KG=1` silences either hook, and the search gate, when a change deliberately outruns the
   graph.
-- **One command per clone**: everyone else who clones this repo runs `sh .githooks/install.sh` once.
+- **One command per clone**: everyone else who clones this repo runs `sh <hooks dir>/install.sh` once.
   It needs plain git, POSIX sh and `uv` — no Claude Code and no plugin install.
 - The fix for drift is `/codebase-kg:refresh`; deeper drift is `/codebase-kg:validate`.
-
-## What this does not solve
-
-Merge conflicts on the graph. Two branches that both refresh it still conflict with no textual
-merge. The resolution:
-
-```sh
-# During the conflict, git keeps both sides staged: :2 is ours, :3 is theirs.
-git show :2:knowledge/code_graph.db > ours.db
-git show :3:knowledge/code_graph.db > theirs.db
-uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" export ours.db   -o ours.json
-uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" export theirs.db -o theirs.json
-# merge the JSON by hand, then rebuild and stage:
-uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" build merged.json -o knowledge/code_graph.db
-git add knowledge/code_graph.db
-```
-
-That works because the build is deterministic — the same JSON always produces the same bytes — so a
-rebuild after merging is reproducible rather than a third distinct artifact. See `docs/REVIEW.md`.
-
-## Posture
-
-Non-destructive: never overwrite an existing hook — integrate a call into it. The `pre-commit`
-check always exits 0; the `pre-push` check blocks only on stale mapped files. The hooks,
-`install.sh` and `.gitattributes` are committed in the repo, so all clones and CI behave the same;
-`core.hooksPath` and the textconv driver are local git config, which git never clones, so each clone
-runs `sh .githooks/install.sh` once. A clone that skips it sees inert hooks and the old binary
-behavior — the session-start notice is what makes that visible instead of silent.
 
 ### 11. Codex only — the MCP server
 
@@ -318,3 +298,31 @@ elsewhere.
 If the HTTP table does not connect, run the same command with `--stdio` and show that table instead.
 It runs the stdio shim, which starts one small process per session and needs neither the HTTP server
 nor `py`. Only one `[mcp_servers.codebase-kg]` table can be in the file.
+
+## What this does not solve
+
+Merge conflicts on the graph. Two branches that both refresh it still conflict with no textual
+merge. The resolution:
+
+```sh
+# During the conflict, git keeps both sides staged: :2 is ours, :3 is theirs.
+git show :2:knowledge/code_graph.db > ours.db
+git show :3:knowledge/code_graph.db > theirs.db
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" export ours.db   -o ours.json
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" export theirs.db -o theirs.json
+# merge the JSON by hand, then rebuild and stage:
+uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" build merged.json -o knowledge/code_graph.db
+git add knowledge/code_graph.db
+```
+
+That works because the build is deterministic — the same JSON always produces the same bytes — so a
+rebuild after merging is reproducible rather than a third distinct artifact.
+
+## Posture
+
+Non-destructive: never overwrite an existing hook — integrate a call into it. The `pre-commit`
+check always exits 0; the `pre-push` check blocks only on stale mapped files. The hooks,
+`install.sh` and `.gitattributes` are committed in the repo, so all clones and CI behave the same;
+`core.hooksPath` and the textconv driver are local git config, which git never clones, so each clone
+runs `sh <hooks dir>/install.sh` once. A clone that skips it sees inert hooks and the old binary
+behavior — the session-start notice is what makes that visible instead of silent.

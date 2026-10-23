@@ -20,7 +20,7 @@ nothing when a textconv command cannot resolve — it falls back silently.
    | file | field |
    |---|---|
    | `.claude-plugin/plugin.json` | `version` |
-| `.codex-plugin/plugin.json` | `version` |
+   | `.codex-plugin/plugin.json` | `version` |
    | `mcp/pyproject.toml` | `version` |
    | `git-hooks/install.sh` | `KG_VERSION` default |
    | `mcp/uv.lock` | the `codebase-kg` entry (uv rewrites it) |
@@ -32,8 +32,8 @@ nothing when a textconv command cannot resolve — it falls back silently.
 
    ```sh
    cd mcp
-   uv run python scripts/gen_catalog.py   # if a tool in server.py changed
-   uv run pytest -q
+   uv run --frozen python scripts/gen_catalog.py   # if a tool in server.py changed
+   uv run --frozen pytest -q
    cd ..
    claude plugin validate --strict .
    claude plugin eval . --scaffold
