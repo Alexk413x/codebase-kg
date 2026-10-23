@@ -2,7 +2,7 @@
 
 All notable changes to the `codebase-kg` plugin.
 
-## [Unreleased]
+## [0.15.0] — 2026-10-23 — Review fixes, PowerShell push gate and server start
 
 ### Added
 

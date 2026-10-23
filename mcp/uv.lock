@@ -243,7 +243,7 @@ wheels = [
 
 [[package]]
 name = "codebase-kg"
-version = "0.14.4"
+version = "0.15.0"
 source = { editable = "." }
 
 [package.dev-dependencies]
