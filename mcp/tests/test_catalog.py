@@ -95,6 +95,8 @@ CASES: list[tuple[str, dict[str, Any]]] = [
     ("kg_upsert_node", {"nodes": [{"id": NODE, "section": 5}]}),
     ("kg_upsert_node", {"nodes": [{"id": NODE, "note": "kept", "section": "S"}]}),
     ("kg_upsert_node", {"nodes": [{"id": NODE, "rebaseline": "yes"}]}),
+    ("kg_upsert_node", {"nodes": [{"id": NODE, "anchorz": ["x"]}]}),
+    ("kg_upsert_node", {"nodes": [{"id": NODE, "references": [{"urll": "https://example.com"}]}]}),
     ("kg_upsert_node", {"nodes": []}),
     ("kg_add_link", {"node_id": NODE, "target": "peer.db#x"}),
     ("kg_add_link", {"node_id": NODE, "target": "peer.db#x", "kind": None}),

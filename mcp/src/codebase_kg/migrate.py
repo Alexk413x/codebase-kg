@@ -242,6 +242,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "-o", "--out", help="output path (default: code_graph.db beside the source)"
     )
+    ap.add_argument(
+        "--force", action="store_true", help="overwrite the output file if it already exists"
+    )
     ap.add_argument("--generated", help="override the generated date (YYYY-MM-DD)")
     ap.add_argument("--json", action="store_true", help="emit the report as JSON")
     ap.add_argument(
@@ -257,10 +260,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     target = Path(args.out).resolve() if args.out else source.parent / "code_graph.db"
-    if not args.out and target.exists():
+    if target.exists() and not args.force:
         sys.stderr.write(
-            f"[codebase-kg] {target} already exists and would be replaced. "
-            "Pass -o to name the output path.\n"
+            f"[codebase-kg] {target} already exists. Pass --force to overwrite it, "
+            "or -o to write the graph elsewhere.\n"
         )
         return 1
     tmp_target = target

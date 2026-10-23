@@ -55,9 +55,16 @@ def test_dangling_edge_is_impossible(conn: sqlite3.Connection) -> None:
         conn.execute("INSERT INTO edge (src, dst) VALUES ('a', 'ghost')")
 
 
-def test_self_edge_is_impossible(conn: sqlite3.Connection) -> None:
-    with pytest.raises(sqlite3.IntegrityError):
-        conn.execute("INSERT INTO edge (src, dst) VALUES ('a', 'a')")
+def test_self_edge_is_stored(conn: sqlite3.Connection) -> None:
+    conn.execute("INSERT INTO edge (src, dst) VALUES ('a', 'a')")
+    assert conn.execute("SELECT src, dst FROM edge").fetchall() == [("a", "a")]
+
+
+def test_a_node_with_a_self_edge_can_be_deleted(conn: sqlite3.Connection) -> None:
+    conn.execute("INSERT INTO edge (src, dst) VALUES ('a', 'a')")
+    conn.execute("DELETE FROM edge WHERE src = 'a' AND dst = 'a'")
+    conn.execute("DELETE FROM node WHERE id = 'a'")
+    assert conn.execute("SELECT count(*) FROM node").fetchone() == (1,)
 
 
 def test_duplicate_edge_is_impossible(conn: sqlite3.Connection) -> None:

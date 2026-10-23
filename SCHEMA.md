@@ -211,7 +211,7 @@ One row per relationship: `(src, dst)`, both foreign keys into `node(id)`.
 
 - `dst` is a foreign key, so **a dangling edge cannot be written**.
 - `(src, dst)` is the primary key, so a duplicate edge cannot be written.
-- `src <> dst` is a CHECK, so a self-edge cannot be written.
+- A self-edge `(a, a)` is allowed: a method found within its own file, a use case that references itself. It does not count as an edge from another node, so it never blocks a delete, and a node whose only edge is a self-edge still counts as isolated. A graph built before self-edges were allowed rejects them until you run `kg_cli.py upgrade --force <graph>`.
 - `ON DELETE RESTRICT` on `dst`, so removing a node cannot silently strand what points at it.
 
 Edges stay *within one graph*. Cross-graph links are `counterpart` (§9), not edges.

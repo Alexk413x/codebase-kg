@@ -269,15 +269,20 @@ def test_an_accepted_write_is_not_an_error_result(served: Path) -> None:
 
 def test_upsert_schema_passes_keys_and_types_through_to_the_edit_layer(served: Path) -> None:
     # The typed `nodes` schema must not reject what `edits.upsert_node` accepts:
-    # unknown keys are ignored there, and anchors may be objects.
+    # anchors may be objects. Unknown keys reach the edit layer, which refuses them.
     node_id = _any_node_id(served)
     anchor = call("kg_node", id=node_id)["anchors"][0]
     path, _, symbol = str(anchor).partition("#")
     out = call(
         "kg_upsert_node",
-        nodes=[{"id": node_id, "note": "ignored", "anchors": [{"path": path, "symbol": symbol}]}],
+        nodes=[{"id": node_id, "anchors": [{"path": path, "symbol": symbol}]}],
     )
     assert out["ok"] is True
+    unknown = _call_over_mcp(
+        "kg_upsert_node", {"nodes": [{"id": node_id, "note": "ignored"}]}
+    )
+    assert unknown.is_error is True
+    assert "unknown key 'note'" in unknown.structured_content["error"]
     refused = _call_over_mcp(
         "kg_upsert_node", {"nodes": [{"id": node_id, "rebaseline": "yes"}]}
     )

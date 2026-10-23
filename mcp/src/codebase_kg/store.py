@@ -40,6 +40,12 @@ _MAX_PARAMS = 30000
 
 GRAPH_FILENAME = "code_graph.db"
 
+# A self-edge links a node to nothing else, so it does not make the node connected.
+_ISOLATED = (
+    "id NOT IN (SELECT src FROM edge WHERE src <> dst)"
+    " AND id NOT IN (SELECT dst FROM edge WHERE src <> dst)"
+)
+
 _REFERENCE_SELECT = f"SELECT node_id, kind, title, url, path, symbol FROM {REFERENCE_TABLE}"
 
 
@@ -559,18 +565,12 @@ class CodeGraph:
 
     def isolated_ids(self, limit: int | None = None) -> list[str]:
         """Nodes with no edge in either direction — usually a missed relationship."""
-        sql = (
-            "SELECT id FROM node WHERE id NOT IN (SELECT src FROM edge)"
-            " AND id NOT IN (SELECT dst FROM edge) ORDER BY id"
-        )
+        sql = f"SELECT id FROM node WHERE {_ISOLATED} ORDER BY id"
         if limit is not None:
             return [r["id"] for r in self._q(sql + " LIMIT ?", (limit,))]
         return [r["id"] for r in self._q(sql)]
 
     def isolated_count(self) -> int:
         return int(
-            self._q(
-                "SELECT count(*) AS n FROM node WHERE id NOT IN (SELECT src FROM edge)"
-                " AND id NOT IN (SELECT dst FROM edge)"
-            ).fetchone()["n"]
+            self._q(f"SELECT count(*) AS n FROM node WHERE {_ISOLATED}").fetchone()["n"]
         )

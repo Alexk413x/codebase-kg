@@ -280,7 +280,7 @@
           "nodes": {
             "description": "One object per node. Only the keys present change.",
             "items": {
-              "additionalProperties": true,
+              "additionalProperties": false,
               "properties": {
                 "id": {
                   "description": "Node id. A node that does not exist yet also needs `kind`.",
@@ -348,7 +348,7 @@
                 "external_links": {
                   "description": "Links to nodes in other committed graphs. Replaces the whole list.",
                   "items": {
-                    "additionalProperties": true,
+                    "additionalProperties": false,
                     "properties": {
                       "target": {
                         "description": "`<peer-db>#<node>`, relative to `knowledge/`.",
@@ -369,7 +369,7 @@
                 "references": {
                   "description": "Where the facts this node depends on are documented. Replaces the whole list.",
                   "items": {
-                    "additionalProperties": true,
+                    "additionalProperties": false,
                     "properties": {
                       "url": {
                         "description": "The documentation page, e.g. `https://...`.",

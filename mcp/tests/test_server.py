@@ -248,7 +248,7 @@ def test_upsert_description_leads_with_atomicity() -> None:
     assert upsert.description.startswith("Atomic")
     item = upsert.input_schema["properties"]["nodes"]["items"]
     assert {"id", "kind", "anchors", "edges", "rebaseline"} <= set(item["properties"])
-    assert item["required"] == ["id"] and item["additionalProperties"] is True
+    assert item["required"] == ["id"] and item["additionalProperties"] is False
 
 
 def test_annotations_mark_queries_read_only_and_writes_closed_world() -> None:

@@ -141,9 +141,10 @@ def test_the_same_node_twice_in_one_call_is_refused(graph: Path) -> None:
         edits.upsert_node(graph, [{"id": "a", "section": "X"}, {"id": "a", "section": "Y"}])
 
 
-def test_a_self_edge_is_refused(graph: Path) -> None:
-    with pytest.raises(edits.EditError, match="edge to itself"):
-        edits.upsert_node(graph, [{"id": "a", "edges": ["a"]}])
+def test_a_self_edge_is_accepted(graph: Path) -> None:
+    edits.upsert_node(graph, [{"id": "a", "edges": ["a", "b"]}])
+    a = _node(graph, "a")
+    assert a is not None and a.edges == ["a", "b"]
 
 
 # --- atomicity ---------------------------------------------------------------

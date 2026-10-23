@@ -257,6 +257,7 @@ def kg_find_by_reference(
     return _read("kg_find_by_reference", {"query": query, "kind": kind, "limit": limit, "offset": offset})
 
 
+@with_config(ConfigDict(extra="forbid"))
 class LinkSpec(TypedDict, total=False):
     target: Required[
         Annotated[str, Field(description="`<peer-db>#<node>`, relative to `knowledge/`.")]
@@ -266,6 +267,7 @@ class LinkSpec(TypedDict, total=False):
     ]
 
 
+@with_config(ConfigDict(extra="forbid"))
 class ReferenceSpec(TypedDict, total=False):
     url: Required[
         Annotated[str, Field(description="The documentation page, e.g. `https://...`.")]
@@ -280,9 +282,11 @@ class ReferenceSpec(TypedDict, total=False):
     ]
 
 
-# Every field skips validation and extra keys are kept: `edits.upsert_node` does
-# its own checks and returns them as refusals, and it tolerates keys it ignores.
-@with_config(ConfigDict(extra="allow"))
+# Every field skips validation and unknown keys pass through: `edits.upsert_node`
+# does its own checks and refuses an unknown key with a did-you-mean hint, which
+# pydantic's `extra="forbid"` error would replace. The published schema still
+# says `additionalProperties: false`.
+@with_config(ConfigDict(extra="allow", json_schema_extra={"additionalProperties": False}))
 class NodePatch(TypedDict, total=False):
     id: Required[
         Annotated[

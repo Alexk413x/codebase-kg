@@ -229,8 +229,7 @@ CREATE INDEX anchor_base ON anchor(base);
 CREATE TABLE edge (
     src TEXT NOT NULL REFERENCES node(id) ON DELETE CASCADE,
     dst TEXT NOT NULL REFERENCES node(id) ON DELETE RESTRICT,
-    PRIMARY KEY (src, dst),
-    CHECK (src <> dst)
+    PRIMARY KEY (src, dst)
 ) WITHOUT ROWID;
 
 CREATE INDEX edge_dst ON edge(dst);

@@ -184,8 +184,6 @@ def _validate(
 
         kept: list[str] = []
         for dst in n.edges:
-            if dst == n.id:
-                continue  # a self-edge carries no information
             if dst in ids:
                 kept.append(dst)
                 continue

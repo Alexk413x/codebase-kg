@@ -38,6 +38,7 @@ that kept one would make the next `/codebase-kg:refresh` fail.
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import hashlib
 import os
 import shutil
@@ -48,7 +49,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import clean, links, tools, writer
+from . import clean, cli, links, tools, writer
 from .coverage import resolve_source_base
 from .links import ExternalLink, LinkError
 from .models import Anchor, Node, Reference, ReferenceFormatError
@@ -59,6 +60,13 @@ from .store import CodeGraph, StoreError
 #: `id` is not here: it is the key, not a field, and "renaming" a node is a
 #: delete plus an insert with different edge consequences.
 SCALAR_FIELDS = ("kind", "description", "section", "parity", "counterpart", "divergence")
+
+NODE_KEYS = (
+    "id", *SCALAR_FIELDS, "anchors", "edges", "external_links", "references", "rebaseline"
+)
+ANCHOR_KEYS = ("path", "symbol")
+LINK_KEYS = ("target", "kind")
+REFERENCE_KEYS = ("url", "kind", "title", "path", "symbol")
 
 
 class EditError(ValueError):
@@ -415,6 +423,24 @@ def _stamp_sources(
 # --------------------------------------------------------------------------- #
 # kg_upsert_node
 # --------------------------------------------------------------------------- #
+def _reject_unknown(raw: Mapping[str, Any], accepted: tuple[str, ...], where: str) -> None:
+    """Refuse a key outside `accepted`, naming the closest accepted key.
+
+    A misspelled key that is dropped silently reads as a successful write, so the
+    caller never learns the field was not set.
+    """
+    unknown = [str(key) for key in raw if key not in accepted]
+    if not unknown:
+        return
+    found = []
+    for key in unknown:
+        close = difflib.get_close_matches(key, accepted, n=1)
+        found.append(f"unknown key {key!r}" + (f", did you mean {close[0]!r}?" if close else ""))
+    raise EditError(
+        f"{where}: {'; '.join(found)} Accepted keys: {', '.join(accepted)}. Nothing was written."
+    )
+
+
 def _parse_anchors(raw: object, node_id: str) -> list[Anchor]:
     if not isinstance(raw, (list, tuple)):
         raise EditError(f"node '{node_id}': `anchors` must be a list of 'path#Symbol' strings")
@@ -423,6 +449,7 @@ def _parse_anchors(raw: object, node_id: str) -> list[Anchor]:
         if isinstance(item, str):
             out.append(Anchor.parse(item))
         elif isinstance(item, Mapping):
+            _reject_unknown(item, ANCHOR_KEYS, f"node '{node_id}', anchor {dict(item)!r}")
             path = str(item.get("path") or "").strip()
             symbol = item.get("symbol")
             out.append(Anchor(path=path, symbol=str(symbol) if symbol else None))
@@ -434,6 +461,9 @@ def _parse_anchors(raw: object, node_id: str) -> list[Anchor]:
 def _parse_links(raw: object, node_id: str) -> list[ExternalLink]:
     if not isinstance(raw, (list, tuple)):
         raise EditError(f"node '{node_id}': `external_links` must be a list")
+    for item in raw:
+        if isinstance(item, Mapping):
+            _reject_unknown(item, LINK_KEYS, f"node '{node_id}', external link {dict(item)!r}")
     try:
         return links.dedupe(ExternalLink.parse(item) for item in raw)
     except LinkError as exc:
@@ -443,6 +473,9 @@ def _parse_links(raw: object, node_id: str) -> list[ExternalLink]:
 def _parse_references(raw: object, node_id: str) -> list[Reference]:
     if not isinstance(raw, (list, tuple)):
         raise EditError(f"node '{node_id}': `references` must be a list")
+    for item in raw:
+        if isinstance(item, Mapping):
+            _reject_unknown(item, REFERENCE_KEYS, f"node '{node_id}', reference {dict(item)!r}")
     try:
         return [Reference.parse(item) for item in raw]
     except ReferenceFormatError as exc:
@@ -578,6 +611,13 @@ def _write_node(conn: sqlite3.Connection, before: Node | None, after: Node) -> l
     return changes
 
 
+def _forbids_self_edges(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'edge'"
+    ).fetchone()
+    return row is not None and "src <> dst" in str(row["sql"])
+
+
 def _write_edges(conn: sqlite3.Connection, before: Node | None, after: Node) -> list[Change]:
     old = sorted(before.edges) if before else []
     new = sorted(after.edges)
@@ -609,6 +649,8 @@ def upsert_node(path: str | Path, nodes: Iterable[Mapping[str, Any]]) -> dict[st
             f"the same node appears twice in one call: {', '.join(duplicated)}. "
             f"Merge them -- the second would silently win."
         )
+    for patch in patches:
+        _reject_unknown(patch, NODE_KEYS, f"node '{str(patch['id']).strip()}'")
     rebaseline = {node_id: _rebaseline_flag(p, node_id) for node_id, p in zip(ids, patches)}
     graph_dir = Path(path).resolve().parent
 
@@ -635,9 +677,13 @@ def upsert_node(path: str | Path, nodes: Iterable[Mapping[str, Any]]) -> dict[st
         for current, merged in staged:
             changes += _write_node(conn, current, merged)
         for current, merged in staged:
-            for dst in merged.edges:
-                if dst == merged.id:
-                    raise EditError(f"node '{merged.id}' cannot have an edge to itself")
+            if merged.id in merged.edges and _forbids_self_edges(conn):
+                upgrade = cli.command("upgrade", "--force", f'"{path}"')
+                raise EditError(
+                    f"node '{merged.id}' has an edge to itself, but this graph predates "
+                    f"self-edges and its edge table rejects them. Rebuild it with `{upgrade}`, "
+                    "then repeat the edit."
+                )
             changes += _write_edges(conn, current, merged)
         written = [merged for _, merged in staged]
         rehash = {a.path for n in written if rebaseline[n.id] for a in n.anchors}

@@ -474,8 +474,8 @@ def test_the_push_wrapper_still_survives_a_missing_interpreter() -> None:
     """Without the status swallowed, a `127` would block every push in a repo
     that cannot run the check at all."""
     text = (HOOKS / "pre-push").read_text(encoding="utf-8")
-    assert "command -v python >/dev/null 2>&1" in text
-    assert 'else exit 0' in text
+    assert 'for candidate in "py -3" python3 python; do' in text
+    assert '[ -n "$PY" ] || exit 0' in text
     assert '[ -f "$DIR/kg_pre_push.py" ] || exit 0' in text
 
 

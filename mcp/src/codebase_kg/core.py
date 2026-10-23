@@ -9,8 +9,8 @@ never imports fastmcp, so the always-on server stays small.
 pydantic's lax mode does in fastmcp: an integral float or a numeric string is
 an integer, `"true"`/`"off"`/`1`/`0` are booleans, an unknown argument is
 refused, and a missing one takes its default. The write tools' list items keep
-only their required keys checked, because `edits` validates the rest and
-answers with a refusal.
+only their required keys checked, because `edits` validates the rest, unknown
+keys included, and answers with a refusal.
 
 `Core.call_tool` resolves the session's graph, sends the call to a pool worker
 (or runs it here when `max_workers` is 0), and returns the `CallToolResult`.
@@ -115,7 +115,7 @@ def _object(schema: dict[str, Any], value: dict[str, Any], where: str, shallow: 
     missing = [k for k in schema.get("required", []) if k not in value]
     if missing:
         raise ValueError(f"{_join(where, missing[0])}: missing required argument")
-    if schema.get("additionalProperties") is False:
+    if schema.get("additionalProperties") is False and not (shallow and where):
         extra = [k for k in value if k not in props]
         if extra:
             raise ValueError(f"{_join(where, extra[0])}: unexpected argument")
