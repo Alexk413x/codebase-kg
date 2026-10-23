@@ -391,3 +391,51 @@ def test_the_wrapper_skips_a_python3_stub_and_uses_the_py_launcher(
     assert done.returncode == 0, done.stderr
     assert marker.is_file()
     assert marker.read_text(encoding="utf-8").startswith("-3 ")
+
+
+# --- the server is down: a denial no query can clear ----------------------------
+def _gate_output(repo: Path, command: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> str:
+    data = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(repo), "session_id": "s1"}
+    monkeypatch.setattr(search_gate.sys, "stdin", _Stdin(json.dumps(data)))
+    search_gate.main()
+    return capsys.readouterr().out
+
+
+def test_a_search_is_allowed_with_one_notice_when_the_server_is_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _graph_repo(tmp_path)
+    monkeypatch.setattr(search_gate, "server_answers", lambda: False)
+    first = json.loads(_gate_output(repo, "grep -rn thing src", monkeypatch, capsys))
+    assert "permissionDecision" not in first["hookSpecificOutput"]
+    notice = first["hookSpecificOutput"]["additionalContext"]
+    assert "server start" in notice and "kg_cli.py" in notice
+    assert _gate_output(repo, "grep -rn other src", monkeypatch, capsys) == ""
+
+
+def test_a_search_is_still_denied_when_the_server_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _graph_repo(tmp_path)
+    monkeypatch.setattr(search_gate, "server_answers", lambda: True)
+    assert "deny" in _gate_output(repo, "grep -rn thing src", monkeypatch, capsys)
+
+
+def test_server_answers_follows_the_health_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    shim = search_gate.load_shim()
+    monkeypatch.setenv("CODEBASE_KG_PORT", "47999")
+    monkeypatch.setattr(search_gate, "load_shim", lambda: shim)
+    monkeypatch.setattr(shim, "health", lambda port, timeout=1.0: (shim.FREE, {}))
+    assert search_gate.server_answers() is False
+    monkeypatch.setattr(shim, "health", lambda port, timeout=1.0: (shim.OTHER, {}))
+    assert search_gate.server_answers() is False
+    monkeypatch.setattr(shim, "health", lambda port, timeout=1.0: (shim.OURS, {}))
+    assert search_gate.server_answers() is True
+
+
+def test_server_answers_does_not_probe_an_os_chosen_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    shim = search_gate.load_shim()
+    monkeypatch.setenv("CODEBASE_KG_PORT", "0")
+    monkeypatch.setattr(search_gate, "load_shim", lambda: shim)
+    monkeypatch.setattr(shim, "health", lambda *a, **k: pytest.fail("port 0 has no address to probe"))
+    assert search_gate.server_answers() is True

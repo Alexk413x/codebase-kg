@@ -1,10 +1,11 @@
-"""Check or stop the shared server: kg_cli.py server status|stop|sessions|register|unregister.
+"""Check, start or stop the shared server: kg_cli.py server status|start|stop|sessions|register|unregister.
 
 `status` prints what answers on the HTTP port (the `server_port` setting, else
 47821): the build, its pid and its `max_workers`. `stop` asks that server to
-exit, with the token from its state file, and waits until the port is free. The
-next session's SessionStart hook, or the next shim, starts a server again,
-which reads the settings afresh.
+exit, with the token from its state file, and waits until the port is free. `start`
+starts a server if none answers and waits until it does. The next session's
+SessionStart hook, or the next shim, starts a server again, which reads the
+settings afresh.
 
 `register --session ID [--pid N]` and `unregister --session ID` record that an
 agent session uses the server, and `sessions` lists the live ones. A server that
@@ -24,6 +25,7 @@ import time
 from . import cli, shim
 
 STOP_WAIT = 10.0
+START_WAIT = 15.0
 
 
 def _print(data: dict[str, object]) -> int:
@@ -40,6 +42,30 @@ def status(port: int) -> dict[str, object]:
     if kind == shim.UNRESPONSIVE:
         return {"ok": False, "port": port, "error": f"port {port} accepts connections but did not answer /health"}
     return {"ok": True, "port": port, "running": True, **{k: reply.get(k) for k in ("build", "pid", "max_workers")}}
+
+
+def start(port: int) -> dict[str, object]:
+    found = status(port)
+    if found.get("running"):
+        return {**found, "started": False}
+    if not found.get("ok"):
+        return found
+    build = shim.build_info()["build"]
+    shim.cache_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
+    with shim.spawn_lock(build) as locked:
+        if locked:
+            try:
+                shim.spawn_server_detached(build)
+            except OSError as exc:
+                return {"ok": False, "port": port, "error": f"could not start the server: {exc}"}
+        deadline = time.monotonic() + START_WAIT
+        while time.monotonic() < deadline:
+            found = status(port)
+            if found.get("running"):
+                return {**found, "started": locked}
+            time.sleep(0.2)
+    return {"ok": False, "port": port,
+            "error": f"no server answered on port {port} within {START_WAIT:g} s; see {shim.log_path(build)}"}
 
 
 def stop(port: int) -> dict[str, object]:
@@ -83,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     cli.use_utf8()
     ap = argparse.ArgumentParser(prog="kg_cli.py server", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("action", choices=("status", "stop", "sessions", "register", "unregister"))
+    ap.add_argument("action", choices=("status", "start", "stop", "sessions", "register", "unregister"))
     ap.add_argument("--session", help="the session id, for register and unregister")
     ap.add_argument("--pid", type=int, help="the agent's pid for register (default: the nearest agent process above this one)")
     ap.add_argument("--port", type=int, help="the server's HTTP port (default: the server_port setting, else 47821)")
@@ -97,7 +123,8 @@ def main(argv: list[str] | None = None) -> int:
         return _print(register(ns.session, ns.pid))
     if ns.action == "unregister":
         return _print(unregister(ns.session))
-    return _print(status(port) if ns.action == "status" else stop(port))
+    actions = {"status": status, "start": start, "stop": stop}
+    return _print(actions[ns.action](port))
 
 
 if __name__ == "__main__":

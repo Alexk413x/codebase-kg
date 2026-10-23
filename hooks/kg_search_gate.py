@@ -76,6 +76,7 @@ from _config import (
     strip_heredocs,
     write_state,
 )
+from _shim_loader import load_shim
 
 _SEARCH_TOOLS = {"Grep", "Glob"}
 _SHELL_TOOLS = {"Bash", "PowerShell"}
@@ -808,6 +809,29 @@ def searches_an_anchored_path(
     return is_anchored(graph, rel)
 
 
+SERVER_DOWN_MESSAGE = (
+    "codebase-kg: nothing answers as the codebase-kg server on port {port}, so its tools are "
+    "unavailable and this search is allowed. Start it with: uv run --no-project --quiet "
+    '"{cli}" server start. Then reconnect it from /mcp, or start a new session.'
+)
+
+
+def server_answers() -> bool:
+    """False only when the shared server's port is known and nothing answers as codebase-kg there."""
+    try:
+        shim = load_shim()
+        port = shim.http_port()
+        return port == 0 or shim.health(port, timeout=0.5)[0] == shim.OURS
+    except Exception:  # noqa: BLE001 - a failed probe keeps the gate on
+        return True
+
+
+def _server_down_message() -> str:
+    shim = load_shim()
+    root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parents[1])
+    return SERVER_DOWN_MESSAGE.format(port=shim.http_port(), cli=root / "mcp" / "launch" / "kg_cli.py")
+
+
 def _advise(message: str, notify_user: bool = False) -> None:
     out: dict[str, object] = {
         "hookSpecificOutput": {
@@ -916,6 +940,15 @@ def _run(data: dict[str, object]) -> None:
     if credit > 0:
         state["credit"] = credit - 1
         _write_state(proj, session, state)
+        return
+
+    # A denial the agent cannot clear is a trap: with the server down there is no
+    # query that buys credit. Say so once per session, then stay out of the way.
+    if not server_answers():
+        if not state.get("server_down_noted"):
+            state["server_down_noted"] = True
+            _write_state(proj, session, state)
+            _advise(_server_down_message(), notify_user=True)
         return
 
     # Record the denial before emitting, not after: a failure between the two

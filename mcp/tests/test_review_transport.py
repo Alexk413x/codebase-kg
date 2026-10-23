@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import atexit
+import faulthandler
 import http.client
 import io
 import json
@@ -10,6 +12,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -449,3 +452,70 @@ def test_detached_spawn_uses_the_plain_start_off_windows(monkeypatch: pytest.Mon
     monkeypatch.setattr(shim, "spawn_server_outside_job", lambda build: pytest.fail("WMI is Windows only"))
     monkeypatch.setattr(shim, "spawn_server", lambda build: started)
     assert shim.spawn_server_detached(BUILD) is started
+
+
+def test_server_start_spawns_once_and_waits_for_the_answer(cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    spawned: list[str] = []
+    answers = iter([(shim.FREE, {}), (shim.FREE, {}), (shim.OURS, {"build": BUILD, "pid": 7, "max_workers": 1})])
+    monkeypatch.setattr(shim, "health", lambda port, timeout=1.0: next(answers))
+    monkeypatch.setattr(shim, "spawn_server_detached", lambda build: spawned.append(build))
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    result = control.start(47999)
+    assert result["ok"] is True and result["running"] is True and result["started"] is True
+    assert spawned == [shim.build_info()["build"]]
+
+
+def test_server_start_leaves_a_running_server_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shim, "health", lambda port, timeout=1.0: (shim.OURS, {"build": BUILD, "pid": 7}))
+    monkeypatch.setattr(shim, "spawn_server_detached", lambda build: pytest.fail("a server already answers"))
+    result = control.start(47999)
+    assert result["running"] is True and result["started"] is False
+
+
+def test_server_start_reports_a_port_held_by_another_program(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shim, "health", lambda port, timeout=1.0: (shim.OTHER, {}))
+    monkeypatch.setattr(shim, "spawn_server_detached", lambda build: pytest.fail("the port is not ours"))
+    result = control.start(47999)
+    assert result["ok"] is False and "another program" in str(result["error"])
+
+
+def test_server_start_reports_a_server_that_never_answers(cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shim, "health", lambda port, timeout=1.0: (shim.FREE, {}))
+    monkeypatch.setattr(shim, "spawn_server_detached", lambda build: None)
+    monkeypatch.setattr(control, "START_WAIT", 0.0)
+    result = control.start(47999)
+    assert result["ok"] is False and "server-" in str(result["error"])
+
+
+def test_the_daemon_logs_a_signal_and_stops(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    import signal
+
+    from codebase_kg import daemon
+
+    saved = {n: signal.getsignal(n) for n in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        d = daemon.Daemon("v", "t", 3600.0)
+        monkeypatch.setattr(atexit, "register", lambda *a, **k: None)
+        with caplog.at_level("INFO", logger="codebase_kg.daemon"):
+            daemon._log_exit_causes(d)
+            handler = signal.getsignal(signal.SIGTERM)
+            assert callable(handler)
+            handler(signal.SIGTERM, None)
+        assert d._stopping.is_set()
+        assert "received signal" in caplog.text
+    finally:
+        for number, previous in saved.items():
+            signal.signal(number, previous)
+        faulthandler.disable()
+
+
+def test_the_daemon_logs_a_heartbeat(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    from codebase_kg import daemon
+
+    monkeypatch.setattr(daemon, "HEARTBEAT", 0.0)
+    monkeypatch.setattr(daemon, "TICK", 0.01)
+    d = daemon.Daemon("v", "t", 3600.0)
+    threading.Timer(0.15, d.stop).start()
+    with caplog.at_level("INFO", logger="codebase_kg.daemon"):
+        d.wait()
+    assert "alive" in caplog.text

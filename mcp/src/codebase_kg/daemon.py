@@ -42,10 +42,13 @@ argument, `$CODEBASE_KG_PATH` or its cwd, and no pool.
 
 from __future__ import annotations
 
+import atexit
+import faulthandler
 import json
 import logging
 import os
 import secrets
+import signal
 import sys
 import threading
 import time
@@ -61,6 +64,7 @@ DEFAULT_IDLE_TIMEOUT = 600.0
 DEFAULT_HTTP_IDLE_TIMEOUT = 8 * 3600.0
 ORPHAN_CHECK_INTERVAL = 5.0
 DEFAULT_SESSION_GRACE = 300.0
+HEARTBEAT = 600.0
 TICK = 0.25
 
 
@@ -142,10 +146,13 @@ class Daemon:
 
     def wait(self) -> None:
         """Return when the server should exit."""
-        checked = time.monotonic()
+        checked = beat = time.monotonic()
         while not self._stopping.wait(TICK):
             if self.idle():
                 return
+            if time.monotonic() - beat >= HEARTBEAT:
+                beat = time.monotonic()
+                logger.info("alive; %d call(s) in flight", self._active)
             if time.monotonic() - checked >= ORPHAN_CHECK_INTERVAL:
                 checked = time.monotonic()
                 if self.orphaned():
@@ -169,6 +176,27 @@ def _start(server: Any, name: str, running: list[Any]) -> None:
     running.append(server)
 
 
+def _log_exit_causes(daemon: Daemon) -> None:
+    """Leave a trace of how the process ends. A hard kill leaves none, and that absence is the signal."""
+    try:
+        faulthandler.enable(sys.stderr)
+    except (AttributeError, OSError, ValueError):
+        pass
+
+    def on_signal(number: int, _frame: object) -> None:
+        logger.warning("received signal %d; stopping", number)
+        daemon.stop()
+
+    for name in ("SIGTERM", "SIGINT", "SIGBREAK", "SIGHUP"):
+        number = getattr(signal, name, None)
+        if number is not None:
+            try:
+                signal.signal(number, on_signal)
+            except (OSError, ValueError):
+                pass
+    atexit.register(logger.info, "process exiting")
+
+
 def serve() -> None:
     logging.basicConfig(
         level=logging.INFO, stream=sys.stderr,
@@ -188,6 +216,8 @@ def serve() -> None:
         http_timeout=shim.env_float("CODEBASE_KG_HTTP_IDLE_TIMEOUT", DEFAULT_HTTP_IDLE_TIMEOUT),
         session_grace=shim.env_float("CODEBASE_KG_SESSION_GRACE", DEFAULT_SESSION_GRACE),
     )
+    _log_exit_causes(daemon)
+    logger.info("started by pid %d", os.getppid())
     limit = max_workers()
     pool = Pool(limit, timeout=call_timeout()) if limit > 0 else None
     engine = core.Core(pool)
