@@ -17,10 +17,10 @@ import sys
 from pathlib import Path
 
 import pytest
-from codebase_kg.coverage import classify, declared_roots
+from codebase_kg.coverage import classify, dir_may_hold
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.store import CodeGraph
-from codebase_kg.tools import coverage_report, walk_sources
+from codebase_kg.tools import _IGNORE_LOWER, coverage_report, walk_sources
 from codebase_kg.writer import build
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -29,26 +29,35 @@ sys.path.insert(0, str(ROOT / "git-hooks"))
 import kg_pre_push
 
 
-# --- which directories a pattern names ---------------------------------------
-@pytest.mark.parametrize("pattern, expected", [
-    (".githooks/*", {".githooks"}),
-    (".githooks/", {".githooks"}),
-    ("app/src/**/*.kt", {"app", "app/src"}),
-    ("hooks/kg_post_edit_check.py", {"hooks"}),
-    ("**/*.py", set()),          # leading wildcard must not un-prune .venv
-    ("*.kt", set()),
-    ("", set()),
-    ("# a comment", set()),
+# --- which directories a pattern can reach ----------------------------------
+@pytest.mark.parametrize("pattern, rel_dir, expected", [
+    (".githooks/*", ".githooks", True),
+    (".githooks/", ".githooks", True),
+    ("app/.generated/*", "app/.generated", True),
+    ("hooks/kg_post_edit_check.py", "hooks", True),
+    ("app/src/**/*.kt", "app/src/main/kotlin/com/acme/build", True),
+    ("app/src/**/*.kt", "app/build", False),
+    ("app/src/**/*.kt", "other/src/build", False),
+    ("**/build/*.kt", "app/build", True),
+    ("**/build/*.kt", "node_modules/pkg/build", False),
+    ("**/*.py", "node_modules", False),    # leading wildcard must not un-prune .venv
+    ("**/*.py", ".venv/lib", False),
+    ("**/*", "node_modules", False),
+    ("*/src/*.kt", "node_modules/src", False),
+    ("**", "node_modules", False),
+    ("*.kt", "build", False),
+    ("", "build", False),
+    ("# a comment", "build", False),
+    ("build/x.py", "build/x.py", False),   # a file name is not a directory
 ])
-def test_declared_roots(pattern: str, expected: set[str]) -> None:
-    assert declared_roots([pattern]) == expected
+def test_dir_may_hold(pattern: str, rel_dir: str, expected: bool) -> None:
+    assert dir_may_hold(rel_dir, [pattern], _IGNORE_LOWER) is expected
 
 
-def test_declared_roots_unions_and_includes_ancestors() -> None:
-    # `app/` must survive the prune for the walk to ever reach `app/.generated/`.
-    assert declared_roots(["app/.generated/*", ".githooks/*"]) == {
-        "app", "app/.generated", ".githooks",
-    }
+def test_dir_may_hold_any_pattern_admits() -> None:
+    patterns = ["**/*.py", ".githooks/*"]
+    assert dir_may_hold(".githooks", patterns, _IGNORE_LOWER)
+    assert not dir_may_hold("node_modules", patterns, _IGNORE_LOWER)
 
 
 # --- the walk ----------------------------------------------------------------
@@ -72,14 +81,35 @@ def test_walk_prunes_ignored_dirs_by_default(tree: Path) -> None:
 
 
 def test_walk_keeps_a_declared_dir(tree: Path) -> None:
-    files = walk_sources(tree, keep=declared_roots([".githooks/*"]))
+    files = walk_sources(tree, covers=[".githooks/*"])
     assert files == [".githooks/kg_pre_push.py", ".githooks/pre-push", "src/Main.kt"]
     # Declaring one ignored directory must not readmit the others.
     assert not any(f.startswith((".github/", "node_modules/")) for f in files)
 
 
-def test_walk_keep_is_case_insensitive_like_the_prune(tree: Path) -> None:
-    assert ".githooks/pre-push" in walk_sources(tree, keep={".GitHooks"})
+def test_walk_keeps_an_ignored_dir_a_wildcard_pattern_reaches(tmp_path: Path) -> None:
+    for rel in (
+        "app/src/main/kotlin/com/acme/build/Config.kt",
+        "app/src/main/kotlin/com/acme/Main.kt",
+        "app/build/Generated.kt",
+    ):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x", encoding="utf-8")
+
+    files = walk_sources(tmp_path, covers=["app/src/**/*.kt"])
+    assert "app/src/main/kotlin/com/acme/build/Config.kt" in files
+    assert "app/build/Generated.kt" not in files
+    assert "app/build/Generated.kt" not in walk_sources(tmp_path)
+
+
+def test_walk_does_not_descend_into_noise_for_a_leading_wildcard(tmp_path: Path) -> None:
+    for rel in ("src/a.py", "node_modules/dep/b.py", ".venv/lib/c.py", "x/vendor/d.py"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x", encoding="utf-8")
+
+    assert walk_sources(tmp_path, covers=["**/*.py"]) == ["src/a.py"]
 
 
 # --- the number the report prints --------------------------------------------
@@ -155,7 +185,7 @@ def test_declaring_an_ignored_dir_does_not_change_out_of_scope(tmp_path: Path) -
     # README.md is the only genuinely out-of-scope file, in both walks.
     without = classify(walk_sources(repo), anchored, covers, [])
     with_declared = classify(
-        walk_sources(repo, keep=declared_roots(covers)), anchored, covers, []
+        walk_sources(repo, covers=covers), anchored, covers, []
     )
 
     assert without.covered == 1 and with_declared.covered == 2
@@ -219,3 +249,53 @@ def test_gap_count_counts_every_gap_past_the_listing_cap() -> None:
     assert len(report.gaps) == 50
     assert report.truncated
     assert report.to_dict()["gap_count"] == 60
+
+
+# --- a `covers` match wins over the prune at any depth -----------------------
+def test_pattern_covered_file_in_a_nested_build_dir_is_covered(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    nested = "app/src/main/kotlin/com/acme/build/Config.kt"
+    for rel in ("app/src/main/kotlin/com/acme/Main.kt", nested, "app/build/Skip.kt"):
+        p = repo / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x", encoding="utf-8")
+
+    db = tmp_path / "code_graph.db"
+    build(
+        db,
+        Meta(codebase="t", root="", generated="2026-07-31", covers=["app/src/**/*.kt"]),
+        [Node(
+            id="config", kind="Entry", description="The build configuration.",
+            anchors=[Anchor(nested, "Config")], edges=[], section="APP",
+        )],
+        source_root=repo,
+    )
+    graph = CodeGraph(db)
+    try:
+        report = coverage_report(graph, repo)
+    finally:
+        graph.close()
+    assert report.covered == 1
+    assert report.gaps == ["app/src/main/kotlin/com/acme/Main.kt"]
+    assert report.out_of_scope == 0
+
+
+def test_an_unanchored_nested_build_file_is_a_gap(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    rel = "app/src/main/kotlin/com/acme/build/Config.kt"
+    p = repo / rel
+    p.parent.mkdir(parents=True)
+    p.write_text("x", encoding="utf-8")
+    files = walk_sources(repo, covers=["app/src/**/*.kt"])
+    assert classify(files, set(), ["app/src/**/*.kt"], []).gaps == [rel]
+
+
+def test_pre_push_lets_covers_outrank_a_nested_ignored_dir() -> None:
+    covers = kg_pre_push.compile_patterns(["app/src/**/*.kt"])
+    exempt = kg_pre_push.compile_patterns([])
+    nested = "app/src/main/kotlin/com/acme/build/Config.kt"
+    assert kg_pre_push.is_source(nested, root="", graph_rel=None, covers=covers, exempt=exempt)
+    assert not kg_pre_push.is_source(
+        "app/build/Skip.kt", root="", graph_rel=None, covers=covers, exempt=exempt
+    )
+    assert not kg_pre_push.is_source(nested, root="", graph_rel=None)

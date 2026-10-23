@@ -703,3 +703,64 @@ def test_the_published_schema_forbids_unknown_keys_in_node_items() -> None:
     assert schema["additionalProperties"] is False
     assert schema["properties"]["external_links"]["items"]["additionalProperties"] is False
     assert schema["properties"]["references"]["items"]["additionalProperties"] is False
+
+
+def _db_with_stored_link(tmp_path: Path, target: str) -> Path:
+    db = _two_nodes(tmp_path / "knowledge")
+    conn = sqlite3.connect(db)
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'external_link'").fetchone():
+            conn.executescript(links.EXTERNAL_LINK_DDL)
+        conn.execute("INSERT INTO external_link (node_id, target) VALUES ('a', ?)", (target,))
+        conn.commit()
+    finally:
+        conn.close()
+    return db
+
+
+@pytest.mark.parametrize("bad", ["../other.db#x", "/etc/other.db#x", "C:/other.db#x"])
+def test_add_link_refuses_a_target_that_leaves_the_knowledge_directory(
+    tmp_path: Path, bad: str
+) -> None:
+    db = _two_nodes(tmp_path)
+    before = db.read_bytes()
+    with pytest.raises(edits.EditError, match=r"knowledge/|'\.\.' segment"):
+        edits.add_link(db, "a", bad)
+    assert db.read_bytes() == before
+
+
+@pytest.mark.parametrize("bad", ["../other.db#x", "/etc/other.db#x", "C:/other.db#x"])
+@pytest.mark.parametrize("shape", ["string", "object"])
+def test_upsert_node_refuses_an_escaping_external_link(
+    tmp_path: Path, bad: str, shape: str
+) -> None:
+    db = _two_nodes(tmp_path)
+    before = db.read_bytes()
+    item: object = bad if shape == "string" else {"target": bad, "kind": "tests"}
+    with pytest.raises(edits.EditError, match=r"knowledge/|'\.\.' segment"):
+        edits.upsert_node(db, [{"id": "a", "external_links": [item]}])
+    assert db.read_bytes() == before
+
+
+def test_a_stored_escaping_target_validates_as_malformed_and_is_never_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sqlite3.connect(tmp_path / "other.db").close()
+    db = _db_with_stored_link(tmp_path, "../other.db#x")
+    real_connect = sqlite3.connect
+    opened: list[str] = []
+
+    def spy(database, *args, **kwargs):
+        opened.append(str(database))
+        return real_connect(database, *args, **kwargs)
+
+    g = CodeGraph(db)
+    try:
+        monkeypatch.setattr(sqlite3, "connect", spy)
+        report = tools.kg_validate(g)
+    finally:
+        g.close()
+    issues = report["external_link_issues"]
+    assert [(i["target"], i["severity"]) for i in issues] == [("../other.db#x", "error")]
+    assert not any("other.db" in o for o in opened)
+    assert links.resolve(db.parent, "../other.db#x") is links.Resolution.MALFORMED

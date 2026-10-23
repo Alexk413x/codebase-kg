@@ -72,7 +72,7 @@ def test_a_write_reads_the_source_tree_once_for_both_validations(
     read, walk = tools._read_source, tools.walk_sources
     monkeypatch.setattr(tools, "_read_source", lambda fp: (reads.append(fp), read(fp))[1])
     monkeypatch.setattr(
-        tools, "walk_sources", lambda base, keep=(): (walks.append(base), walk(base, keep))[1]
+        tools, "walk_sources", lambda base, covers=(): (walks.append(base), walk(base, covers))[1]
     )
     result = edits.upsert_node(graph, [{"id": "a", "description": "Does the A thing, revised."}])
     assert result["written"] is True

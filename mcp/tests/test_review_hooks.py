@@ -439,3 +439,81 @@ def test_server_answers_does_not_probe_an_os_chosen_port(monkeypatch: pytest.Mon
     monkeypatch.setattr(search_gate, "load_shim", lambda: shim)
     monkeypatch.setattr(shim, "health", lambda *a, **k: pytest.fail("port 0 has no address to probe"))
     assert search_gate.server_answers() is True
+
+
+# --- covers outranks the ignored directories in the hooks ----------------------
+COVERS = ["app/src/**/*.kt", ".githooks/*"]
+
+
+def test_reaches_mapped_code_admits_a_covered_ignored_dir(tmp_path: Path) -> None:
+    nested = tmp_path / "app" / "src" / "main" / "build"
+    nested.mkdir(parents=True)
+    (nested / "Config.kt").write_text("x", encoding="utf-8")
+    proj = tmp_path.resolve()
+    assert not cfg_mod.reaches_mapped_code(nested, proj, "")
+    assert cfg_mod.reaches_mapped_code(nested, proj, "", COVERS)
+    assert cfg_mod.reaches_mapped_code(nested / "Config.kt", proj, "", COVERS)
+    assert not cfg_mod.reaches_mapped_code(proj / "app" / "build", proj, "", COVERS)
+    assert not cfg_mod.reaches_mapped_code(proj / "node_modules", proj, "", ["**/*.py"])
+
+
+def test_reaches_mapped_code_matches_covers_relative_to_root(tmp_path: Path) -> None:
+    proj = tmp_path.resolve()
+    assert cfg_mod.reaches_mapped_code(proj / "app" / "src" / "x" / "build", proj, "app", ["src/**/*.kt"])
+    assert not cfg_mod.reaches_mapped_code(proj / "app" / "build", proj, "app", ["src/**/*.kt"])
+    assert not cfg_mod.reaches_mapped_code(proj / "docs", proj, "app", ["src/**/*.kt"])
+
+
+def test_a_shell_search_of_a_covered_build_dir_is_gated(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "app" / "src" / "main" / "build").mkdir(parents=True)
+    scoped = repo.resolve()
+    command = "grep -rn thing app/src/main/build"
+    assert search_gate.shell_search_is_gated(command, scoped) is False
+    assert search_gate.shell_search_is_gated(command, scoped, None, "", COVERS) is True
+
+
+def test_the_search_gate_reads_covers_from_the_graph(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    nested = "app/src/main/build/Config.kt"
+    (repo / Path(nested).parent).mkdir(parents=True)
+    (repo / nested).write_text("class C", encoding="utf-8")
+    build(
+        repo / "knowledge" / "code_graph.db",
+        Meta(codebase="x", root="", generated="2026-07-30", covers=["app/src/**/*.kt"]),
+        [Node(id="c", kind="K", anchors=[Anchor(nested, "C")])],
+        source_root=repo,
+    )
+    graph = cfg_mod.find_graph(repo.resolve(), dict(cfg_mod.DEFAULTS))
+    assert graph is not None
+    assert cfg_mod.parse_patterns(cfg_mod.graph_meta(graph, "covers")) == ["app/src/**/*.kt"]
+    gated = search_gate._graph_if_gated(
+        "Grep",
+        {"pattern": "C", "path": "app/src/main/build"},
+        repo.resolve(),
+        dict(cfg_mod.DEFAULTS),
+    )
+    assert gated == graph
+
+
+def test_post_edit_hook_nudges_for_a_covered_file_in_a_build_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "app" / "src" / "build").mkdir(parents=True)
+    (repo / "app" / "src" / "Known.kt").write_text("class K", encoding="utf-8")
+    edited = repo / "app" / "src" / "build" / "Config.kt"
+    edited.write_text("class C", encoding="utf-8")
+    build(
+        repo / "knowledge" / "code_graph.db",
+        Meta(codebase="x", root="", generated="2026-07-30", covers=["app/src/**/*.kt"]),
+        [Node(id="k", kind="K", anchors=[Anchor("app/src/Known.kt", "K")])],
+        source_root=repo,
+    )
+    payload = json.dumps({
+        "tool_name": "Edit", "tool_input": {"file_path": str(edited)}, "cwd": str(repo),
+    })
+    monkeypatch.setattr(post_edit.sys, "stdin", _Stdin(payload))
+    post_edit.main()
+    out = capsys.readouterr().out
+    assert "app/src/build/Config.kt" in out

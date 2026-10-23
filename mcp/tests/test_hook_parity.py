@@ -357,3 +357,50 @@ def test_both_copies_split_the_same_way(
 
     assert staleness.classify(["a.kt"], baselines, current) == expected
     assert kg_pre_push.classify(["a.kt"], baselines, current) == expected
+
+
+# --- the hooks' copy of the coverage helpers ----------------------------------
+def test_hook_config_copies_of_the_coverage_helpers_have_not_drifted() -> None:
+    import inspect
+
+    from codebase_kg import coverage
+
+    for name in (
+        "glob_to_regex", "compile_patterns", "matches_any", "parse_patterns",
+        "dir_may_hold", "_may_match",
+    ):
+        pkg_src = inspect.getsource(getattr(coverage, name))
+        hook_src = inspect.getsource(getattr(_config, name))
+        assert _body(pkg_src) == _body(hook_src), f"{name} has drifted"
+    assert _config._WILDCARDS.pattern == coverage._WILDCARDS.pattern
+
+
+@pytest.mark.parametrize("pattern, rel_dir", [
+    ("app/src/**/*.kt", "app/src/main/build"),
+    ("**/*.py", "node_modules"),
+    (".githooks/*", ".githooks"),
+])
+def test_both_dir_matchers_agree(pattern: str, rel_dir: str) -> None:
+    from codebase_kg import coverage
+
+    ignored = _config._IGNORE_LOWER
+    assert coverage.dir_may_hold(rel_dir, [pattern], ignored) == _config.dir_may_hold(
+        rel_dir, [pattern], ignored
+    )
+
+
+@pytest.mark.parametrize("rel", [
+    "app/src/main/build/Config.kt",
+    "app/build/Skip.kt",
+    ".githooks/pre-push",
+    "docs/a.md",
+])
+def test_both_hooks_let_covers_decide(tmp_path: Path, rel: str) -> None:
+    covers = ["app/src/**/*.kt", ".githooks/*"]
+    cfg: dict[str, object] = {
+        "root": "", "exclude_ext": list(EXCLUDE_EXT), "covers": covers,
+    }
+    expected = kg_pre_push.is_source(
+        rel, "", None, kg_pre_push.compile_patterns(covers), None
+    )
+    assert _config.is_source_file(tmp_path / rel, tmp_path, cfg) is expected

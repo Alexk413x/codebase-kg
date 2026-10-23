@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from collections.abc import Iterable
 from pathlib import Path
 
 from _config import DEFAULTS, as_local_path, reaches_mapped_code, strip_heredocs
@@ -518,7 +519,8 @@ def clause_is_exempt(clause: SearchClause, cfg: dict[str, object]) -> bool:
 
 
 def shell_search_is_gated(
-    command: str, proj: Path, cfg: dict[str, object] | None = None, root: str = ""
+    command: str, proj: Path, cfg: dict[str, object] | None = None, root: str = "",
+    covers: Iterable[str] = (),
 ) -> bool:
     """Is this shell command a search of THIS repo with no file named yet?
 
@@ -554,7 +556,7 @@ def shell_search_is_gated(
         return False  # no path operand: reading stdin, not the tree
     # Outside this repo, outside the graph's `root`, or in an ignored dir: not
     # ours to gate.
-    inside = [t for t in targets if reaches_mapped_code(t, proj, root)]
+    inside = [t for t in targets if reaches_mapped_code(t, proj, root, covers)]
     if not inside:
         return False
     # Every in-repo target already names a file → located. A directory, or a

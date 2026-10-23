@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from . import clean, staleness
-from .coverage import CoverageReport, classify, declared_roots, resolve_source_base
+from .coverage import CoverageReport, classify, dir_may_hold, resolve_source_base
 from .links import Resolution, resolve
 from .store import CodeGraph, StoreError, tokenize
 from .writer import file_sha
@@ -480,10 +480,10 @@ class SourceCache:
         self._walks: dict[tuple[str, tuple[str, ...]], list[str]] = {}
         self._files: dict[Path, tuple[bool, str | None, str | None]] = {}
 
-    def walk(self, base: Path, keep: Iterable[str]) -> list[str]:
-        key = (str(base), tuple(sorted(keep)))
+    def walk(self, base: Path, covers: Iterable[str]) -> list[str]:
+        key = (str(base), tuple(sorted(covers)))
         if key not in self._walks:
-            self._walks[key] = walk_sources(base, keep=keep)
+            self._walks[key] = walk_sources(base, covers=covers)
         return self._walks[key]
 
     def read(self, fp: Path) -> tuple[bool, str | None, str | None]:
@@ -560,20 +560,20 @@ def _check_anchors(graph: CodeGraph, base: Path, cache: SourceCache | None = Non
     return out
 
 
-def walk_sources(base: Path, keep: Iterable[str] = ()) -> list[str]:
+def walk_sources(base: Path, covers: Iterable[str] = ()) -> list[str]:
     """Every file under `base`, relative and posix-separated, ignored dirs pruned.
 
     os.walk with in-place pruning, not rglob: rglob descends into
     node_modules/.git/build in full and only filters afterwards, so the ignored
     99% of a real tree gets walked and sorted before being discarded.
 
-    `keep` are directories the graph's `covers` names outright (see
-    `coverage.declared_roots`); they survive the prune. Without that, a repo that
-    declares `.githooks/*` could never reach `covered` — the files were removed
-    from the walk before anything classified them, so they counted as neither
-    covered nor gap, and the declaration silently did nothing.
+    The graph's `covers` outrank the prune: an ignored-name directory is kept at
+    any depth when a pattern could match beneath it (`coverage.dir_may_hold`).
+    Without that, a repo that declares `.githooks/*` or `app/src/**/*.kt` could
+    never reach `covered` for files under `.githooks/` or `.../build/`: they left
+    the walk before anything classified them, so the declaration did nothing.
     """
-    keep_set = {k.strip("/").lower() for k in keep}
+    patterns = list(covers)
     out: list[str] = []
     for dirpath, dirnames, filenames in os.walk(base):
         rel_dir = Path(dirpath).relative_to(base).as_posix()
@@ -581,7 +581,8 @@ def walk_sources(base: Path, keep: Iterable[str] = ()) -> list[str]:
         dirnames[:] = [
             d
             for d in dirnames
-            if d.lower() not in _IGNORE_LOWER or (prefix + d).lower() in keep_set
+            if d.lower() not in _IGNORE_LOWER
+            or (patterns and dir_may_hold(prefix + d, patterns, _IGNORE_LOWER))
         ]
         dirnames.sort()
         out += [prefix + name for name in sorted(filenames)]
@@ -600,8 +601,7 @@ def coverage_report(
     """
     meta = graph.meta
     anchored = set(graph.anchor_paths())  # already posix-normalized by the store
-    keep = declared_roots(meta.covers)
-    files = cache.walk(base, keep) if cache else walk_sources(base, keep=keep)
+    files = cache.walk(base, meta.covers) if cache else walk_sources(base, covers=meta.covers)
     return classify(files, anchored, meta.covers, meta.exempt, limit)
 
 

@@ -31,6 +31,7 @@ from _config import (
     is_anchored,
     is_source_file,
     load_config,
+    load_declared_coverage,
     norm_path,
     norm_root,
     project_dir,
@@ -123,6 +124,7 @@ def _run(data: dict[str, object]) -> None:
     # `root` comes from the committed graph meta; .local.md may override.
     if not cfg.get("root"):
         cfg["root"] = graph_meta(graph, "root")
+    load_declared_coverage(graph, cfg)
 
     for fp in paths:
         if _check(fp, proj, cfg, graph):

@@ -31,7 +31,11 @@ beside it instead.
 A target is `<db-file>#<node-id>` where `<db-file>` is relative to the project's
 `knowledge/` directory -- never absolute. An absolute path is a fact about one
 machine; committed into a shared artifact it breaks on the next clone and reads
-as a dangling link to everyone except its author.
+as a dangling link to everyone except its author. The rule is enforced, not
+advisory: `resolve` opens whatever file the target names, so an absolute path
+(drive letter, leading slash, UNC) or a `..` segment would let a committed link
+point it at any SQLite file on the machine. `split_target` raises `LinkError`
+for both and `resolve` reports `MALFORMED` without touching the filesystem.
 
 `kind` names what the link means from the source's side -- `implements`,
 `tests`, `documents`. Empty is allowed and means unspecified; it is not a
@@ -133,18 +137,31 @@ def normalize_target(target: str) -> str:
     return out
 
 
+def _check_db_file(target: str, db_file: str) -> None:
+    drive = len(db_file) > 1 and db_file[1] == ":" and db_file[0].isalpha()
+    if db_file.startswith("/") or drive:
+        raise LinkError(
+            f"{target!r}: <db-file> must be relative to knowledge/, not an absolute path"
+        )
+    if ".." in db_file.split("/"):
+        raise LinkError(f"{target!r}: <db-file> must not contain a '..' segment")
+
+
 def split_target(target: str) -> tuple[str, str]:
     """`"code_graph.db#rpn_screen"` -> `("code_graph.db", "rpn_screen")`.
 
-    Raises `LinkError` when either half is empty. The table's CHECK rejects a
-    missing or leading `#`, but SQLite's `instr` cannot also express "and
-    something follows it" -- so `code_graph.db#` is writable, and it resolves to
+    Raises `LinkError` when either half is empty, when `<db-file>` is absolute
+    (drive letter, leading slash, UNC), or when it has a `..` segment.
+
+    The table's CHECK rejects a missing or leading `#`, but SQLite's `instr`
+    cannot also express "and something follows it" -- so `code_graph.db#` is writable, and it resolves to
     a lookup for the empty id: a link that can never match anything and never
     says why.
     """
     db_file, sep, node_id = normalize_target(target).partition(SEPARATOR)
     if not sep or not db_file or not node_id:
         raise LinkError(f"{target!r} is not '<db-file>#<node-id>'")
+    _check_db_file(target, db_file)
     return db_file, node_id
 
 
@@ -176,7 +193,7 @@ class ExternalLink:
         which is exactly what a link written without a kind is.
         """
         if isinstance(raw, str):
-            return cls(target=raw)
+            return _relative(cls(target=raw))
         if isinstance(raw, dict):
             target = raw.get("target")
             if not isinstance(target, str) or not target.strip():
@@ -184,8 +201,13 @@ class ExternalLink:
             kind = raw.get("kind") or ""
             if not isinstance(kind, str):
                 raise LinkError(f"external link {target!r}: `kind` must be a string")
-            return cls(target=target.strip(), kind=kind.strip())
+            return _relative(cls(target=target.strip(), kind=kind.strip()))
         raise LinkError(f"external link {raw!r} must be a string or an object")
+
+
+def _relative(link: ExternalLink) -> ExternalLink:
+    _check_db_file(link.target, link.target.partition(SEPARATOR)[0])
+    return link
 
 
 def dedupe(links: Iterable[ExternalLink]) -> list[ExternalLink]:
@@ -293,6 +315,7 @@ def nodes_linking_to(
 
 def insert(con: sqlite3.Connection, node_id: str, link: ExternalLink) -> None:
     """Write one link. Plain INSERT: a duplicate is an authoring bug, not noise."""
+    split_target(link.target)
     con.execute(
         f"INSERT INTO {TABLE} (node_id, target, kind) VALUES (?,?,?)",
         (node_id, link.target, link.kind),

@@ -443,3 +443,82 @@ def test_the_parity_constraints_are_untouched(tmp_path: Path) -> None:
         with pytest.raises(sqlite3.IntegrityError):
             con.execute(sql, tuple(cols.values()))
     con.close()
+
+
+# --- targets that escape knowledge/ -------------------------------------------
+ESCAPING_TARGETS = [
+    "/etc/other.db#x",
+    "C:/Users/me/other.db#x",
+    r"C:\Users\me\other.db#x",
+    "c:other.db#x",
+    "//host/share/other.db#x",
+    r"\host\share\other.db#x",
+    "../other.db#x",
+    "sub/../../other.db#x",
+    r"sub\..\other.db#x",
+    "knowledge/../other.db#x",
+    "knowledge//etc/other.db#x",
+]
+
+
+@pytest.mark.parametrize("bad", ESCAPING_TARGETS)
+def test_a_target_that_leaves_the_knowledge_directory_is_refused(bad) -> None:
+    with pytest.raises(LinkError, match=r"relative to knowledge/|'\.\.' segment"):
+        links.split_target(bad)
+
+
+@pytest.mark.parametrize("bad", ESCAPING_TARGETS)
+def test_parse_refuses_an_escaping_target_in_both_shapes(bad) -> None:
+    with pytest.raises(LinkError):
+        ExternalLink.parse(bad)
+    with pytest.raises(LinkError):
+        ExternalLink.parse({"target": bad, "kind": "tests"})
+
+
+@pytest.mark.parametrize("ok", ["g.db#x", "sub/g.db#x", "a..b.db#x", "g.db#../x"])
+def test_dots_inside_a_name_or_the_node_id_are_not_an_escape(ok) -> None:
+    links.split_target(ok)
+
+
+@pytest.mark.parametrize("bad", ESCAPING_TARGETS)
+def test_the_writer_names_the_node_when_a_target_escapes_knowledge(
+    tmp_path: Path, bad
+) -> None:
+    with pytest.raises(BuildError, match="rpn_screen"):
+        build(
+            tmp_path / "g.db",
+            Meta(codebase="x", root="src"),
+            [Node(id="rpn_screen", kind="Composable", links=[ExternalLink(bad)])],
+        )
+
+
+def test_the_codec_refuses_an_escaping_target() -> None:
+    doc = {
+        "codebase": "x",
+        "root": "src",
+        "nodes": [{"id": "a", "kind": "K", "external_links": ["../other.db#x"]}],
+    }
+    with pytest.raises(codec.DecodeError, match=r"'\.\.' segment"):
+        codec.from_dict(doc)
+
+
+def test_insert_refuses_an_escaping_target(conn) -> None:
+    with pytest.raises(LinkError):
+        links.insert(conn, "a", ExternalLink("../other.db#x"))
+
+
+@pytest.mark.parametrize("bad", ESCAPING_TARGETS)
+def test_resolve_never_opens_a_database_for_an_escaping_target(
+    tmp_path: Path, bad, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "other.db"
+    _screen_graph(outside, ["x"])
+    knowledge = tmp_path / "knowledge"
+    knowledge.mkdir()
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("resolve opened a database for an escaping target")
+
+    monkeypatch.setattr(sqlite3, "connect", refuse)
+    assert links.resolve(knowledge, bad) is Resolution.MALFORMED
+    assert links.resolve(knowledge, f"{outside.as_posix()}#x") is Resolution.MALFORMED

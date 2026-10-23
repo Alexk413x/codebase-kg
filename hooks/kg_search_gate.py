@@ -50,6 +50,7 @@ import os
 import re
 import sys
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -63,6 +64,7 @@ from _config import (
     load_config,
     norm_path,
     norm_root,
+    parse_patterns,
     project_dir,
     reaches_mapped_code,
     read_state,
@@ -255,7 +257,7 @@ def gate_mode(cfg: dict[str, object]) -> str:
 
 
 def searches_mapped_code(
-    tool_input: dict[str, object], proj: Path, root: str
+    tool_input: dict[str, object], proj: Path, root: str, covers: Iterable[str] = ()
 ) -> bool:
     """Is this search aimed at the code the graph describes?
 
@@ -270,7 +272,7 @@ def searches_mapped_code(
     candidate = Path(raw).expanduser()
     if not candidate.is_absolute():
         candidate = proj / candidate
-    return reaches_mapped_code(candidate, proj, root)
+    return reaches_mapped_code(candidate, proj, root, covers)
 
 
 def searches_an_anchored_path(
@@ -366,17 +368,18 @@ def _grant_credit(proj: Path, session: str, cfg: dict[str, object]) -> None:
 
 
 def _shell_is_gated(
-    tool_input: dict[str, object], proj: Path, cfg: dict[str, object], root: str
+    tool_input: dict[str, object], proj: Path, cfg: dict[str, object], root: str,
+    covers: Iterable[str] = (),
 ) -> bool:
     command = tool_input.get("command")
-    return isinstance(command, str) and shell_search_is_gated(command, proj, cfg, root)
+    return isinstance(command, str) and shell_search_is_gated(command, proj, cfg, root, covers)
 
 
 def _search_is_gated(
     tool: str, tool_input: dict[str, object], proj: Path, cfg: dict[str, object],
-    root: str, graph: Path,
+    root: str, graph: Path, covers: Iterable[str] = (),
 ) -> bool:
-    if not searches_mapped_code(tool_input, proj, root):
+    if not searches_mapped_code(tool_input, proj, root, covers):
         return False
 
     # A search that can only match assets or project settings is one the
@@ -408,13 +411,14 @@ def _graph_if_gated(
         return None  # no graph in this repo → nothing to consult
 
     root = norm_root(str(cfg.get("root") or graph_meta(graph, "root") or ""))
+    covers = parse_patterns(graph_meta(graph, "covers"))
     # A shell command answers from its own text the three questions
     # `tool_input["path"]` answers for Grep/Glob: which repo, reading what, and
     # does it already name the file.
     if tool in _SHELL_TOOLS:
-        gated = _shell_is_gated(tool_input, proj, cfg, root)
+        gated = _shell_is_gated(tool_input, proj, cfg, root, covers)
     else:
-        gated = _search_is_gated(tool, tool_input, proj, cfg, root, graph)
+        gated = _search_is_gated(tool, tool_input, proj, cfg, root, graph, covers)
     return graph if gated else None
 
 
