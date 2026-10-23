@@ -291,3 +291,20 @@ def is_source_file(path: Path, proj: Path, cfg: dict[str, object]) -> bool:
     name = path.name.lower()
     suffix = ("." + name.rsplit(".", 1)[1]) if "." in name else ""
     return suffix not in excl
+
+
+def reaches_mapped_code(candidate: Path, proj: Path, root: str) -> bool:
+    try:
+        rel = candidate.resolve().relative_to(proj)
+    except (ValueError, OSError):
+        return False  # outside the project entirely
+    if {p.lower() for p in rel.parts} & _IGNORE_LOWER:
+        return False
+    if not root:
+        return True
+    scope = rel.as_posix().strip("/")
+    if not scope or scope == ".":
+        return True
+    # Either the search sits inside root, or it is a parent directory that
+    # still contains root. Both reach mapped code.
+    return (scope + "/").startswith(root + "/") or (root + "/").startswith(scope + "/")

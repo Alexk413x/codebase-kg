@@ -48,7 +48,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import sys
 import time
 from pathlib import Path
@@ -56,10 +55,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _config import (
-    DEFAULTS,
-    IGNORE_DIRS,
     as_int,
-    as_local_path,
     emit_deny,
     find_graph,
     graph_meta,
@@ -68,6 +64,7 @@ from _config import (
     norm_path,
     norm_root,
     project_dir,
+    reaches_mapped_code,
     read_state,
     run_hook,
     skip_kg,
@@ -76,29 +73,37 @@ from _config import (
     strip_heredocs,
     write_state,
 )
+from _shell_search import (
+    _SEARCH_WORDS,
+    NON_SOURCE_BUNDLES,
+    NON_SOURCE_EXT,
+    SearchClause,
+    ShellSearch,
+    _split_clauses,
+    _tokens,
+    clause_is_exempt,
+    in_non_source_bundle,
+    is_shell_search,
+    only_non_source,
+    parse_shell_search,
+    shell_search_is_gated,
+)
 from _shim_loader import load_shim
+
+__all__ = [
+    "NON_SOURCE_BUNDLES",
+    "NON_SOURCE_EXT",
+    "_SEARCH_WORDS",
+    "SearchClause",
+    "ShellSearch",
+    "_split_clauses",
+    "_tokens",
+    "clause_is_exempt",
+    "strip_heredocs",
+]
 
 _SEARCH_TOOLS = {"Grep", "Glob"}
 _SHELL_TOOLS = {"Bash", "PowerShell"}
-
-# Shell commands that are a codebase search by another name. Deliberately narrow:
-# a false positive here denies an unrelated command, which is worse than missing
-# one. `find` and `Get-ChildItem` only count when they carry a name/path filter,
-# otherwise an ordinary `find . -type d` trips the gate.
-_SHELL_SEARCH = re.compile(
-    r"(?:^\s*|[|;&]\s*)(?:sudo\s+)?(?:grep|egrep|fgrep|rg|ripgrep|ag|ack|fd|sls|select-string)\b"
-    r"|(?:^\s*|[|;&]\s*)(?:sudo\s+)?find\b[^|;&\n]*\s-(?:i?name|i?path|i?regex)\b"
-    r"|(?:^\s*|[|;&]\s*)(?:get-childitem|gci)\b[^|;&\n]*\s-r(?:ecurse)?\b",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-# Shell redirection operators, e.g. `2>/dev/null`, `>>out.log`, `<in.txt`,
-# `&>/dev/null`. None of these name a search path even though they pass the
-# naive "doesn't start with a flag" check — a leftover like `2>/dev/null` read
-# as a target broke the "already named a file" exemption, since that
-# nonexistent path made `all(t.is_file())` false and re-triggered the gate on
-# an otherwise located search.
-_REDIRECT_OP = re.compile(r"^(?:[0-9]*(?:>>|>|<)|&>>?)")
 
 # The plugin's own MCP tools, under either name the host gives the server
 # (`mcp__codebase-kg__*` standalone, `mcp__plugin_codebase-kg_codebase-kg__*`
@@ -249,501 +254,6 @@ def gate_mode(cfg: dict[str, object]) -> str:
     return mode if mode in {"block", "warn", "off"} else "block"
 
 
-# Commands whose FIRST non-flag operand is the pattern, not a path.
-_PATTERN_FIRST = {
-    "grep", "egrep", "fgrep", "rg", "ripgrep", "ag", "ack", "fd", "sls",
-    "select-string",
-}
-# `find <path> -name x` names its path first instead.
-_PATH_FIRST = {"find", "get-childitem", "gci"}
-_GCI_WORDS = {"get-childitem", "gci"}
-_SEARCH_WORDS = _PATTERN_FIRST | _PATH_FIRST
-
-# Flags that take their value as the NEXT token, per tool: (short letters, long
-# names). Without this, the `20` in `grep -A 20 x file` read as a path operand
-# that did not exist, and a missing path reads as "still hunting" — so a grep of
-# one known file was denied. Agents pass -A/-B/-C constantly, which made this the
-# commonest false denial. The PowerShell tools are absent on purpose: their
-# `-Pattern x -Path y` shape already parses correctly as flag-skip + operands.
-_GREP_FLAGS = ("ABCmefdD", {
-    "--after-context", "--before-context", "--context", "--max-count", "--regexp",
-    "--file", "--include", "--exclude", "--exclude-dir", "--exclude-from",
-    "--label", "--binary-files", "--devices", "--directories",
-})
-_VALUE_FLAGS: dict[str, tuple[str, set[str]]] = {
-    "grep": _GREP_FLAGS, "egrep": _GREP_FLAGS, "fgrep": _GREP_FLAGS,
-    "rg": ("ABCmefgtTjMEdr", {
-        "--after-context", "--before-context", "--context", "--max-count",
-        "--regexp", "--file", "--glob", "--iglob", "--type", "--type-not",
-        "--threads", "--max-columns", "--encoding", "--max-depth", "--maxdepth",
-        "--replace", "--sort", "--sortr", "--ignore-file", "--max-filesize",
-        "--pre", "--pre-glob", "--type-add", "--engine",
-    }),
-    "ag": ("ABCmG", {
-        "--after", "--before", "--context", "--max-count", "--ignore",
-        "--file-search-regex", "--depth",
-    }),
-    "ack": ("ABCm", {
-        "--after-context", "--before-context", "--context", "--max-count",
-        "--ignore-dir", "--ignore-file",
-    }),
-    "fd": ("etdEj", {
-        "--extension", "--type", "--max-depth", "--min-depth", "--exact-depth",
-        "--exclude", "--threads", "--size", "--changed-within", "--changed-before",
-        "--owner", "--max-results",
-    }),
-}
-_VALUE_FLAGS["ripgrep"] = _VALUE_FLAGS["rg"]
-# Flags whose value IS the pattern — with one of these present, the first
-# operand is a path, not the pattern.
-_PATTERN_FLAGS = {"-e", "--regexp", "-f", "--file"}
-# Flags whose value filters by file name. When every one of them names a file
-# the graph could never anchor, the search is not a question for the graph.
-_NAME_FILTER_FLAGS = {"--include", "-g", "--glob", "--iglob", "-name", "-iname",
-                      "-path", "-ipath"}
-# `find` predicates whose value is what the search is looking for.
-_FIND_TERMS = {"-name", "-iname", "-path", "-ipath", "-regex", "-iregex"}
-# `Get-ChildItem` parameters: the ones that name where it looks, the ones that
-# filter by file name, and the others that consume the next token.
-_GCI_PATH_FLAGS = {"-path", "-literalpath", "-lp"}
-_GCI_NAME_FLAGS = {"-filter", "-include"}
-_GCI_VALUE_FLAGS = {"-exclude", "-depth", "-attributes"}
-
-# Files no code graph anchors: assets, build and project settings, logs. A
-# search that can only find these is one `kg_search` cannot answer, so gating it
-# sent the agent to a graph with nothing to give — and it looped. Unioned with
-# the repo's `exclude_ext`.
-NON_SOURCE_EXT = {
-    ".plist", ".xcscheme", ".xcconfig", ".pbxproj", ".entitlements",
-    ".xcworkspacedata", ".xcsettings", ".png", ".jpg", ".jpeg", ".gif", ".svg",
-    ".pdf", ".webp", ".ico", ".heic", ".log", ".csv", ".xml", ".properties",
-    ".env", ".lock", ".db", ".sqlite",
-    ".xcodeproj", ".xcworkspace", ".xcassets", ".imageset", ".appiconset",
-}
-# Directories that hold no source, whatever their contents are called.
-NON_SOURCE_BUNDLES = (
-    ".xcodeproj", ".xcworkspace", ".xcassets", ".app", ".dsym", ".xcarchive",
-    ".bundle", ".framework",
-)
-
-
-def _split_clauses(command: str) -> list[tuple[str, bool]]:
-    """Each clause of a shell command, with whether its stdin is a pipe.
-
-    A clause fed by `|` reads the previous command's output, not the tree, so it
-    is not a codebase search however much it looks like one.
-
-    Quote-aware: a `|`, `;`, `&`, or newline inside a quoted string is data, not
-    a separator — `grep "a\\|b"` is one clause, not two. A regex alternation
-    pattern is an ordinary way to call grep, and splitting on the separator
-    hiding inside it manufactured a bogus trailing "clause" (a fragment of the
-    pattern read as a path), which is exactly the false positive this function
-    exists to avoid.
-    """
-    parts: list[str] = []
-    seps: list[str] = []
-    buf: list[str] = []
-    quote: str | None = None
-    i = 0
-    n = len(command)
-    while i < n:
-        ch = command[i]
-        if quote:
-            if ch == "\\" and quote == '"' and i + 1 < n:
-                buf.append(ch)
-                buf.append(command[i + 1])
-                i += 2
-                continue
-            buf.append(ch)
-            if ch == quote:
-                quote = None
-            i += 1
-            continue
-        if ch in "'\"":
-            quote = ch
-            buf.append(ch)
-            i += 1
-            continue
-        if ch == "\\" and i + 1 < n:
-            buf.append(ch)
-            buf.append(command[i + 1])
-            i += 2
-            continue
-        two = command[i:i + 2]
-        # A newline separates commands as surely as `;` does — without it a
-        # search on its own line stays glued to whatever ran above it and is
-        # never seen.
-        if two in ("&&", "||"):
-            parts.append("".join(buf))
-            seps.append(two)
-            buf = []
-            i += 2
-            continue
-        if ch in "|;&\n":
-            parts.append("".join(buf))
-            seps.append(ch)
-            buf = []
-            i += 1
-            continue
-        buf.append(ch)
-        i += 1
-    parts.append("".join(buf))
-
-    out: list[tuple[str, bool]] = []
-    piped = False
-    for idx, part in enumerate(parts):
-        clause = part.strip()
-        if clause:
-            out.append((clause, piped))
-        piped = idx < len(seps) and seps[idx] == "|"
-    return out
-
-
-class _Quoted(str):
-    """A token that was quoted, so `"<Button"` is a pattern and not a redirect."""
-
-
-def _tokens(clause: str) -> list[str]:
-    """Best-effort argv, with quotes stripped.
-
-    `posix=False` because posix mode treats a backslash as an escape, which
-    turns `C:\\Users\\me\\repo` into `C:Usersmerepo` — a path that resolves
-    nowhere, so a search of another drive read as a search of this repo. Quotes
-    survive that mode, so they come off by hand.
-    """
-    try:
-        toks = shlex.split(clause, posix=False)
-    except ValueError:
-        toks = clause.split()
-    out: list[str] = []
-    for tok in toks:
-        if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in "\"'":
-            tok = _Quoted(tok[1:-1])
-        out.append(tok)
-    return out
-
-
-def _after_cd(toks: list[str], cwd: Path) -> Path:
-    """Where the next clause runs: a `cd` moves later clauses, never earlier ones.
-
-    The hook is told the SESSION's directory, which is not where a command that
-    starts `cd elsewhere && ...` looks. Without this the gate denied searches of
-    unrelated repos using this repo's graph — an answer the graph could not have
-    given.
-    """
-    if len(toks) < 2 or toks[0] != "cd":
-        return cwd
-    candidate = as_local_path(toks[1]).expanduser()
-    if not candidate.is_absolute():
-        candidate = cwd / candidate
-    try:
-        return candidate.resolve()
-    except OSError:
-        return cwd
-
-
-class SearchClause:
-    """One search command within a shell line: where it looks, and among which
-    file names."""
-
-    def __init__(self, word: str) -> None:
-        self.word = word
-        self.targets: list[Path] = []
-        # File-name filters (`--include`, `-g`, `find -name`). Empty means the
-        # clause can reach any file.
-        self.names: list[str] = []
-        # True when the filters are alternatives (`find -o`), so every one must
-        # be non-source; otherwise they narrow each other and one is enough.
-        self.names_any = False
-
-
-class ShellSearch:
-    """What one shell command searches: where, for what, and among which names."""
-
-    def __init__(self) -> None:
-        self.clauses: list[SearchClause] = []
-        # What is being looked for — grep patterns, `find -name` values. Two
-        # searches for the same terms are the same question, however phrased.
-        self.terms: list[str] = []
-
-
-def _value_flag(word: str, tok: str) -> tuple[str, str | None] | None:
-    """If `tok` is a flag of `word` that takes a value: (its canonical name, the
-    attached value — or None when the value is the NEXT token). None for any
-    other token.
-
-    Short clusters count: in `-nA 3` the `A` takes `3`; in `-A3` the value is
-    attached, so nothing further is consumed.
-    """
-    shorts, longs = _VALUE_FLAGS.get(word, ("", set()))
-    if tok.startswith("--"):
-        name, eq, value = tok.partition("=")
-        if name not in longs:
-            return None
-        return name, (value if eq else None)
-    if len(tok) < 2:
-        return None
-    for i, ch in enumerate(tok[1:], start=1):
-        if ch in shorts:
-            return f"-{ch}", (tok[i + 1:] or None)
-        if not ch.isalpha():
-            return None  # e.g. `-5`, or a digit run that is itself a value
-    return None
-
-
-def _unquote(value: str) -> str:
-    """`--include="*.py"` survives tokenizing with its quotes on the value."""
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        return value[1:-1]
-    return value
-
-
-def _is_unexpanded(raw: str) -> bool:
-    """A variable or command substitution, which only a real shell can resolve.
-
-    Read literally, `$S/test.log` is a path that does not exist, and a missing
-    path reads as "still hunting". What it names is unknowable here, so it is no
-    evidence either way.
-    """
-    return "$" in raw or "`" in raw
-
-
-def parse_shell_search(command: str, proj: Path) -> ShellSearch | None:
-    """What a shell command searches, or None if it is not a search at all."""
-    command = strip_heredocs(command)
-    cwd = proj
-    out = ShellSearch()
-    found_search = False
-    for clause, piped in _split_clauses(command):
-        toks = _tokens(clause)
-        if not toks:
-            continue
-        cwd = _after_cd(toks, cwd)
-        word = toks[0].lower().lstrip("./\\")
-        if word == "sudo" and len(toks) > 1:
-            toks = toks[1:]
-            word = toks[0].lower()
-        if word not in _SEARCH_WORDS:
-            continue
-        if piped:
-            continue  # reads the previous command's output, never the tree
-        found_search = True
-        clause_out = SearchClause(word)
-        out.clauses.append(clause_out)
-        operands: list[str] = []
-        names = clause_out.names
-        pattern_flagged = False
-        in_predicates = False  # `find`: past the path list, into its predicates
-        options_done = False   # after `--`, everything is an operand
-        pending: str | None = None  # a flag whose value is the next token
-        skip_next = False
-        positional = 0
-        for tok in toks[1:]:
-            if skip_next:
-                skip_next = False
-                continue
-            if pending is not None and word in _GCI_WORDS:
-                if pending in _GCI_PATH_FLAGS:
-                    operands.append(tok)
-                elif pending in _GCI_NAME_FLAGS:
-                    names.append(_unquote(tok))
-                    out.terms.append(tok)
-                pending = None
-                continue
-            if pending is not None:
-                if pending in _NAME_FILTER_FLAGS:
-                    names.append(_unquote(tok))
-                if pending in _PATTERN_FLAGS or pending in _FIND_TERMS:
-                    out.terms.append(tok)
-                pending = None
-                continue
-            redirect = None if isinstance(tok, _Quoted) else _REDIRECT_OP.match(tok)
-            if redirect:
-                if redirect.end() == len(tok):
-                    skip_next = True  # bare operator; the NEXT token is its target
-                continue  # a redirection operand is never a search path
-            if word in _GCI_WORDS:
-                low = tok.lower()
-                if low.startswith("-"):
-                    if low in _GCI_PATH_FLAGS | _GCI_NAME_FLAGS | _GCI_VALUE_FLAGS:
-                        pending = low
-                    continue
-                positional += 1
-                if positional == 2:
-                    names.append(_unquote(tok))
-                    out.terms.append(tok)
-                else:
-                    operands.append(tok)
-                continue
-            if word in _PATH_FIRST:
-                # `find <path> -name x` puts its predicates after the paths, so
-                # the first flag ends the path list. Collecting past it counted
-                # `-name`'s own value as a path that does not exist, and a
-                # missing path reads as "still hunting" — the exact false
-                # positive this function exists to remove.
-                if in_predicates or tok.startswith("-") or tok in {"(", "!", "\\("}:
-                    in_predicates = True
-                    if tok.lower() in {"-o", "-or"}:
-                        clause_out.names_any = True
-                    if tok.lower() in _FIND_TERMS:
-                        pending = tok.lower()
-                    continue
-                operands.append(tok)
-                continue
-            if tok == "--" and not options_done:
-                options_done = True
-                continue
-            if tok.startswith("-") and not options_done:
-                flag = _value_flag(word, tok)
-                if flag is not None:
-                    name, value = flag
-                    if name in _PATTERN_FLAGS:
-                        pattern_flagged = True
-                    if value is None:
-                        pending = name
-                    else:
-                        value = _unquote(value)
-                        if name in _NAME_FILTER_FLAGS:
-                            names.append(value)
-                        if name in _PATTERN_FLAGS:
-                            out.terms.append(value)
-                elif word in {"rg", "ripgrep"} and tok == "--files":
-                    pattern_flagged = True  # lists files: no pattern operand
-                continue
-            operands.append(tok)
-        if word in _PATTERN_FIRST and operands and not pattern_flagged:
-            out.terms.append(operands[0])
-            operands = operands[1:]  # the first operand is the pattern
-        if word in _GCI_WORDS and not operands:
-            operands = ["."]
-        for raw in operands:
-            if _is_unexpanded(raw):
-                continue
-            # `~`/`~user` only means home when a real shell expands it — but a
-            # search naming one is always aimed outside a project checkout, and
-            # reading it literally instead joined it under `cwd`, turning an
-            # out-of-repo search into a bogus path this project's gate then
-            # claimed as its own.
-            p = as_local_path(raw).expanduser()
-            clause_out.targets.append(p if p.is_absolute() else cwd / p)
-    return out if found_search else None
-
-
-def _name_ext(name: str) -> str:
-    """The extension a file-name filter pins, or "" when it pins none.
-
-    `*.plist` and `GoogleService-Info.plist` pin `.plist`; `*Splash*` and
-    `*.sw?` pin nothing — the latter could still be source.
-    """
-    base = name.replace("\\", "/").rsplit("/", 1)[-1]
-    if "." not in base:
-        return ""
-    ext = "." + base.rsplit(".", 1)[1].lower()
-    return "" if any(c in ext for c in "*?[]{}") else ext
-
-
-def _expand_braces(name: str) -> list[str]:
-    """`*.{json,plist}` → `*.json`, `*.plist`. One level, which is all a file
-    filter ever uses in practice."""
-    m = re.search(r"\{([^{}]*)\}", name)
-    if not m:
-        return [name]
-    return [name[:m.start()] + alt + name[m.end():] for alt in m.group(1).split(",")]
-
-
-def only_non_source(
-    names: list[str], cfg: dict[str, object], alternatives: bool = True
-) -> bool:
-    """Do these file-name filters only ever match files no graph anchors?
-
-    `alternatives` says how the filters combine. `--include a --include b` and
-    `find -name a -o -name b` accept a file matching ANY of them, so every one
-    must be non-source. `find -name '*.xcscheme' -path '*/shared/*'` requires
-    ALL of them, so one non-source filter already rules out source.
-
-    False for an empty list: a search with no name filter can reach any file.
-    """
-    if not names:
-        return False
-    excluded = NON_SOURCE_EXT | {
-        str(e).lower() for e in cfg.get("exclude_ext", []) or []  # type: ignore[union-attr]
-    }
-
-    def non_source(name: str) -> bool:
-        return all(_name_ext(alt) in excluded for alt in _expand_braces(name))
-
-    verdicts = [non_source(n) for n in names]
-    return all(verdicts) if alternatives else any(verdicts)
-
-
-def in_non_source_bundle(path: Path) -> bool:
-    """Is this path inside an Xcode project, asset catalog, or built bundle?
-
-    Nothing in one is code a graph anchors, so a search scoped there is not a
-    question for the graph however it is phrased.
-    """
-    return any(part.lower().endswith(NON_SOURCE_BUNDLES) for part in path.parts)
-
-
-def clause_is_exempt(clause: SearchClause, cfg: dict[str, object]) -> bool:
-    """Can this search clause only ever find files no graph anchors?"""
-    # grep/rg name filters are always alternatives; only `find` ANDs its own.
-    alternatives = clause.names_any or clause.word not in _PATH_FIRST
-    if only_non_source(clause.names, cfg, alternatives=alternatives):
-        return True
-    return bool(clause.targets) and all(in_non_source_bundle(t) for t in clause.targets)
-
-
-
-def shell_search_is_gated(
-    command: str, proj: Path, cfg: dict[str, object] | None = None, root: str = ""
-) -> bool:
-    """Is this shell command a search of THIS repo with no file named yet?
-
-    One rule, and it is the same one Grep/Glob already follow: gate a search
-    aimed at the mapped tree that has not already located its file. Everything
-    the gate used to deny wrongly falls out of it —
-
-      * `cd other-repo && grep -r x .`  another repo, which this graph cannot
-                                        answer for;
-      * `cat f | grep x`                reads a pipe, never the tree;
-      * `grep x pyproject.toml`         names one file, so the question the gate
-                                        asks is already answered;
-      * `gh pr merge && ... && grep x f.json`
-                                        no clause aimed at the tree, so the
-                                        whole command stops being denied.
-
-      * `find . -name Info.plist`       can only find files no graph anchors;
-      * `grep -A 5 x f.py`, `grep x $F` a flag's value or a shell variable is
-                                        not a missing path.
-
-    A directory operand still gates: that is where you look when you do not yet
-    know the file, which is the case this exists for.
-    """
-    parsed = parse_shell_search(command, proj)
-    if parsed is None:
-        return False  # not a search at all
-    # A clause that can only find files the graph never holds contributes no
-    # targets: it is not a question the graph can answer.
-    targets = [
-        t for c in parsed.clauses if not clause_is_exempt(c, cfg or DEFAULTS) for t in c.targets
-    ]
-    if not targets:
-        return False  # no path operand: reading stdin, not the tree
-    # Outside this repo, outside the graph's `root`, or in an ignored dir: not
-    # ours to gate.
-    inside = [t for t in targets if _reaches_mapped_code(t, proj, root)]
-    if not inside:
-        return False
-    # Every in-repo target already names a file → located. A directory, or a
-    # path that does not exist, means the tree is still being hunted.
-    return not all(t.is_file() for t in inside)
-
-
-def is_shell_search(command: str) -> bool:
-    return bool(_SHELL_SEARCH.search(strip_heredocs(command)))
-
-
 def searches_mapped_code(
     tool_input: dict[str, object], proj: Path, root: str
 ) -> bool:
@@ -760,25 +270,7 @@ def searches_mapped_code(
     candidate = Path(raw).expanduser()
     if not candidate.is_absolute():
         candidate = proj / candidate
-    return _reaches_mapped_code(candidate, proj, root)
-
-
-def _reaches_mapped_code(candidate: Path, proj: Path, root: str) -> bool:
-    try:
-        rel = candidate.resolve().relative_to(proj)
-    except (ValueError, OSError):
-        return False  # outside the project entirely
-    parts = {p.lower() for p in rel.parts}
-    if parts & {d.lower() for d in IGNORE_DIRS}:
-        return False
-    if not root:
-        return True
-    scope = rel.as_posix().strip("/")
-    if not scope or scope == ".":
-        return True
-    # Either the search sits inside root, or it is a parent directory that
-    # still contains root. Both reach mapped code.
-    return (scope + "/").startswith(root + "/") or (root + "/").startswith(scope + "/")
+    return reaches_mapped_code(candidate, proj, root)
 
 
 def searches_an_anchored_path(
@@ -855,13 +347,128 @@ def _is_search_call(
     return False
 
 
+def _tool_input(data: dict[str, object]) -> dict[str, object]:
+    tool_input = data.get("tool_input") or {}
+    return tool_input if isinstance(tool_input, dict) else {}
+
+
+def _grant_credit(proj: Path, session: str, cfg: dict[str, object]) -> None:
+    state = _read_state(proj, session)
+    earned = gate_credit(cfg)
+    # A grant REPLACES rather than accumulates, and takes the larger of the
+    # two. Both halves earn their place: `+` would let `kg_find_by_kind` in a loop
+    # bank the whole session for having learned nothing, and taking the new
+    # value outright would let a cheap follow-up query cost an agent the
+    # allowance a bigger answer already earned it. Running out is not
+    # terminal either way — asking again tops it back up.
+    state["credit"] = max(as_int(state.get("credit", 0), 0), earned)
+    _write_state(proj, session, state)
+
+
+def _shell_is_gated(
+    tool_input: dict[str, object], proj: Path, cfg: dict[str, object], root: str
+) -> bool:
+    command = tool_input.get("command")
+    return isinstance(command, str) and shell_search_is_gated(command, proj, cfg, root)
+
+
+def _search_is_gated(
+    tool: str, tool_input: dict[str, object], proj: Path, cfg: dict[str, object],
+    root: str, graph: Path,
+) -> bool:
+    if not searches_mapped_code(tool_input, proj, root):
+        return False
+
+    # A search that can only match assets or project settings is one the
+    # graph has nothing to say about.
+    names = [str(tool_input.get("pattern" if tool == "Glob" else "glob") or "")]
+    if only_non_source([n for n in names if n], cfg):
+        return False
+    raw_path = tool_input.get("path")
+    if isinstance(raw_path, str) and raw_path and in_non_source_bundle(Path(raw_path)):
+        return False
+
+    # The agent named a file the graph anchors — it already knows where the
+    # code is, so there is nothing left to send it to the graph for.
+    return not searches_an_anchored_path(tool_input, proj, root, graph)
+
+
+def _graph_if_gated(
+    tool: str, tool_input: dict[str, object], proj: Path, cfg: dict[str, object]
+) -> Path | None:
+    """The graph to consult, or None when this call is not subject to the gate."""
+    if not _is_search_call(tool, tool_input, cfg):
+        return None
+
+    if gate_mode(cfg) == "off" or skip_kg():
+        return None
+
+    graph = find_graph(proj, cfg)
+    if graph is None:
+        return None  # no graph in this repo → nothing to consult
+
+    root = norm_root(str(cfg.get("root") or graph_meta(graph, "root") or ""))
+    # A shell command answers from its own text the three questions
+    # `tool_input["path"]` answers for Grep/Glob: which repo, reading what, and
+    # does it already name the file.
+    if tool in _SHELL_TOOLS:
+        gated = _shell_is_gated(tool_input, proj, cfg, root)
+    else:
+        gated = _search_is_gated(tool, tool_input, proj, cfg, root, graph)
+    return graph if gated else None
+
+
+def _is_duplicate_handler(tool: str, data: dict[str, object]) -> bool:
+    tool_use_id = data.get("tool_use_id")
+    return (
+        tool in _SHELL_TOOLS
+        and isinstance(tool_use_id, str)
+        and bool(tool_use_id)
+        and not _claim_call(tool_use_id)
+    )
+
+
+def _search_keys(tool: str, tool_input: dict[str, object], proj: Path) -> list[str]:
+    keys = [search_key(tool, tool_input)]
+    subject = subject_key(tool, tool_input, proj)
+    if subject:
+        keys.append(subject)
+    return keys
+
+
+def _note_server_down(proj: Path, session: str, state: dict[str, object]) -> None:
+    if not state.get("server_down_noted"):
+        state["server_down_noted"] = True
+        _write_state(proj, session, state)
+        _advise(_server_down_message(), notify_user=True)
+
+
+def _deny(
+    data: dict[str, object], proj: Path, session: str, state: dict[str, object],
+    keys: list[str], cfg: dict[str, object], graph: Path,
+) -> None:
+    # Record the denial before emitting, not after: a failure between the two
+    # would lose the escape hatch and let the same search be refused twice.
+    # A list, not one slot: two searches denied in parallel each overwrote the
+    # other's record, so neither retry was recognised.
+    state["denied"] = ([k for k in _denied_list(state) if k not in keys] + keys)[-_DENIED_MEMORY:]
+    recorded = _write_state(proj, session, state)
+    message = GATE_MESSAGE.format(graph=graph.name, credit=gate_credit(cfg))
+    if gate_mode(cfg) == "warn" or not recorded:
+        _advise(message, notify_user=True)
+    elif data.get("agent_id"):
+        # A subagent may hold no codebase-kg tool and so could never earn credit;
+        # the hook cannot see its tool list, so it informs instead of denying.
+        _advise(message)
+    else:
+        emit_deny(message)
+
+
 def _run(data: dict[str, object]) -> None:
     tool = data.get("tool_name")
     if not isinstance(tool, str) or not tool:
         return
-    tool_input = data.get("tool_input") or {}
-    if not isinstance(tool_input, dict):
-        tool_input = {}
+    tool_input = _tool_input(data)
 
     proj = project_dir(data.get("cwd") if isinstance(data.get("cwd"), str) else None)
     session = str(data.get("session_id") or "-")
@@ -869,71 +476,22 @@ def _run(data: dict[str, object]) -> None:
     cfg = load_config(proj)
 
     if _KG_TOOL.match(tool):
-        state = _read_state(proj, session)
-        earned = gate_credit(cfg)
-        # A grant REPLACES rather than accumulates, and takes the larger of the
-        # two. Both halves earn their place: `+` would let `kg_find_by_kind` in a loop
-        # bank the whole session for having learned nothing, and taking the new
-        # value outright would let a cheap follow-up query cost an agent the
-        # allowance a bigger answer already earned it. Running out is not
-        # terminal either way — asking again tops it back up.
-        state["credit"] = max(as_int(state.get("credit", 0), 0), earned)
-        _write_state(proj, session, state)
+        _grant_credit(proj, session, cfg)
         return
 
-    if not _is_search_call(tool, tool_input, cfg):
-        return
-
-    if gate_mode(cfg) == "off" or skip_kg():
-        return
-
-    graph = find_graph(proj, cfg)
-    if graph is None:
-        return  # no graph in this repo → nothing to consult
-
-    root = norm_root(str(cfg.get("root") or graph_meta(graph, "root") or ""))
-    # A shell command answers from its own text the three questions
-    # `tool_input["path"]` answers for Grep/Glob: which repo, reading what, and
-    # does it already name the file.
-    if tool in _SHELL_TOOLS:
-        command = tool_input.get("command")
-        if not isinstance(command, str) or not shell_search_is_gated(command, proj, cfg, root):
-            return
-    else:
-        if not searches_mapped_code(tool_input, proj, root):
-            return
-
-        # A search that can only match assets or project settings is one the
-        # graph has nothing to say about.
-        names = [str(tool_input.get("pattern" if tool == "Glob" else "glob") or "")]
-        if only_non_source([n for n in names if n], cfg):
-            return
-        raw_path = tool_input.get("path")
-        if isinstance(raw_path, str) and raw_path and in_non_source_bundle(Path(raw_path)):
-            return
-
-        # The agent named a file the graph anchors — it already knows where the
-        # code is, so there is nothing left to send it to the graph for.
-        if searches_an_anchored_path(tool_input, proj, root, graph):
-            return
-
-    tool_use_id = data.get("tool_use_id")
-    if tool in _SHELL_TOOLS and isinstance(tool_use_id, str) and tool_use_id and not _claim_call(tool_use_id):
+    graph = _graph_if_gated(tool, tool_input, proj, cfg)
+    if graph is None or _is_duplicate_handler(tool, data):
         return
 
     state = _read_state(proj, session)
-    keys = [search_key(tool, tool_input)]
-    subject = subject_key(tool, tool_input, proj)
-    if subject:
-        keys.append(subject)
-    denied = _denied_list(state)
+    keys = _search_keys(tool, tool_input, proj)
 
     # The escape hatch, checked before credit so insisting never costs any: this
     # search — or another asking for the same thing — was denied and the agent
     # is asking again. It stays open for the session: the agent has said the
     # graph cannot answer this, and making it re-win the argument on every
     # attempt is what turned the old one-shot hatch into a loop.
-    if any(k in denied for k in keys):
+    if any(k in _denied_list(state) for k in keys):
         return
 
     credit = as_int(state.get("credit", 0), 0)
@@ -945,27 +503,10 @@ def _run(data: dict[str, object]) -> None:
     # A denial the agent cannot clear is a trap: with the server down there is no
     # query that buys credit. Say so once per session, then stay out of the way.
     if not server_answers():
-        if not state.get("server_down_noted"):
-            state["server_down_noted"] = True
-            _write_state(proj, session, state)
-            _advise(_server_down_message(), notify_user=True)
+        _note_server_down(proj, session, state)
         return
 
-    # Record the denial before emitting, not after: a failure between the two
-    # would lose the escape hatch and let the same search be refused twice.
-    # A list, not one slot: two searches denied in parallel each overwrote the
-    # other's record, so neither retry was recognised.
-    state["denied"] = ([k for k in denied if k not in keys] + keys)[-_DENIED_MEMORY:]
-    recorded = _write_state(proj, session, state)
-    message = GATE_MESSAGE.format(graph=graph.name, credit=gate_credit(cfg))
-    if gate_mode(cfg) == "warn" or not recorded:
-        _advise(message, notify_user=True)
-    elif data.get("agent_id"):
-        # A subagent may hold no codebase-kg tool and so could never earn credit;
-        # the hook cannot see its tool list, so it informs instead of denying.
-        _advise(message)
-    else:
-        emit_deny(message)
+    _deny(data, proj, session, state, keys, cfg, graph)
 
 
 def main() -> None:
