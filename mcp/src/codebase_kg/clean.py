@@ -27,7 +27,11 @@ from .schema import MAX_DESCRIPTION
 # The trailing `(?:/\d+)*` catches the range shorthand real graphs use —
 # `ACME-305/306/308` is three tickets, and matching only the first left `(/306/308)`
 # behind as debris.
-_TICKET = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d+(?:/\d+)*\b")
+# The lookahead skips standard names that share the shape (`SHA-256`, `UTF-8`).
+_TICKET = re.compile(
+    r"\b(?!(?:SHA\d*|MD\d|UTF|ISO|AES|RSA|CRC\d*|TLS|SSL|UTC|GMT|WGS|IPV|ECMA)-)"
+    r"[A-Z][A-Z0-9]{1,9}-\d+(?:/\d+)*\b"
+)
 
 # Dates in the shapes that show up in hand-written prose.
 _DATE = re.compile(
@@ -109,9 +113,9 @@ def node_problems(node: object) -> list[str]:
     for anchor in getattr(node, "anchors", []):
         if not anchor.path:
             issues.append("an anchor has no path")
-        elif anchor.symbol and anchor.symbol[:1].isdigit():
+        elif is_line_number(anchor.symbol):
             issues.append(
-                f"anchor '{anchor}' looks like a line number — SCHEMA.md §4.1 requires a symbol"
+                f"anchor '{anchor}' looks like a line number — SCHEMA.md §6.1 requires a symbol"
             )
 
     node_links = list(getattr(node, "links", []))
@@ -154,6 +158,18 @@ def node_problems(node: object) -> list[str]:
     return issues
 
 
+def is_line_number(symbol: str | None) -> bool:
+    return symbol is not None and symbol[:1].isdigit()
+
+
+def is_only_parity(parity: str) -> bool:
+    return parity.endswith("-only")
+
+
+def is_known_parity(parity: str) -> bool:
+    return parity in {"matched", "divergent"} or is_only_parity(parity)
+
+
 def parity_problems(
     parity: str | None, counterpart: str | None, divergence: str | None
 ) -> list[str]:
@@ -170,10 +186,10 @@ def parity_problems(
             issues.append("divergence set with no parity flag")
         return issues
 
-    if parity not in {"matched", "divergent"} and not parity.endswith("-only"):
+    if not is_known_parity(parity):
         return [f"unrecognized parity '{parity}' (expected matched, divergent, or <codebase>-only)"]
 
-    if parity.endswith("-only"):
+    if is_only_parity(parity):
         if counterpart:
             issues.append(f"parity={parity} must not have a counterpart")
         if divergence:

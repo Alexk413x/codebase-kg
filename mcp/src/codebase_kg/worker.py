@@ -24,35 +24,27 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import query
+from . import cli, query
 from .store import CodeGraph, StoreError
 
-Write = Callable[[Path, dict[str, Any]], dict[str, Any]]
+Write = Callable[[Any, Path, dict[str, Any]], dict[str, Any]]
 
-
-def _writes() -> dict[str, Write]:
-    from . import edits
-
-    return {
-        "kg_upsert_node": lambda p, a: edits.upsert_node(p, a["nodes"]),
-        "kg_delete_node": lambda p, a: edits.delete_node(
-            p, a["ids"], dry_run=a.get("dry_run", True), cascade_inbound=a.get("cascade_inbound", False)
-        ),
-        "kg_add_link": lambda p, a: edits.add_link(p, a["node_id"], a["target"], a.get("kind", "")),
-        "kg_remove_link": lambda p, a: edits.remove_link(p, a["node_id"], a["target"]),
-        "kg_add_reference": lambda p, a: edits.add_reference(
-            p, a["node_id"], a["url"], a.get("kind", ""), a.get("title", ""), a.get("path"), a.get("symbol")
-        ),
-        "kg_remove_reference": lambda p, a: edits.remove_reference(
-            p, a["node_id"], a["url"], a.get("path"), a.get("symbol")
-        ),
-    }
-
-
-WRITE_TOOLS = frozenset({
-    "kg_upsert_node", "kg_delete_node", "kg_add_link", "kg_remove_link",
-    "kg_add_reference", "kg_remove_reference",
-})
+# Each takes the `edits` module, which `_write` imports on the first write.
+_WRITES: dict[str, Write] = {
+    "kg_upsert_node": lambda e, p, a: e.upsert_node(p, a["nodes"]),
+    "kg_delete_node": lambda e, p, a: e.delete_node(
+        p, a["ids"], dry_run=a.get("dry_run", True), cascade_inbound=a.get("cascade_inbound", False)
+    ),
+    "kg_add_link": lambda e, p, a: e.add_link(p, a["node_id"], a["target"], a.get("kind", "")),
+    "kg_remove_link": lambda e, p, a: e.remove_link(p, a["node_id"], a["target"]),
+    "kg_add_reference": lambda e, p, a: e.add_reference(
+        p, a["node_id"], a["url"], a.get("kind", ""), a.get("title", ""), a.get("path"), a.get("symbol")
+    ),
+    "kg_remove_reference": lambda e, p, a: e.remove_reference(
+        p, a["node_id"], a["url"], a.get("path"), a.get("symbol")
+    ),
+}
+WRITE_TOOLS = frozenset(_WRITES)
 
 
 def refusal(error: str) -> dict[str, Any]:
@@ -62,10 +54,11 @@ def refusal(error: str) -> dict[str, Any]:
 
 def _write(name: str, graph: Path, args: dict[str, Any]) -> dict[str, Any]:
     # edits imports only on the first write, so a worker that only reads stays small.
+    from . import edits
     from .edits import EditError
 
     try:
-        return {"ok": True, "result": _writes()[name](graph, args)}
+        return {"ok": True, "result": _WRITES[name](edits, graph, args)}
     except (EditError, StoreError, FileNotFoundError) as exc:
         return {"ok": False, "refused": refusal(str(exc))}
 
@@ -102,7 +95,7 @@ def answer(line: bytes) -> bytes:
             reply = {"ok": False, "error": str(exc)}
         reply["id"] = request.get("id")
     try:
-        return json.dumps(reply, ensure_ascii=False).encode("utf-8") + b"\n"
+        return cli.dumps(reply).encode("utf-8") + b"\n"
     except (TypeError, ValueError) as exc:
         return json.dumps({"id": reply.get("id"), "ok": False, "error": f"unserializable result: {exc}"}).encode(
             "utf-8"

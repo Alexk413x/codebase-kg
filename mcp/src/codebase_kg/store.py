@@ -17,9 +17,8 @@ import threading
 from pathlib import Path
 
 from . import cli, links
-from .coverage import COVERS_KEY, EXEMPT_KEY, parse_patterns
 from .links import ExternalLink
-from .models import Anchor, Meta, Node, Reference
+from .models import Anchor, Meta, Node, Reference, slashes
 from .schema import (
     MIN_READABLE_VERSION,
     READ_PRAGMAS,
@@ -29,7 +28,9 @@ from .schema import (
     split_identifier,
 )
 
-_WORD = re.compile(r"[A-Za-z0-9]+")
+_LEADING_DOT_SLASH = re.compile(r"^(?:\./|/)+")
+_WORD = re.compile(r"[^\W_]+")
+_LIKE_SPECIAL = re.compile(r"([!%_])")
 # Shortest token that is worth matching as a prefix (see `search_ids`).
 _MIN_PREFIX = 3
 # SQLite refuses more than 32766 bound parameters, so IN-lists are chunked.
@@ -38,14 +39,18 @@ _MAX_PARAMS = 30000
 
 GRAPH_FILENAME = "code_graph.db"
 
+# A self-edge links a node to nothing else, so it does not make the node connected.
+_ISOLATED = (
+    "id NOT IN (SELECT src FROM edge WHERE src <> dst)"
+    " AND id NOT IN (SELECT dst FROM edge WHERE src <> dst)"
+)
+
 _REFERENCE_SELECT = f"SELECT node_id, kind, title, url, path, symbol FROM {REFERENCE_TABLE}"
 
 
-def _reference(row: sqlite3.Row) -> Reference:
-    return Reference(
-        url=row["url"], kind=row["kind"], title=row["title"],
-        path=row["path"], symbol=row["symbol"],
-    )
+def _contains(text: str) -> str:
+    """A LIKE pattern matching `text` as a literal substring."""
+    return "%" + _LIKE_SPECIAL.sub(lambda m: "!" + m.group(1), text) + "%"
 
 
 def discover_graph(start: Path | None = None) -> Path | None:
@@ -154,20 +159,7 @@ class CodeGraph:
     @property
     def meta(self) -> Meta:
         rows = {r["key"]: r["value"] for r in self._q("SELECT key, value FROM meta")}
-        known = {
-            "schema_version", "codebase", "root", "counterpart", "language",
-            "generated", COVERS_KEY, EXEMPT_KEY, links.NODE_TABLE_KEY,
-        }
-        return Meta(
-            codebase=rows.get("codebase", ""),
-            root=rows.get("root", ""),
-            counterpart=rows.get("counterpart"),
-            language=rows.get("language"),
-            generated=rows.get("generated", ""),
-            covers=parse_patterns(rows.get(COVERS_KEY)),
-            exempt=parse_patterns(rows.get(EXEMPT_KEY)),
-            extra={k: v for k, v in rows.items() if k not in known},
-        )
+        return Meta.from_rows(rows)
 
     # ------------------------------------------------------------------- nodes
     def _in_chunks(self, sql: str, ids: list[str]) -> list[sqlite3.Row]:
@@ -246,7 +238,7 @@ class CodeGraph:
                 )
             )
             for r in ref_rows:
-                cited[r["node_id"]].append(_reference(r))
+                cited[r["node_id"]].append(Reference.from_row(r))
 
         edges: dict[str, list[str]] = {i: [] for i in ids}
         if with_edges:
@@ -261,16 +253,10 @@ class CodeGraph:
                 edges[e["src"]].append(e["dst"])
 
         return [
-            Node(
-                id=r["id"],
-                kind=r["kind"],
-                description=r["description"],
+            Node.from_row(
+                r,
                 anchors=anchors[r["id"]],
                 edges=edges[r["id"]],
-                section=r["section"],
-                parity=r["parity"],
-                counterpart=r["counterpart"],
-                divergence=r["divergence"],
                 links=outbound[r["id"]],
                 references=cited[r["id"]],
             )
@@ -362,8 +348,8 @@ class CodeGraph:
         if hits:
             return hits
         rows = self._q(
-            "SELECT id FROM node WHERE id LIKE ? ORDER BY length(id), id LIMIT ?",
-            (f"%{text.strip()}%", limit),
+            "SELECT id FROM node WHERE id LIKE ? ESCAPE '!' ORDER BY length(id), id LIMIT ?",
+            (_contains(text.strip()), limit),
         ).fetchall()
         return [r["id"] for r in rows]
 
@@ -375,7 +361,8 @@ class CodeGraph:
         ids = [
             r["id"]
             for r in self._q(
-                "SELECT id FROM node WHERE kind LIKE ? ORDER BY id", (f"%{kind}%",)
+                "SELECT id FROM node WHERE kind LIKE ? ESCAPE '!' ORDER BY id",
+                (_contains(kind),),
             )
         ]
         return self.nodes(ids)
@@ -391,7 +378,7 @@ class CodeGraph:
         applying the suffix rule to those few rows gives the same answers as
         `path LIKE '%/needle'` without that pattern's full scan of `anchor`.
         """
-        needle = path.replace("\\", "/").strip().lstrip("./")
+        needle = _LEADING_DOT_SLASH.sub("", slashes(path).strip())
         rows = self._q(
             "SELECT node_id, path, symbol FROM anchor WHERE base = ? ORDER BY node_id, ord",
             (needle.rsplit("/", 1)[-1],),
@@ -459,7 +446,7 @@ class CodeGraph:
             args.append(kind)
         sql = _REFERENCE_SELECT + (" WHERE " + " AND ".join(where) if where else "")
         return [
-            (r["node_id"], _reference(r))
+            (r["node_id"], Reference.from_row(r))
             for r in self._q(sql + " ORDER BY node_id, ord", tuple(args))
         ]
 
@@ -551,25 +538,12 @@ class CodeGraph:
 
     def isolated_ids(self, limit: int | None = None) -> list[str]:
         """Nodes with no edge in either direction — usually a missed relationship."""
-        sql = (
-            "SELECT id FROM node WHERE id NOT IN (SELECT src FROM edge)"
-            " AND id NOT IN (SELECT dst FROM edge) ORDER BY id"
-        )
+        sql = f"SELECT id FROM node WHERE {_ISOLATED} ORDER BY id"
         if limit is not None:
             return [r["id"] for r in self._q(sql + " LIMIT ?", (limit,))]
         return [r["id"] for r in self._q(sql)]
 
     def isolated_count(self) -> int:
         return int(
-            self._q(
-                "SELECT count(*) AS n FROM node WHERE id NOT IN (SELECT src FROM edge)"
-                " AND id NOT IN (SELECT dst FROM edge)"
-            ).fetchone()["n"]
-        )
-
-    def is_anchored(self, path: str) -> bool:
-        """Does any node anchor on this exact repo-relative path? Indexed probe."""
-        return (
-            self._q("SELECT 1 FROM anchor WHERE path = ? LIMIT 1", (path,)).fetchone()
-            is not None
+            self._q(f"SELECT count(*) AS n FROM node WHERE {_ISOLATED}").fetchone()["n"]
         )

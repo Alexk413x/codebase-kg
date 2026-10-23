@@ -24,8 +24,9 @@ with no venv. The tool definitions are fastmcp registrations in `server.py`, a d
 
 ## CLI-only queries
 
-These run through `launch/kg_cli.py query <tool> [json-args]` and are not in the MCP catalog. The
-CLI prints the same JSON, from the same functions in `tools.py` (dispatched by `query.TOOLS`).
+These run through `launch/kg_cli.py query <tool> [json-args | -]` and are not in the MCP catalog. The
+CLI prints the same JSON, from the same functions in `tools.py` (dispatched by `query.TOOLS`). `query`
+reads the arguments from stdin only when the argument is `-`; otherwise it never reads stdin.
 
 | Tool | Returns |
 |---|---|
@@ -40,14 +41,14 @@ each tool's description says so, because picking the wrong one is how this surfa
 
 | Tool | Does |
 |---|---|
-| `kg_upsert_node(nodes)` | Creates or updates node(s). Only the keys supplied change; `null` clears a parity field; `anchors` / `edges` / `external_links` / `references` replace the whole list. A file the node anchors with no baseline gets one; `"rebaseline": true` re-hashes the node's files, which clears them for every node anchored there. |
+| `kg_upsert_node(nodes)` | Creates or updates node(s). An unknown key is refused with a did-you-mean hint, and the tool schema sets `additionalProperties` to false. Only the keys supplied change; `null` clears a parity field; `anchors` / `edges` / `external_links` / `references` replace the whole list. A file the node anchors with no baseline gets one; `"rebaseline": true` re-hashes the node's files, which clears them for every node anchored there. |
 | `kg_delete_node(ids, dry_run=True, cascade_inbound=False)` | Previews what cascades (anchors, outbound edges, external links, baselines of files no other node anchors) and what blocks (inbound edges, `ON DELETE RESTRICT`), then deletes. |
-| `kg_add_link(node_id, target, kind='')` | Points a node at `<db-file>#<node-id>` in another committed graph. Refused if the peer graph is present and lacks that node. |
+| `kg_add_link(node_id, target, kind='')` | Points a node at `<db-file>#<node-id>` in another committed graph. Refused if `<db-file>` is absolute or contains `..`, or if the peer graph is present and lacks that node. |
 | `kg_remove_link(node_id, target)` | Drops one such pointer; the node is untouched. |
 | `kg_add_reference(node_id, url, kind='', title='', path=None, symbol=None)` | Records where a fact the node depends on is documented. `path` / `symbol` must equal one of the node's anchors, or the write is refused. |
 | `kg_remove_reference(node_id, url, path=None, symbol=None)` | Drops the node's reference(s) to `url`, or only the one with that narrowing. |
 
-Three properties, all in `edits.py`:
+Three properties, held by `edits.py` and the `edit_*.py` modules behind it:
 
 - **Atomic.** The mutation runs against a private copy of the file inside one transaction, and the
   copy replaces the original only at the very end. A rejected edit leaves the committed graph
@@ -59,16 +60,24 @@ Three properties, all in `edits.py`:
 - **Reported.** Every call returns the rows it touched, field by field, before and after. That is
   the diff review the export path gave for free.
 
+A node can list itself in `edges`. A graph built before self-edges were allowed refuses one with an
+error that names `kg_cli.py upgrade --force`.
+
 ## CLIs
 
-Whole-graph writes — migration, and the bulk round trip:
+Whole-graph writes — migration, and the bulk round trip. `kg_cli.py` runs each module with the plugin's
+`src` on the path, so no install or venv is needed:
 
 ```sh
-python -m codebase_kg.migrate knowledge/KNOWLEDGE_GRAPH.md   # one-time: markdown → db
-python -m codebase_kg.export -o .kg-export.json                   # db → JSON
-python -m codebase_kg.build .kg-export.json -o knowledge/code_graph.db
-rm .kg-export.json                                                # a snapshot, not a source
+kg="<plugin>/mcp/launch/kg_cli.py"
+uv run --no-project --quiet "$kg" migrate knowledge/KNOWLEDGE_GRAPH.md   # one-time: markdown → db
+uv run --no-project --quiet "$kg" export -o .kg-export.json               # db → JSON
+uv run --no-project --quiet "$kg" build .kg-export.json -o knowledge/code_graph.db
+rm .kg-export.json                                                        # a snapshot, not a source
 ```
+
+`migrate` stops when its output file exists. Pass `--force` to overwrite it, or `-o` to write elsewhere.
+`upgrade` brings an older graph to the current schema in place; it refuses a graph from a newer schema.
 
 `export` → `build` with no edits is byte-identical, so a no-op refresh leaves the git diff empty.
 
@@ -109,8 +118,10 @@ stdlib only and does three things:
 The server listens on loopback only, on a port the OS picks, and refuses a handshake with the wrong
 token or build. The state file is readable only by the user. Each connection is its own classic MCP
 session (`initialize`, `tools/list`, `tools/call`), served by `tcp_transport.py` from the same
-`core.Core` as HTTP. A server without the HTTP port exits after 10 minutes with no connections; one
-with it, after 8 hours with no request and no connection. Either removes its state file.
+`core.Core` as HTTP. A server without the HTTP port exits after 10 minutes with no connections. One
+with it exits after 8 hours with no request and no connection. A server that has seen a registered
+session exits earlier: after `CODEBASE_KG_SESSION_GRACE` seconds (default 300) with no live session and
+no use. An idle exit removes its state file.
 
 A session never loses its tools. If the shared server cannot be reached within 10 seconds
 (`CODEBASE_KG_SHARED_TIMEOUT`), the shim runs a private stdio server for that session instead. A
@@ -142,10 +153,18 @@ When the session closes its stdin, the shim exits and does not reconnect.
 | `CODEBASE_KG_PORT` | The HTTP port, overriding the `server_port` setting. 0 lets the OS pick. |
 | `CODEBASE_KG_CACHE_DIR` | Where the state, lock, token and log files live. |
 
-`kg_cli.py server status` prints the build, pid and `max_workers` of the server on the HTTP port;
+`kg_cli.py server status` prints the build, pid and `max_workers` of the server on the HTTP port. It
+reports an error when another program holds the port, and when a program accepts connections on the
+port but does not answer `/health`.
+`kg_cli.py server start` starts a server when none answers and waits up to 15 s for it.
 `kg_cli.py server stop` stops it, so the next one reads the settings afresh.
 `kg_cli.py server sessions` lists the registered sessions that are live, and `server register --session ID [--pid N]` and `server unregister --session ID` change them, for an agent with no hooks. Run
 `python -m codebase_kg.daemon`, with `src` on the path and no `--serve`, to get a private stdio server.
+
+The server logs to `server-<build>.log`. It records the pid that started it, each signal it receives,
+a heartbeat line every 10 minutes (with the number of calls in flight), a Python traceback on a fatal
+error and a `process exiting` line at exit. On Windows the server starts through WMI, outside the
+host's job object, and falls back to a plain detached start when WMI fails (`shim.spawn_server_detached`).
 
 ## The HTTP front
 
@@ -168,7 +187,8 @@ prompt and resource lists; a notification gets 202. It advertises only the tools
 | Tool error or refused write | 200, a result with `isError: true` |
 
 The first tool call from an unseen client returns `resultType: "input_required"` with a roots
-request; the retry carries the roots in `inputResponses`. Request bodies may be chunked. A keep-alive
+request; the retry carries the roots in `inputResponses`. When those roots include no local folder, the
+call gets an error result that tells the client to send `X-Codebase-KG-Cwd`; the server does not ask again. Request bodies may be chunked. A keep-alive
 connection idle for 60 s is closed.
 
 Arguments are checked against each tool's `inputSchema` in `core.py`, with pydantic's lax rules: an
@@ -208,6 +228,10 @@ server was running.
 |---|---|
 | `schema.py` | The DDL. Constraints make dangling edges, duplicate ids, inconsistent parity and line-number anchors unwritable. |
 | `models.py` | `Node` / `Anchor` / `Meta` dataclasses — the write shape. |
+| `codec.py` | The JSON interchange shape shared by `build` and `export`. |
+| `coverage.py` | Declared coverage: the `covers` and `exempt` patterns and the check against them. |
+| `staleness.py` | The one comparison that decides whether a mapped file has drifted. |
+| `links.py` | Cross-graph links: target parsing, the refusal of absolute and `..` targets, resolution against the peer graph. |
 | `clean.py` | The `description` contract (no ticket refs, dates or change narrative) and its scrubber. |
 | `writer.py` | Transactional, deterministic build. Validates first; writes to a temp file and renames. |
 | `store.py` | `CodeGraph` — read-only query facade over one connection. |
@@ -219,12 +243,20 @@ server was running.
 | `tcp_transport.py` | Classic MCP over lines: the shims' TCP listener and handshake, and the private stdio server. |
 | `pool.py` / `worker.py` | The elastic worker pool and the worker that runs read and write tools. |
 | `resolve.py` | Which graph a session's calls use. |
-| `control.py` | `kg_cli.py server status`, `stop`, `sessions`, `register` and `unregister`. |
+| `control.py` | `kg_cli.py server status`, `start`, `stop`, `sessions`, `register` and `unregister`. |
 | `shim.py` | What stdio clients launch: finds or starts the shared server and relays the session to it. Stdlib only. It also holds the HTTP port, token and `/health` helpers that the hooks and `kg_headers.py` load by path. |
 | `tools.py` | The read-only queries the MCP tools wrap. |
-| `edits.py` | Targeted writes: copy, mutate in one transaction, validate, swap in — or discard, leaving the committed file byte-identical. |
-| `codec.py` | The JSON interchange shape shared by `build` and `export`. |
-| `markdown.py` | The pre-0.2 markdown parser. **Migration only** — nothing on the query path imports it. |
+| `edits.py` | The targeted-write facade. It re-exports the tools from the `edit_*.py` modules. |
+| `edit_core.py` | The edit engine: copy, mutate in one transaction, validate, swap in — or discard, leaving the committed file byte-identical. |
+| `edit_nodes.py` | Node reads, patch parsing and `upsert_node`. |
+| `edit_delete.py` | `delete_node` and the impact preview. |
+| `edit_links.py` | `add_link`, `remove_link`, `add_reference` and `remove_reference`. |
+| `build.py` / `export.py` | `kg_cli.py build` and `export`: authored JSON to a graph, and back. |
+| `migrate.py` / `markdown.py` | `kg_cli.py migrate` and the pre-0.2 markdown parser it uses. **Migration only** — nothing on the query path imports them. |
+| `upgrade.py` | `kg_cli.py upgrade`: in-place schema upgrade. |
+| `query.py` | `kg_cli.py query`: one read tool from a shell. |
+| `cli.py` | Console I/O that survives a non-UTF-8 stdout, and UTF-8 stdin decoding. |
+| `codex_config.py` | `kg_cli.py codex-config`: the Codex config table. |
 
 ## Development
 

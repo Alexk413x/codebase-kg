@@ -229,11 +229,10 @@ def kg_find_by_link(
     ],
 ) -> dict[str, Any]:
     """Reverse lookup across graphs: which code node(s) link to a node in another
-    committed graph in this repo — typically a screen in `cartographer/baselines/baseline.db`.
+    committed graph in this repo — typically a screen in `baselines/baseline.db`.
 
     Use when you have a screen and want the code behind it. Accepts a full
-    `<db-file>#<node-id>` target or a bare peer node id. See cartographer's
-    docs/GRAPH-LINKS.md for the convention."""
+    `<db-file>#<node-id>` target or a bare peer node id."""
     return _read("kg_find_by_link", {"target": target})
 
 
@@ -257,6 +256,7 @@ def kg_find_by_reference(
     return _read("kg_find_by_reference", {"query": query, "kind": kind, "limit": limit, "offset": offset})
 
 
+@with_config(ConfigDict(extra="forbid"))
 class LinkSpec(TypedDict, total=False):
     target: Required[
         Annotated[str, Field(description="`<peer-db>#<node>`, relative to `knowledge/`.")]
@@ -266,6 +266,7 @@ class LinkSpec(TypedDict, total=False):
     ]
 
 
+@with_config(ConfigDict(extra="forbid"))
 class ReferenceSpec(TypedDict, total=False):
     url: Required[
         Annotated[str, Field(description="The documentation page, e.g. `https://...`.")]
@@ -280,9 +281,11 @@ class ReferenceSpec(TypedDict, total=False):
     ]
 
 
-# Every field skips validation and extra keys are kept: `edits.upsert_node` does
-# its own checks and returns them as refusals, and it tolerates keys it ignores.
-@with_config(ConfigDict(extra="allow"))
+# Every field skips validation and unknown keys pass through: `edits.upsert_node`
+# does its own checks and refuses an unknown key with a did-you-mean hint, which
+# pydantic's `extra="forbid"` error would replace. The published schema still
+# says `additionalProperties: false`.
+@with_config(ConfigDict(extra="allow", json_schema_extra={"additionalProperties": False}))
 class NodePatch(TypedDict, total=False):
     id: Required[
         Annotated[
@@ -414,9 +417,8 @@ def kg_add_link(
     ] = "",
 ) -> dict[str, Any] | ToolResult:
     """Point a code node at a node in another committed graph in this repo —
-    typically a screen in `cartographer/baselines/baseline.db`. The inverse of `kg_find_by_link`.
-    See cartographer's docs/GRAPH-LINKS.md for the target convention. An empty
-    `kind` is honest for a link nobody has characterised.
+    typically a screen in `baselines/baseline.db`. The inverse of `kg_find_by_link`.
+    An empty `kind` is honest for a link nobody has characterised.
 
     Refused if the peer graph is present and does not contain that node, so a
     typo'd target cannot be committed."""

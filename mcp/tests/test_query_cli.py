@@ -63,11 +63,26 @@ def test_every_read_tool_prints_what_the_function_returns(graph_file: Path) -> N
 def test_arguments_on_stdin(graph_file: Path) -> None:
     env = {k: v for k, v in os.environ.items() if k != "CODEBASE_KG_PATH"}
     p = subprocess.run(
-        [sys.executable, "-I", str(RUNNER), "query", "--graph", str(graph_file), "kg_stats"],
+        [sys.executable, "-I", str(RUNNER), "query", "--graph", str(graph_file), "kg_stats", "-"],
         input=b"{}", capture_output=True, env=env, check=False
     )
     assert p.returncode == 0
     assert "nodes" in json.loads(p.stdout)
+
+
+def test_no_arguments_does_not_wait_for_stdin(graph_file: Path) -> None:
+    env = {k: v for k, v in os.environ.items() if k != "CODEBASE_KG_PATH"}
+    proc = subprocess.Popen(
+        [sys.executable, "-I", str(RUNNER), "query", "--graph", str(graph_file), "kg_stats"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+    )
+    try:
+        assert proc.wait(timeout=60) == 0
+        assert proc.stdout is not None
+        assert "nodes" in json.loads(proc.stdout.read())
+    finally:
+        proc.kill()
+        proc.wait()
 
 
 @pytest.mark.parametrize(

@@ -20,7 +20,6 @@ agent or break a tool call; the git hook is still there to block.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shlex
@@ -29,20 +28,35 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _config import as_local_path, emit_deny, run_hook, skip_kg, strip_heredocs
+
 LIST_CAP = 20
 
 _ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _SEPARATOR_CHARS = set("();|&")
 _REDIRECT_CHARS = set("<>")
 _WRAPPERS = {"env", "command", "exec", "time", "nohup", "sudo"}
+_KEYWORDS = {"if", "then", "else", "elif", "while", "until", "do", "!", "{"}
+_WRAPPER_OPTS_WITH_VALUE = {
+    "sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"},
+    "env": {"-u", "-C", "-S"},
+}
 _SHELLS = {"bash", "sh", "zsh", "dash"}
+_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c[A-Za-z]*$")
 _GIT_OPTS_WITH_VALUE = {"-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+_PUSH_OPTS_WITH_VALUE = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
 _MAX_DEPTH = 3
+_PS_ENV = re.compile(r"\$env:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*", re.IGNORECASE)
+_PS_CD = re.compile(r"(?<![\w-])(?:Set-Location|Push-Location|sl|pushd)(?![\w-])", re.IGNORECASE)
+_PS_CONTINUATION = re.compile(r"`\r?\n")
 
 
 class Push(NamedTuple):
     cwd: Path
     env: dict[str, str]
+    deletes_only: bool = False
 
 
 def _program(token: str) -> str:
@@ -50,11 +64,26 @@ def _program(token: str) -> str:
     return name.removesuffix(".exe")
 
 
+def powershell_to_shell(command: str) -> str:
+    """A PowerShell command rewritten so `find_pushes` can read it.
+
+    `$env:NAME = value` becomes `export NAME=value`, `Set-Location` and its aliases
+    become `cd`, a trailing backtick joins its line, and backslashes become
+    slashes so Windows paths survive the POSIX lexer.
+    """
+    command = _PS_CONTINUATION.sub(" ", command)
+    command = _PS_ENV.sub(lambda m: f"export {m.group(1)}=", command)
+    command = _PS_CD.sub("cd", command)
+    return command.replace("\\", "/")
+
+
 def _segments(command: str) -> list[list[str]]:
     """Split a shell command into simple commands at `&&`, `||`, `;`, `|`, `&`.
 
-    Raises `ValueError` on unbalanced quotes; the caller treats that as no push.
+    Heredoc bodies are data and are dropped first. Raises `ValueError` on
+    unbalanced quotes; the caller treats that as no push.
     """
+    command = strip_heredocs(command)
     lex = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars=True)
     lex.whitespace_split = True
     segments: list[list[str]] = [[]]
@@ -69,8 +98,29 @@ def _segments(command: str) -> list[list[str]]:
     return [s for s in segments if s]
 
 
-def _git_push_dir(args: list[str], cwd: Path) -> Path | None:
-    """The directory `git <args>` pushes from, or None when it is not a push.
+def _deletes_only(args: list[str]) -> bool:
+    """True when every ref `git push <args>` names is a deletion.
+
+    `args` starts after `push`. A deletion publishes no commits, so there is no
+    code for a stale graph to misdescribe.
+    """
+    if "--delete" in args or "-d" in args:
+        return True
+    positional: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] in _PUSH_OPTS_WITH_VALUE:
+            i += 1
+        elif not args[i].startswith("-"):
+            positional.append(args[i])
+        i += 1
+    refspecs = positional[1:]
+    return bool(refspecs) and all(spec.startswith(":") for spec in refspecs)
+
+
+def _git_push(args: list[str], cwd: Path) -> tuple[Path, bool] | None:
+    """The directory `git <args>` pushes from and whether it only deletes refs,
+    or None when it is not a push.
 
     `args` starts after `git`. Global options come first: `-C <dir>` moves the
     working directory, `-c <k=v>` and the `--git-dir` family take a value, and
@@ -80,14 +130,16 @@ def _git_push_dir(args: list[str], cwd: Path) -> Path | None:
     while i < len(args):
         token = args[i]
         if token == "-C" and i + 1 < len(args):
-            cwd = cwd / Path(args[i + 1]).expanduser()
+            cwd = cwd / as_local_path(args[i + 1]).expanduser()
             i += 2
         elif token in _GIT_OPTS_WITH_VALUE:
             i += 2
         elif token.startswith("-"):
             i += 1
         else:
-            return cwd if token == "push" else None
+            if token != "push":
+                return None
+            return cwd, _deletes_only(args[i + 1 :])
     return None
 
 
@@ -97,21 +149,25 @@ def find_pushes(
     """Every `git push` in `command`, with the directory and env each one runs in.
 
     Follows `cd <dir>`, `export NAME=value`, leading `NAME=value` assignments,
-    `env`/`command`/`sudo`-style wrappers, and `bash -c '<command>'`.
+    `env`/`command`/`sudo`-style wrappers, control keywords such as `if` and
+    `then`, and `bash -c '<command>'` (also `-lc`).
     """
     pushes: list[Push] = []
     exported = dict(env or {})
     for seg in _segments(command):
-        i, prefix = 0, {}
+        i, prefix, wrapper = 0, {}, ""
         while i < len(seg):
             token = seg[i]
             if _ASSIGN.match(token):
                 name, _, value = token.partition("=")
                 prefix[name] = value
-            elif _program(token) in _WRAPPERS or (
-                token.startswith("-") and i > 0 and _program(seg[i - 1]) == "env"
-            ):
+            elif _program(token) in _WRAPPERS:
+                wrapper = _program(token)
+            elif token in _KEYWORDS:
                 pass
+            elif wrapper and token.startswith("-"):
+                if token in _WRAPPER_OPTS_WITH_VALUE.get(wrapper, ()):
+                    i += 1
             else:
                 break
             i += 1
@@ -119,19 +175,20 @@ def find_pushes(
             continue
         prog, rest = _program(seg[i]), seg[i + 1 :]
         if prog in ("cd", "pushd") and rest:
-            cwd = cwd / Path(rest[0]).expanduser()
+            cwd = cwd / as_local_path(rest[0]).expanduser()
         elif prog == "export":
             for token in rest:
                 if _ASSIGN.match(token):
                     name, _, value = token.partition("=")
                     exported[name] = value
         elif prog == "git":
-            run_dir = _git_push_dir(rest, cwd)
-            if run_dir is not None:
-                pushes.append(Push(run_dir, {**exported, **prefix}))
-        elif prog in _SHELLS and depth < _MAX_DEPTH and "-c" in rest[:-1]:
-            inner = rest[rest.index("-c") + 1]
-            pushes += find_pushes(inner, cwd, {**exported, **prefix}, depth + 1)
+            push = _git_push(rest, cwd)
+            if push is not None:
+                pushes.append(Push(push[0], {**exported, **prefix}, push[1]))
+        elif prog in _SHELLS and depth < _MAX_DEPTH:
+            flag = next((k for k, t in enumerate(rest[:-1]) if _COMMAND_FLAG.match(t)), None)
+            if flag is not None:
+                pushes += find_pushes(rest[flag + 1], cwd, {**exported, **prefix}, depth + 1)
     return pushes
 
 
@@ -178,14 +235,10 @@ def stale_files(repo: Path) -> tuple[list[str], str] | None:
     return [checker._root_to_rel(p, root) for p in split.stale], graph_rel
 
 
-def _truthy(value: str | None) -> bool:
-    return bool((value or "").strip())
-
-
 def allowed_by_env(push_env: dict[str, str], count: int) -> bool:
     """SKIP_KG, or a KG_STALE_ACK naming exactly `count`, in the command or here."""
     for source in (push_env, os.environ):
-        if _truthy(source.get("SKIP_KG")):
+        if skip_kg(source):
             return True
         ack = (source.get("KG_STALE_ACK") or "").strip()
         if ack.isdigit() and int(ack) == count:
@@ -208,34 +261,25 @@ def deny_reason(stale: list[str], graph_rel: str) -> str:
     )
 
 
-def _deny(reason: str) -> None:
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        }
-    }))
-
-
 def _run(data: dict[str, object]) -> None:
-    if data.get("tool_name") != "Bash":
+    tool = data.get("tool_name")
+    if tool not in ("Bash", "PowerShell"):
         return
     tool_input = data.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str) or "git" not in command or "push" not in command:
         return
-    if _truthy(os.environ.get("SKIP_KG")):
+    if skip_kg():
         return
     cwd = data.get("cwd")
     base = Path(cwd) if isinstance(cwd, str) and cwd else Path.cwd()
     try:
-        pushes = find_pushes(command, base)
+        pushes = find_pushes(powershell_to_shell(command) if tool == "PowerShell" else command, base)
     except ValueError:
         return
     checked: dict[Path, tuple[list[str], str] | None] = {}
     for push in pushes:
-        if _truthy(push.env.get("SKIP_KG")):
+        if push.deletes_only or skip_kg(push.env):
             continue
         repo = _repo_root(push.cwd)
         if repo is None:
@@ -248,19 +292,12 @@ def _run(data: dict[str, object]) -> None:
         stale, graph_rel = result
         if allowed_by_env(push.env, len(stale)):
             continue
-        _deny(deny_reason(stale, graph_rel))
+        emit_deny(deny_reason(stale, graph_rel))
         return
 
 
 def main() -> None:
-    try:
-        raw = sys.stdin.read()
-        data = json.loads(raw) if raw.strip() else {}
-        if isinstance(data, dict):
-            _run(data)
-    except Exception:  # noqa: BLE001
-        # Fail open: a gate that errors must let the push through to the git hook.
-        return
+    run_hook(_run)
 
 
 if __name__ == "__main__":

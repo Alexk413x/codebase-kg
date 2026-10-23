@@ -14,5 +14,11 @@
 # Skip: SKIP_KG=1 git commit ...     (or --no-verify to skip every hook)
 [ -n "$SKIP_KG" ] && exit 0
 DIR=$(dirname "$0")
-if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
-"$PY" "$DIR/kg_pre_commit.py" || true
+# python3 can be a Microsoft Store stub on Windows, so the py launcher goes first
+# and each candidate must run.
+PY=
+for candidate in "py -3" python3 python; do
+  if $candidate -c "" </dev/null >/dev/null 2>&1; then PY=$candidate; break; fi
+done
+[ -n "$PY" ] || exit 0
+$PY "$DIR/kg_pre_commit.py" || true

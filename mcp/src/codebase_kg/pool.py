@@ -22,14 +22,14 @@ from __future__ import annotations
 
 import itertools
 import json
-import os
 import queue
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
 from typing import IO, Any
+
+from . import shim
 
 SRC = Path(__file__).resolve().parents[1]
 DEFAULT_MAX_WORKERS = 8
@@ -55,40 +55,23 @@ class Refused(RuntimeError):
         self.body = body
 
 
-def _setting(names: tuple[str, ...], default: float) -> float:
-    for name in names:
-        raw = os.environ.get(name, "").strip()
-        if not raw:
-            continue
-        try:
-            return float(raw)
-        except ValueError:
-            continue
-    return default
-
-
 def max_workers() -> int:
     """`CODEBASE_KG_MAX_WORKERS`, else the plugin's `max_workers` setting, else 8."""
-    value = _setting(("CODEBASE_KG_MAX_WORKERS", "CLAUDE_PLUGIN_OPTION_MAX_WORKERS"), DEFAULT_MAX_WORKERS)
-    return max(0, int(value))
+    return max(0, shim.env_int(("CODEBASE_KG_MAX_WORKERS", "CLAUDE_PLUGIN_OPTION_MAX_WORKERS"), DEFAULT_MAX_WORKERS))
 
 
 def call_timeout() -> float:
-    return _setting(("CODEBASE_KG_CALL_TIMEOUT",), CALL_TIMEOUT)
+    return shim.env_float("CODEBASE_KG_CALL_TIMEOUT", CALL_TIMEOUT)
 
 
 def worker_command() -> list[str]:
-    # A Windows venv's python.exe is a launcher that runs the base interpreter as a
-    # second process; the worker needs nothing from the venv, so skip the launcher.
-    python = getattr(sys, "_base_executable", None) or sys.executable
-    return [python, "-I", "-S", "-c", _ENTRY, str(SRC)]
+    return [shim.base_python(), "-I", "-S", "-c", _ENTRY, str(SRC)]
 
 
 class _Worker:
     def __init__(self, command: list[str]) -> None:
-        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         self.proc = subprocess.Popen(
-            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, creationflags=flags,
+            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, creationflags=shim.NO_WINDOW,
         )
         assert self.proc.stdin is not None and self.proc.stdout is not None
         self.stdin: IO[bytes] = self.proc.stdin
@@ -208,10 +191,12 @@ class Pool:
             while True:
                 if self._closed:
                     raise WorkerError("codebase-kg worker pool is shut down")
-                if self._idle:
+                while self._idle:
                     worker = self._idle.pop()
-                    self._busy.add(worker)
-                    return worker
+                    if worker.proc.poll() is None:
+                        self._busy.add(worker)
+                        return worker
+                    worker.kill()
                 if len(self._busy) + self._starting < self.limit:
                     self._starting += 1
                     break

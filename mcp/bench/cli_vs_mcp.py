@@ -120,6 +120,13 @@ def _stats(ms: list[float]) -> dict[str, float]:
     }
 
 
+def emit_report(report: dict, out: str | None) -> None:
+    text = json.dumps(report, indent=2)
+    print(text)
+    if out:
+        Path(out).write_text(text + "\n", encoding="utf-8")
+
+
 def _cli_cmd(launcher: str, graph: str, args: list[str]) -> list[str]:
     tail = [str(RUNNER), "query", "--graph", graph, *args]
     if launcher == "uv":
@@ -353,10 +360,7 @@ def main() -> int:
         with http_server(args.max_workers) as server, CpuMeter() as meter:
             report["http"] = asyncio.run(bench_http(graph, args.reps, args.sessions, server, args.idle_wait))
         report["http"]["cpu_pct"] = meter.pct
-    text = json.dumps(report, indent=2)
-    print(text)
-    if args.out:
-        Path(args.out).write_text(text + "\n", encoding="utf-8")
+    emit_report(report, args.out)
     return 0
 
 

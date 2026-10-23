@@ -28,7 +28,7 @@ from typing import Literal
 
 from . import clean, links
 from .coverage import COVERS_KEY, EXEMPT_KEY, format_patterns
-from .models import Meta, Node
+from .models import Meta, Node, slashes
 from .schema import (
     APPLICATION_ID,
     DDL,
@@ -40,6 +40,10 @@ from .schema import (
 )
 
 DanglingPolicy = Literal["error", "drop"]
+
+_RESERVED_META = frozenset(
+    {"schema_version", "codebase", "root", "generated", "counterpart", "language", COVERS_KEY, EXEMPT_KEY}
+)
 
 
 @dataclass
@@ -173,14 +177,13 @@ def _validate(
         # The whole node contract in one call, so a violation is reported
         # against the node rather than surfacing later as a CHECK failure with
         # no indication of which row caused it.
+        n.tidy_parity_fields()
         issues = clean.node_problems(n)
         if issues:
             raise BuildError(f"node '{n.id}': {'; '.join(issues)}")
 
         kept: list[str] = []
         for dst in n.edges:
-            if dst == n.id:
-                continue  # a self-edge carries no information
             if dst in ids:
                 kept.append(dst)
                 continue
@@ -207,7 +210,7 @@ def _write(
         "generated": meta.generated,
     }
     if meta.counterpart:
-        rows_meta["counterpart"] = meta.counterpart
+        rows_meta["counterpart"] = slashes(meta.counterpart)
     if meta.language:
         rows_meta["language"] = meta.language
     # Stored newline-separated rather than as JSON: the vendored pre-push hook
@@ -216,7 +219,7 @@ def _write(
         rows_meta[COVERS_KEY] = format_patterns(meta.covers)
     if meta.exempt:
         rows_meta[EXEMPT_KEY] = format_patterns(meta.exempt)
-    rows_meta.update(meta.extra)
+    rows_meta.update({k: v for k, v in meta.extra.items() if k not in _RESERVED_META})
     # After `extra`, so it wins: this is a fact about the schema just written,
     # and a value carried in from an older graph would name the wrong table to
     # every peer that resolves a link into this file.
@@ -307,7 +310,7 @@ def build(
     report = BuildReport()
     ordered = _validate(list(nodes), dangling, report)
 
-    carried = {} if rebaseline else dict(sources or {})
+    carried = {} if rebaseline and source_root is not None else dict(sources or {})
     if source_root is not None:
         resolved = stamp_hashes(ordered, Path(source_root), report, carried)
     else:

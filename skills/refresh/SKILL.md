@@ -67,12 +67,15 @@ kg_delete_node(ids=["legacy_sync_worker"])                    # previews what ca
 kg_delete_node(ids=["legacy_sync_worker"], dry_run=False)
 ```
 
-Only the keys you supply change, so omitting `edges` keeps them. `anchors`, `edges`,
+Only the keys you supply change, so omitting `edges` keeps them. A key the tool does not know is
+refused with a "did you mean …?" hint, and nothing is written, so a misspelled key cannot pass as a
+successful edit. `anchors`, `edges`,
 `external_links` and `references` **replace** the whole list when present — read the node first
 if you mean to append. A reference's `path` / `symbol` must equal one of the node's anchors, so
 when an anchor moves, move the references that narrow to it in the same call. Add
-`"rebaseline": true` only to a node you verified against current source (step 4). Each call is atomic, runs `kg_validate` against the result and refuses anything that
-introduces a new finding, and hands back every field it changed. A rejected call leaves the
+`"rebaseline": true` only to a node you verified against current source (step 4). Each call is
+atomic, runs `kg_validate` against the result and refuses anything that introduces a new finding,
+and hands back every field it changed. A rejected call leaves the
 committed file byte-identical, and there is no scratch file to clean up.
 
 ### A whole change set → export → edit → build
@@ -196,7 +199,7 @@ Commit `knowledge/code_graph.db` alongside the source change.
 ## Rules
 
 - **The nodes are the deliverable.** Bumping `generated` without touching nodes is exactly the drift
-  this plugin exists to prevent — and now it is also pointless, since nothing reads the date as a
+  this plugin exists to prevent, and it is pointless, since nothing reads the date as a
   freshness claim.
 - If the change set is large, cover it fully or state explicitly which nodes were updated and which
   remain — never imply completeness that wasn't achieved.

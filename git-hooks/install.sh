@@ -22,7 +22,7 @@ set -eu
 # Pinned to a TAG, never a branch: this command runs on every diff of the graph
 # and must not change under the repo silently. /codebase-kg:setup stamps this
 # line with the plugin version that wrote it; bump it deliberately.
-KG_VERSION="${KG_VERSION:-0.14.4}"
+KG_VERSION="${KG_VERSION:-0.15.0}"
 KG_SOURCE="${KG_SOURCE:-git+https://github.com/Alexk413x/codebase-kg.git@codebase-kg--v${KG_VERSION}#subdirectory=mcp}"
 # --quiet is not cosmetic: without it uv prints resolution lines into the body of
 # every `git diff` of the graph.
@@ -76,8 +76,8 @@ else
     warn "  clobber it. Either point it here, or add these two lines to the"
     warn "  pre-commit and pre-push in '$current' (pre-push: before anything that"
     warn "  reads stdin):"
-    warn "    if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi"
-    warn "    \"\$PY\" \"$hooks_rel/kg_pre_commit.py\" || true   # kg_pre_push.py in pre-push"
+    warn "    for PY in 'py -3' python3 python; do \$PY -c '' >/dev/null 2>&1 && break; done"
+    warn "    \$PY \"$hooks_rel/kg_pre_commit.py\"   # kg_pre_push.py in pre-push"
     status=1
   fi
 fi

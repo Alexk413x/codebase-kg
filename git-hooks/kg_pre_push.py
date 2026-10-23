@@ -93,9 +93,14 @@ _IGNORE_LOWER = {d.lower() for d in IGNORE_DIRS}
 
 
 def _git(*args: str) -> str:
+    # git prints paths as UTF-8; quotepath=off keeps non-ASCII names unescaped.
     try:
         return subprocess.run(
-            ["git", *args], capture_output=True, text=True, check=False
+            ["git", "-c", "core.quotepath=off", *args],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
         ).stdout
     except OSError:
         return ""
@@ -200,9 +205,8 @@ def push_range() -> str | None:
     return None
 
 
-def changed_files(rng: str) -> list[tuple[str, str]]:
-    """`(status, path)` pairs for a range. Status is git's letter: A/M/D/R…"""
-    out = _git("diff", "--name-status", rng)
+def parse_name_status(out: str) -> list[tuple[str, str]]:
+    """`(status, path)` pairs from `git diff --name-status` output."""
     pairs: list[tuple[str, str]] = []
     for line in out.splitlines():
         parts = line.split("\t")
@@ -217,6 +221,11 @@ def changed_files(rng: str) -> list[tuple[str, str]]:
         else:
             pairs.append((status, parts[-1]))
     return pairs
+
+
+def changed_files(rng: str) -> list[tuple[str, str]]:
+    """`(status, path)` pairs for a range. Status is git's letter: A/M/D/R…"""
+    return parse_name_status(_git("diff", "--name-status", rng))
 
 
 def _new_ref_range(local_sha: str) -> str | None:
@@ -242,10 +251,7 @@ def changed_files_for_ref(local_sha: str, remote_sha: str) -> list[tuple[str, st
     pairs: list[tuple[str, str]] = []
     for c in _git("rev-list", local_sha, "--not", "--remotes").split():
         out = _git("diff-tree", "--no-commit-id", "--name-status", "-r", "--root", c)
-        for line in out.splitlines():
-            parts = line.split("\t")
-            if len(parts) >= 2:
-                pairs.append((parts[0][:1], parts[-1]))
+        pairs += parse_name_status(out)
     return pairs
 
 
@@ -291,8 +297,8 @@ def load_config(repo: Path) -> dict[str, str]:
     local = repo / ".claude" / "codebase-kg.local.md"
     try:
         if local.is_file():
-            return _parse_frontmatter(local.read_text(encoding="utf-8"))
-    except OSError:
+            return _parse_frontmatter(local.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
         pass
     return {}
 
@@ -780,6 +786,8 @@ def _run() -> int:
     # Only when stdin is empty (manual invocation) fall back to guessing a range.
     stdin_text = "" if sys.stdin.isatty() else sys.stdin.read()
     refs = parse_push_refs(stdin_text)
+    if refs and not push_tips(refs):
+        return 0  # only ref deletions: no commits are published
     if refs:
         changed = changed_files_for_push(refs)
     else:

@@ -12,7 +12,7 @@ the heavy multi-agent procedures pushed into `references/`. `setup` runs only wh
 | [`link`](link/SKILL.md) | establish/maintain cross-codebase parity (counterpart links) | rebuilds both graphs |
 | [`validate`](validate/SKILL.md) | cheap deterministic drift check against source | report only |
 | [`query`](query/SKILL.md) | "where does X live", "what depends on X" — find code through the graph | report only |
-| [`setup`](setup/SKILL.md) | wire the git hooks, the textconv driver and `install.sh` into a repo (user-invoked only) | writes `.githooks/`, `.gitattributes`, git config |
+| [`setup`](setup/SKILL.md) | wire the git hooks, the textconv driver and `install.sh` into a repo (user-invoked only) | writes the hooks dir (default `.githooks/`), `.gitattributes`, git config |
 
 The six graph skills lean on the MCP query surface and the schema (`../SCHEMA.md`). List **both** server names
 in `allowed-tools` — `mcp__codebase-kg__*` when the server is installed directly and
@@ -25,13 +25,19 @@ exception and says so inline.
 
 ## Writing the graph
 
-The artifact is SQLite, so no skill edits it with `Write`/`Edit`. There are two write paths, and the
+The artifact is SQLite, so no skill edits it with `Write`/`Edit`. The skills that take the bulk path
+(`build`, `refresh`, `link`) pre-approve `Write` and `Edit` so they can author the JSON working file
+(`.kg-export.json`). They never write the `.db` with those tools. There are two write paths, and the
 size of the change picks between them.
 
 **Targeted — the MCP write tools.** `kg_upsert_node`, `kg_delete_node`, `kg_add_link`,
-`kg_remove_link`. Reach for these when a skill is fixing a handful of nodes: one description, an
-anchor that moved, a link into another graph. Each call is atomic, runs `kg_validate` against the
-result before it lands, and reports every field it changed.
+`kg_remove_link`, `kg_add_reference`, `kg_remove_reference`. Reach for these when a skill is fixing a
+handful of nodes: one description, an anchor that moved, a link into another graph. Each call is
+atomic, runs `kg_validate` against the result before it lands, and reports every field it changed.
+`kg_upsert_node` refuses a key it does not know and says nothing was written. Only a skill that
+lists a write tool in `allowed-tools` can call it without a prompt: `refresh` lists all six, and
+`link` lists `kg_upsert_node`, `kg_add_link` and `kg_remove_link`. `build` lists none, because a
+bootstrap is bulk work; it fixes a few bad nodes by editing the JSON and building again.
 
 **Bulk — the round trip.** Reach for this when the change is wholesale: a parity sweep, a
 restructuring, a whole refresh's worth of nodes, or anything where reading the JSON diff before
@@ -48,6 +54,13 @@ Both paths validate first and write nothing if a node breaks a rule, so a skill 
 with a dangling edge or a description carrying a ticket ref. The round trip is lossless, which means
 an unchanged refresh produces an empty git diff; a rejected write tool call leaves the committed
 file byte-identical.
+
+## Codex
+
+Codex sets `CLAUDE_PLUGIN_ROOT` for plugin hooks but not for the commands an agent runs, and the
+skills call their scripts through it. A Codex user sets the variable in the
+`[shell_environment_policy.set]` table of the Codex config, or the agent uses the folder two levels
+above the `SKILL.md` it loaded. `/codebase-kg:setup` step 11 covers the Codex MCP table.
 
 ## Division of labor
 

@@ -43,7 +43,8 @@ SessionStart hook and `mcp/launch/kg_headers.py` load this file by path.
 
 Stdlib only, and no imports from this package: `kg-shim` runs this file with a
 bare system `python3`, outside any venv. The server imports it for the paths,
-the build and the port, so the two sides cannot disagree about any of them.
+the build, the port, the settings readers and the JSON-RPC id and error shapes, so
+the two sides cannot disagree about any of them.
 """
 
 from __future__ import annotations
@@ -62,19 +63,44 @@ if __name__ == "__main__":
 import hashlib
 import http.client
 import json
+import math
 import re
 import secrets
 import socket
 import subprocess
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+
+def env_float(names: str | tuple[str, ...], default: float) -> float:
+    """The first of `names` set to a number, else `default`. Junk and nan count as unset; inf is a value."""
+    for name in (names,) if isinstance(names, str) else names:
+        try:
+            value = float(os.environ.get(name, "").strip())
+        except ValueError:
+            continue
+        if not math.isnan(value):
+            return value
+    return default
+
+
+def env_int(names: str | tuple[str, ...], default: int) -> int:
+    """The first of `names` set to a finite number, truncated to an integer, else `default`."""
+    for name in (names,) if isinstance(names, str) else names:
+        value = env_float(name, math.nan)
+        if math.isfinite(value):
+            return int(value)
+    return default
+
+
 PACKAGE_DIR = Path(__file__).resolve().parent
 MCP_DIR = PACKAGE_DIR.parents[1]
-CONNECT_BUDGET = float(os.environ.get("CODEBASE_KG_SHARED_TIMEOUT") or 10.0)
-SPAWN_BUDGET = float(os.environ.get("CODEBASE_KG_SPAWN_TIMEOUT") or 25.0)
+CONNECT_BUDGET = env_float("CODEBASE_KG_SHARED_TIMEOUT", 10.0)
+SPAWN_BUDGET = env_float("CODEBASE_KG_SPAWN_TIMEOUT", 25.0)
 HANDSHAKE_TIMEOUT = 3.0
 REPLAY_TIMEOUT = 30.0
 RETRY_DELAYS = (0.0, 1.0, 2.0)
@@ -86,6 +112,7 @@ _CONNECT_TIMEOUT = 0.25
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _STILL_ACTIVE = 259
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 class Rejected(RuntimeError):
@@ -164,16 +191,44 @@ DEFAULT_HTTP_PORT = 47821
 def http_port() -> int:
     """`CODEBASE_KG_PORT`, else the plugin's `server_port` setting, else 47821. 0 lets the OS pick."""
     for name in ("CODEBASE_KG_PORT", "CLAUDE_PLUGIN_OPTION_SERVER_PORT"):
-        raw = os.environ.get(name, "").strip()
-        if not raw:
-            continue
-        try:
-            port = int(float(raw))
-        except ValueError:
-            continue
+        port = env_int(name, -1)
         if 0 <= port <= 65535:
             return port
     return DEFAULT_HTTP_PORT
+
+
+_REPLACE_TRIES = 50
+_REPLACE_WAIT = 0.02
+
+
+def _write_temp(path: Path, data: bytes) -> Path:
+    """A new file beside `path` that only this user can read, holding `data`.
+
+    On Windows the mode bits are ignored; the per-user cache directory's
+    inherited ACL is what keeps the contents private there.
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    return tmp
+
+
+def replace_file(tmp: Path, path: Path) -> None:
+    for _ in range(_REPLACE_TRIES):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            # Windows refuses to replace a file another process has open, such as a
+            # server listing sessions or a shim reading the previous state.
+            time.sleep(_REPLACE_WAIT)
+    os.replace(tmp, path)
+
+
+def write_atomic(path: Path, data: bytes) -> None:
+    """Replace `path` with a file only this user can read, holding `data`."""
+    replace_file(_write_temp(path, data), path)
 
 
 def http_token_path() -> Path:
@@ -194,21 +249,36 @@ def http_token(create: bool = False) -> str | None:
     if token or not create:
         return token or None
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        return http_token()
     token = secrets.token_hex(32)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(token)
+    tmp = _write_temp(path, token.encode("utf-8"))
+    try:
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            existing = http_token()
+            if existing:
+                return existing
+            replace_file(tmp, path)
+        except OSError:
+            # A filesystem without hard links.
+            replace_file(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
     return token
 
 
-FREE, OURS, OTHER = "free", "codebase-kg", "other"
+FREE, OURS, OTHER, UNRESPONSIVE = "free", "codebase-kg", "other", "unresponsive"
 
 
 def health(port: int, timeout: float = 1.0) -> tuple[str, dict[str, Any]]:
-    """What answers `GET /health` on the port: `free`, `codebase-kg` with its reply, or `other`."""
+    """What answers `GET /health` on the port.
+
+    `free`, `codebase-kg` with its reply, `unresponsive` for a listener that accepts the
+    connection and then times out, or `other` for anything else.
+    """
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     try:
         # Windows retries a refused loopback connect for about a second rather than
@@ -222,8 +292,8 @@ def health(port: int, timeout: float = 1.0) -> tuple[str, dict[str, Any]]:
         conn.request("GET", "/health", headers={"Host": f"127.0.0.1:{port}"})
         response = conn.getresponse()
         body = response.read(_CHUNK)
-    except ConnectionRefusedError:
-        return FREE, {}
+    except socket.timeout:
+        return UNRESPONSIVE, {}
     except (OSError, http.client.HTTPException):
         return OTHER, {}
     finally:
@@ -258,6 +328,18 @@ def verified_holder(port: int) -> tuple[dict[str, Any], dict[str, Any]] | None:
 def verified_token(port: int) -> str | None:
     """The HTTP token, only when the port answers as a verified codebase-kg server."""
     return http_token() if verified_holder(port) is not None else None
+
+
+def request_shutdown(port: int, token: str) -> None:
+    """Ask the server on the port to exit. Raises OSError or http.client.HTTPException if it cannot be reached."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2.0)
+    try:
+        conn.request("POST", "/shutdown", headers={
+            "Host": f"127.0.0.1:{port}", "Authorization": f"Bearer {token}", "Content-Length": "0",
+        })
+        conn.getresponse().read()
+    finally:
+        conn.close()
 
 
 _BUILD = re.compile(r"[0-9A-Za-z][0-9A-Za-z.\-]{0,63}\+[0-9a-f]{12}")
@@ -418,9 +500,7 @@ def register_session(session: str, pid: int | None) -> bool:
     if path is None:
         return False
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps({"pid": pid, "at": time.time()}), encoding="utf-8")
-    os.replace(tmp, path)
+    write_atomic(path, json.dumps({"pid": pid, "at": time.time()}).encode("utf-8"))
     return True
 
 
@@ -428,11 +508,15 @@ def unregister_session(session: str) -> bool:
     path = _session_file(session)
     if path is None:
         return False
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return False
-    return True
+    for _ in range(_REPLACE_TRIES):
+        try:
+            path.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+        except PermissionError:
+            time.sleep(_REPLACE_WAIT)
+    return False
 
 
 def live_sessions() -> list[str]:
@@ -503,42 +587,59 @@ def _try_connect(build: str, hello: dict[str, Any]) -> Connected | None:
         return None
 
 
-def _take_lock(build: str) -> bool:
+def take_lock(build: str) -> bool:
     lock = lock_path(build)
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         try:
             abandoned = time.time() - lock.stat().st_mtime > max(CONNECT_BUDGET, SPAWN_BUDGET) * 2
-        except OSError:
+            if not abandoned:
+                holder = lock.read_text(encoding="utf-8").strip()
+                abandoned = holder.isdigit() and not pid_alive(int(holder))
+        except (OSError, ValueError):
             return False
         if abandoned:
             try:
                 lock.unlink()
             except OSError:
                 return False
-            return _take_lock(build)
+            return take_lock(build)
         return False
     with os.fdopen(fd, "w") as f:
         f.write(str(os.getpid()))
     return True
 
 
-def _release_lock(build: str) -> None:
+def release_lock(build: str) -> None:
     try:
         lock_path(build).unlink()
     except OSError:
         pass
 
 
+@contextmanager
+def spawn_lock(build: str) -> Iterator[bool]:
+    """Yield whether this process took the spawn lock, and release it on exit if it did."""
+    locked = take_lock(build)
+    try:
+        yield locked
+    finally:
+        if locked:
+            release_lock(build)
+
+
 _SERVER_ENTRY = "import sys; sys.path.insert(0, sys.argv.pop(1)); from codebase_kg.daemon import main; main()"
 
 
-def server_command(*extra: str) -> list[str]:
+def base_python() -> str:
     # A Windows venv's python.exe is a launcher that runs the base interpreter as a
-    # second process; the server needs nothing from a venv, so skip the launcher.
-    python = getattr(sys, "_base_executable", None) or sys.executable
-    return [python, "-I", "-S", "-c", _SERVER_ENTRY, str(MCP_DIR / "src"), *extra]
+    # second process; the server and its workers need nothing from a venv, so skip the launcher.
+    return getattr(sys, "_base_executable", None) or sys.executable
+
+
+def server_command(*extra: str) -> list[str]:
+    return [base_python(), "-I", "-S", "-c", _SERVER_ENTRY, str(MCP_DIR / "src"), *extra]
 
 
 def spawn_server(build: str) -> subprocess.Popen[bytes]:
@@ -547,7 +648,7 @@ def spawn_server(build: str) -> subprocess.Popen[bytes]:
     if sys.platform == "win32":
         # CREATE_NO_WINDOW rather than DETACHED_PROCESS: a detached process gives each
         # console child it starts a new, visible console window.
-        flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+        flags = NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
         # The host may run this shim in a job that kills its children when the
         # session closes, taking the shared server with it. Breaking away keeps it
         # alive; a job that forbids breakaway refuses the flag, so retry without.
@@ -577,12 +678,11 @@ def spawn_server_outside_job(build: str) -> None:
     kills every descendant when the helper exits, so `spawn_server` leaves no server behind there.
     """
     env = {k: v for k, v in os.environ.items() if k.startswith("CODEBASE_KG_") and k != "CODEBASE_KG_PATH"}
-    python = getattr(sys, "_base_executable", None) or sys.executable
     code = (
         f"import os,sys;sys.stderr=open({str(log_path(build))!r},'a',encoding='utf-8',buffering=1);"
         f"os.environ.update({env!r});{_SERVER_ENTRY}"
     )
-    command = subprocess.list2cmdline([python, "-I", "-S", "-c", code, str(MCP_DIR / "src"), "--serve"])
+    command = subprocess.list2cmdline([base_python(), "-I", "-S", "-c", code, str(MCP_DIR / "src"), "--serve"])
     create = (
         "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
         "-Arguments @{CommandLine=$env:KG_COMMAND; CurrentDirectory=$env:KG_CWD}; exit [int]$r.ReturnValue"
@@ -592,10 +692,26 @@ def spawn_server_outside_job(build: str) -> None:
         [str(powershell), "-NoProfile", "-NonInteractive", "-Command", create],
         env={**os.environ, "KG_COMMAND": command, "KG_CWD": str(cache_dir())},
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        creationflags=subprocess.CREATE_NO_WINDOW, timeout=SPAWN_BUDGET, check=False,
+        creationflags=NO_WINDOW, timeout=SPAWN_BUDGET, check=False,
     )
     if done.returncode != 0:
         raise OSError(f"WMI could not start the server (Win32_Process.Create returned {done.returncode})")
+
+
+def spawn_server_detached(build: str) -> subprocess.Popen[bytes] | None:
+    """Start the server where no host job can end it, or fall back to `spawn_server`.
+
+    On Windows the WMI start is tried first: a plain child of a host that closes its job
+    with the session leaves no server behind, and the job may refuse breakaway.
+    Returns None when WMI started it, because there is no process handle to poll.
+    """
+    if sys.platform == "win32":
+        try:
+            spawn_server_outside_job(build)
+            return None
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return spawn_server(build)
 
 
 def shared_connection(
@@ -617,7 +733,7 @@ def shared_connection(
                 return conn
             if server is not None and server.poll() is not None:
                 return None
-            if not locked and _take_lock(build):
+            if not locked and take_lock(build):
                 locked = True
                 conn = _try_connect(build, hello)
                 if conn is not None:
@@ -625,7 +741,7 @@ def shared_connection(
                 if cancel and cancel.is_set():
                     return None
                 try:
-                    server = spawn_server(build)
+                    server = spawn_server_detached(build)
                 except OSError:
                     return None
                 deadline = max(deadline, time.monotonic() + SPAWN_BUDGET)
@@ -633,16 +749,7 @@ def shared_connection(
         return None
     finally:
         if locked:
-            _release_lock(build)
-
-
-def _binary_stdio() -> None:
-    if sys.platform == "win32":
-        import msvcrt
-
-        # A text-mode fd rewrites \n as \r\n, which corrupts frames in both directions.
-        msvcrt.setmode(0, os.O_BINARY)
-        msvcrt.setmode(1, os.O_BINARY)
+            release_lock(build)
 
 
 def _write_all(fd: int, data: bytes) -> None:
@@ -769,11 +876,19 @@ def _messages(line: bytes) -> list[dict[str, Any]]:
     return [m for m in items if isinstance(m, dict)]
 
 
-def _id(message: dict[str, Any]) -> str | int | None:
+def valid_id(message: dict[str, Any]) -> str | int | None:
+    """The message's JSON-RPC id, or None when it has none or one that is not a string or integer."""
     value = message.get("id")
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         return None
     return value
+
+
+def rpc_error(request_id: object, code: int, message: str, data: object = None) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": request_id, "error": error}
 
 
 def _is_response(message: dict[str, Any]) -> bool:
@@ -796,7 +911,6 @@ class Relay:
         self._eof = threading.Event()
 
     def run(self, link: _Link) -> int:
-        _binary_stdio()
         self._link = link
         threading.Thread(target=self._read_client, daemon=True).start()
         while True:
@@ -844,7 +958,7 @@ class Relay:
 
     def _record(self, line: bytes, messages: list[dict[str, Any]]) -> None:
         for message in messages:
-            method, request_id = message.get("method"), _id(message)
+            method, request_id = message.get("method"), valid_id(message)
             if method == "notifications/initialized" and self._initialized is None:
                 self._initialized = line
             if method is None or request_id is None:
@@ -856,7 +970,7 @@ class Relay:
     def _to_client(self, line: bytes) -> None:
         if self._inflight:
             for message in _messages(line):
-                response_id = _id(message)
+                response_id = valid_id(message)
                 if response_id is None or not _is_response(message):
                     continue
                 with self._lock:
@@ -882,10 +996,7 @@ class Relay:
             for request_id in lost:
                 del self._inflight[request_id]
         for request_id in lost:
-            self._write(json.dumps({
-                "jsonrpc": "2.0", "id": request_id,
-                "error": {"code": RESTARTED_CODE, "message": RESTARTED},
-            }).encode("utf-8") + b"\n")
+            self._write(json.dumps(rpc_error(request_id, RESTARTED_CODE, RESTARTED)).encode("utf-8") + b"\n")
         print("codebase-kg: lost the server; reconnecting", file=sys.stderr)
         for delay in RETRY_DELAYS:
             if self._eof.wait(delay):
@@ -931,7 +1042,7 @@ class Relay:
                     line = link.line()
                     if line is None:
                         return False
-                    if any(_id(m) == self._init_id and _is_response(m) for m in _messages(line)):
+                    if any(valid_id(m) == self._init_id and _is_response(m) for m in _messages(line)):
                         break
                     self._to_client(line)
             if initialized is not None:
@@ -939,16 +1050,21 @@ class Relay:
             link.set_timeout(None)
         except OSError:
             return False
-        with self._lock:
-            queued, self._queue = self._queue, []
-            try:
+        while True:
+            with self._lock:
+                queued, self._queue = self._queue, []
                 for line, messages in queued:
                     self._record(line, messages)
+                if not queued:
+                    self._link = link
+                    closing = self._eof.is_set()
+                    break
+            try:
+                for line, _ in queued:
                     link.send(line)
-            except OSError:
+            except (OSError, ValueError):
+                # A dead link ends the read loop, which answers every recorded request with an error.
                 pass
-            self._link = link
-            closing = self._eof.is_set()
         if closing:
             link.close_write()
         return True

@@ -52,6 +52,7 @@ from kg_pre_push import (
     find_graph_rel,
     load_config,
     norm_root,
+    parse_name_status,
     read_graph,
     repo_staleness,
     stale_nodes,
@@ -65,17 +66,7 @@ def staged_files() -> list[tuple[str, str]]:
     `--cached` against HEAD: the change set this commit will actually contain,
     which is not the same as the working tree and not the same as a push range.
     """
-    out = _git("diff", "--cached", "--name-status")
-    pairs: list[tuple[str, str]] = []
-    for line in out.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 2:
-            continue
-        status = parts[0][:1]
-        # A rename arrives as `R100\told\tnew`; the new path is what a node
-        # anchors on now.
-        pairs.append((status, parts[-1].replace("\\", "/")))
-    return pairs
+    return parse_name_status(_git("diff", "--cached", "--name-status"))
 
 
 def main() -> int:

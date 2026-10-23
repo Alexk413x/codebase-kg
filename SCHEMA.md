@@ -39,8 +39,9 @@ The graph is a **tool that reflects current code state to reduce search cost. No
 - **Advisory, with one gate.** Freshness, drift, and validation surface as advice. They never gate a
   build, a tool, or a commit. The push hook gates on exactly one thing: any mapped file that has
   drifted (§6.3), including files the push touches.
-- **Machine-first.** The artifact is a database, read by tools. It is not meant to be read raw or
-  reviewed in a diff.
+- **Machine-first.** The artifact is a database, read by tools. It is not meant to be read raw.
+  `git diff` shows it as JSON once a clone wires the textconv driver (§1); without the driver git
+  prints `Binary files differ`.
 
 ## 1. One graph per repo
 
@@ -54,11 +55,16 @@ clone via `graph_path` — see §8 and `templates/codebase-kg.local.md.example`.
 
 **It is committed.** The artifact reflects the code's current state and travels with the code.
 
-Add this to the repo's `.gitattributes` so git treats it as the binary it is:
+Add this to the repo's `.gitattributes` so git treats it as the binary it is and routes `git diff`
+through the `codegraph` textconv driver:
 
 ```gitattributes
-knowledge/code_graph.db binary
+knowledge/code_graph.db binary diff=codegraph
 ```
+
+The attribute is committed. The driver is per-clone git config, which `/codebase-kg:setup` installs
+through the committed `install.sh`. A clone without the driver still works and shows
+`Binary files differ`.
 
 Git's packfile delta compresses it across refreshes regardless — SQLite's page layout means
 unchanged rows sit in unchanged pages — so committed history stays small.
@@ -84,17 +90,22 @@ Config and provenance, as key/value rows. The MCP server and the hooks read it.
 
 | key | required | meaning |
 |---|---|---|
-| `schema_version` | ✅ | Set by the writer, currently `4`. A reader refuses a version outside the range it speaks rather than guessing. v3 is still readable (§13). |
+| `schema_version` | ✅ | Set by the writer (`4`). A reader refuses a version outside the range it speaks rather than guessing. v3 is still readable (§13). |
 | `codebase` | ✅ | Short name — `android`, `ios`, `web`, `backend`. Used in `<codebase>-only` parity flags. |
 | `root` | ✅ | The code root this graph describes, **repo-relative** (e.g. `app/src/main`). Anchor paths are relative to it. |
 | `generated` | ✅ | `YYYY-MM-DD` the artifact was last built. **Provenance, not a contract** — nothing gates on it (§7). |
-| `counterpart` | ⬜ | Path to a paired repo's `code_graph.db`, for parity. Omit for a single-codebase repo. |
+| `counterpart` | ⬜ | Path to a paired repo's `code_graph.db`, for parity, with forward slashes (the writer converts backslashes). Omit for a single-codebase repo. |
 | `language` | ⬜ | Hint for symbol tooling only. Grep always works; ctags/LSP are opportunistic. |
 | `covers` | ⬜ | Globs, one per line, of files a node is expected to exist for. **Declare this** — §3.1. |
 | `exempt` | ⬜ | Globs, one per line, subtracted from `covers`: in scope, deliberately unmapped. |
 
 `root` must be repo-relative: the graph is committed and shared, so an absolute `root` is per-clone
 and won't match anywhere else.
+
+The authoring JSON can carry further scalar keys, either at the top level or inside an `extra`
+object. The writer stores each as one more `meta` row. A key that names a row in the table above
+(`schema_version`, `codebase`, `root`, `generated`, `counterpart`, `language`, `covers`, `exempt`)
+cannot be set this way. The writer ignores it, so `extra` cannot overwrite what the build sets.
 
 ### 3.1 Declare `covers` — an undeclared graph cannot report what it is missing
 
@@ -124,6 +135,13 @@ oversight.
 Patterns are gitignore-flavoured: `**/` spans path segments, `*` and `?` stay within one, a
 trailing `/` means everything beneath. They match paths relative to `root`.
 
+`covers` outranks the conventional-ignore directories (`build`, `out`, `target`, `dist`, `vendor`,
+`node_modules`, `.github` and similar), which the tree walk otherwise skips. A file such as
+`app/src/main/kotlin/com/acme/build/Config.kt` is classified when `app/src/**/*.kt` matches it, at any
+depth. One exception: a pattern that opens with a wildcard (`**/*.py`) names no directory, so it never
+admits a directory with an ignored name. The in-session hooks and the pre-push check consult `covers`
+before the ignored-directory list as well.
+
 ```
 covers: app/src/**/*.kt
         **/*.gradle.kts
@@ -151,7 +169,7 @@ One row per component.
 | `description` | ✅ | One short line: what it is and what it does. **≤ 240 chars**, present tense, no history. See §5. |
 | `section` | ⬜ | Free-text grouping (`APP ENTRY`, `SERVICES`, …). Display only, no semantics. |
 | `parity` | ⬜ | `matched`, `divergent`, or `<codebase>-only`. Multi-codebase only. §9. |
-| `counterpart` | ⬜ | `<peer-graph-path>#<node-id>`. §9. |
+| `counterpart` | ⬜ | `<peer-graph-path>#<node-id>`, with forward slashes. §9. |
 | `divergence` | ⬜ | One line naming *how* the two sides differ. Only when `parity = divergent`. |
 
 ## 5. The `description` contract
@@ -198,6 +216,10 @@ One row per anchor: `(node_id, ord, path, symbol)`. `path` is relative to `meta.
 grep-resolvable name, or NULL for a whole-file anchor (a manifest, a config file). `ord` preserves
 the author's order.
 
+The path is normalized when the anchor is created: backslashes become slashes, `./` segments and
+doubled slashes collapse, and a leading `..` stays. `src\a.kt`, `./src/a.kt` and `src//a.kt` are all
+`src/a.kt`.
+
 Line numbers are the **#1 source of drift** — they rot on every edit above them. Symbols
 (`Article`, `FeedRanker.rank`) are **stable**, **greppable**, and **universal**. A CHECK constraint
 rejects a symbol that starts with a digit, so a line-number anchor cannot be written.
@@ -211,7 +233,7 @@ One row per relationship: `(src, dst)`, both foreign keys into `node(id)`.
 
 - `dst` is a foreign key, so **a dangling edge cannot be written**.
 - `(src, dst)` is the primary key, so a duplicate edge cannot be written.
-- `src <> dst` is a CHECK, so a self-edge cannot be written.
+- A self-edge `(a, a)` is allowed: a method found within its own file, a use case that references itself. It does not count as an edge from another node, so it never blocks a delete, and a node whose only edge is a self-edge still counts as isolated. A graph built before self-edges were allowed rejects them until you run `kg_cli.py upgrade --force <graph>`.
 - `ON DELETE RESTRICT` on `dst`, so removing a node cannot silently strand what points at it.
 
 Edges stay *within one graph*. Cross-graph links are `counterpart` (§9), not edges.
@@ -244,7 +266,8 @@ Two rules keep the signal honest:
   keeps flagging. Re-baselining is an explicit claim that the descriptions were re-checked:
   `--rebaseline` for the whole graph, or `"rebaseline": true` on one node in `kg_upsert_node`,
   which re-hashes the files that node anchors. The row belongs to the file, so either one clears
-  the file for every node anchored to it.
+  the file for every node anchored to it. `--rebaseline` with no source tree in reach has nothing to
+  re-hash, so it keeps the recorded baselines and says so.
 
 A graph built with no source tree in reach simply has no rows here, reported as `unhashed` — which
 reads as "no baseline", never as "nothing changed".
@@ -308,6 +331,10 @@ It was never right for "fix one description". For that there are six **write too
 | `kg_add_link` / `kg_remove_link` | one `external_link` row (§12) |
 | `kg_add_reference` / `kg_remove_reference` | one `reference` row (§13) |
 
+`kg_upsert_node` refuses a key it does not know, at the node level and inside an anchor, link or
+reference object. The error suggests the closest accepted key ("did you mean …?") and says nothing was
+written. The tool schema sets `additionalProperties: false` to match.
+
 They weaken nothing in this document:
 
 - **Atomic.** The mutation runs against a private copy of the file inside one transaction, and the
@@ -331,16 +358,19 @@ the relationship. `dry_run` defaults to true and lists both.
 Everything repo-specific is **config, not code** — and the project-level config is the committed
 `meta` table itself (§3). It is shared with the team because the graph is committed:
 
-- `codebase`, `root`, `counterpart`, `language` — read by the MCP server, the hooks and the
-  pre-push check.
+- `codebase`, `root`, `counterpart`, `language`, `covers`, `exempt` — read from the graph by the
+  MCP server, the hooks and the pre-push check.
 
 `graph_path` (where the file lives) defaults to `knowledge/code_graph.db`, with **no repo-root
 fallback**. Because all of the above lives in the committed graph, **no separate config file is
 needed**.
 
 A `.claude/codebase-kg.local.md` is an **optional, per-developer override** — by the `.local`
-convention it is gitignored, never committed. Use it only when one clone differs (a peer repo at a
-non-standard path, a custom `graph_path`). The older key name `kg_path` is still read.
+convention it is gitignored, never committed. Use it only when one clone differs. It carries the
+YAML front-matter keys `graph_path` and `root`, plus the hook settings (`post_edit_nudge`,
+`nudge_every`, `search_gate`, `gate_shell_search`, `gate_credit`). The older key name `kg_path` is
+still read. Nothing reads `codebase`, `counterpart` or `language` from this file: set those in the
+graph's `meta` table.
 
 ## 9. Cross-codebase parity
 
@@ -362,7 +392,9 @@ The three shapes — and these are the *only* three the store will accept:
 | `<codebase>-only` | Present here, absent from the peer **in code** (a PRD mention does not count — verify against source). | must be absent | must be absent |
 
 Every one of those rules is a CHECK constraint. A half-filled parity triple is not a validation
-finding; it is a failed write.
+finding; it is a failed write. An empty or whitespace-only `parity`, `counterpart` or `divergence`
+counts as unset, and the writer stores it as NULL. A `counterpart` path is stored with forward
+slashes.
 
 `counterpart` is **only** for parity between two codebases. To link a node into a graph of a
 *different kind* — a screen graph, a docs graph — use `external_link` (§12). Those CHECKs are exactly
@@ -373,8 +405,8 @@ use case fits would trade this guarantee for a convenience.
 ## 10. Genericity rules (do not violate)
 
 - **No language hardcoding** in the schema, skills, or MCP. `kind` is free text; source reading is
-  agent-driven, so any language is handled. Even the "which files are source?" question is answered
-  from the extensions the graph already anchors on, never from a built-in list.
+  agent-driven, so any language is handled. The "which files are source?" question is answered by
+  the graph's declared `covers` (§3.1), never from a built-in list of languages.
 - **Symbol discovery via Grep always**, ctags/LSP only when present — never assume a toolchain.
 - **All per-repo specifics live in config** (§8), never in the generic components.
 
@@ -383,46 +415,59 @@ use case fits would trade this guarantee for a convenience.
 Once per repo:
 
 ```sh
-python -m codebase_kg.migrate knowledge/KNOWLEDGE_GRAPH.md
+uv run --no-project --quiet "<plugin>/mcp/launch/kg_cli.py" migrate knowledge/KNOWLEDGE_GRAPH.md
 ```
 
 It converts rather than regenerates — ids, kinds, anchors, edges and parity survive verbatim — and
 reports what it changed: descriptions scrubbed, dangling edges dropped, parity triples normalized.
-The markdown file is left untouched; delete it once you are satisfied.
+The output goes beside the source as `code_graph.db`. The command refuses to overwrite an existing
+output; pass `--force` to replace it, or `-o` to write elsewhere. The markdown file is left
+untouched; delete it once you are satisfied.
 
 Per-node `updated` dates and the header's accumulated refresh log do not carry over. They were the
 duplicated-from-git content this rewrite exists to remove.
 
 ## 12. `external_link` — pointers into another graph
 
-A project can hold several committed graphs in one `knowledge/` directory: this code graph, a
-cartographer screen graph, and whatever comes next. `external_link` is how a node here points at a
-node there.
+A project can hold several committed graphs in one `knowledge/` directory: this code graph and
+graphs of other kinds, such as a screen graph. `external_link` is how a node here points at a node
+in one of them. This section is the specification for this plugin's side of the mechanism.
 
-**The specification is not in this file.** It is
-`docs/GRAPH-LINKS.md` in
-the **cartographer** repo — the DDL verbatim, the URI convention, the resolution rules, worked
-examples in both directions, and how a new graph adopts it. It is duplicated here in summary only,
-and if the two disagree, that document wins.
+```sql
+CREATE TABLE external_link (
+    node_id TEXT NOT NULL REFERENCES node(id) ON DELETE CASCADE,
+    target  TEXT NOT NULL,   -- "<db-file>#<node-id>"
+    kind    TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (node_id, target),
+    CHECK (target <> ''),
+    CHECK (instr(target, '#') > 1)
+) WITHOUT ROWID;
+CREATE INDEX external_link_target ON external_link(target);
+```
 
-In brief:
-
-- One table, `external_link(node_id, target, kind)`, plus an index on `target`.
-- `target` is `<db-file>#<node-id>`, where `<db-file>` is relative to `knowledge/` and **never
-  absolute** — an absolute path breaks on the next clone.
+- `target` is `<db-file>#<node-id>`. The writer stores it with forward slashes and strips a leading
+  `knowledge/`.
+- `<db-file>` is relative to the `knowledge/` directory that holds the graph. It may not be absolute
+  (a leading slash, a drive letter or a UNC path) and may not contain a `..` segment. An absolute
+  path breaks on the next clone, and `resolve` opens the file the target names, so an escaping
+  target could point it at any SQLite file on the machine. The write tools and the builder refuse
+  such a target. `kg_validate` reports one that reached the file another way as `malformed`,
+  without opening anything.
 - `kind` says what the link means from this side: `implements`, `tests`, `presented-by`, … Free text,
   and empty means unspecified.
+- The peer's node table comes from the peer's `meta.node_table`. A peer without that key is probed
+  for a table named `node`, `screen` or `action`, in that order.
 - A link whose peer database is **absent** is a warning: each graph must be fully usable alone, and
-  cartographer is an optional install. A link whose peer exists but whose node id is **missing** is
-  an error — `kg_validate` reports it under `external_link_issues` and fails.
+  the other plugin is an optional install. A peer file that exists but is not a readable graph is
+  also a warning. A link whose peer exists but whose node id is **missing**, or whose target is
+  malformed, is an error. `kg_validate` reports these under `external_link_issues` and `ok` becomes
+  false.
 - Unlike `counterpart` (§9), links are **not** required to be reciprocal. "This code presents that
   screen" is not a symmetric claim; parity between two codebases is.
 
-**Copied, not imported.** `mcp/src/codebase_kg/links.py` is a byte-identical copy of the same file in
-cartographer. That is deliberate and measured — see §7 of the spec before trying to DRY it. The two
-stores share five function names out of twenty-eight and twenty-nine, three of which are `__init__`,
-`_hydrate` and `meta`; a shared library would extract that one file and buy a third repository both
-plugins must version against, plus a release cycle for every one-line fix.
+**Copied, not imported.** `mcp/src/codebase_kg/links.py` is a self-contained module that each plugin
+using this mechanism carries its own copy of. A shared library would extract that one file and add a
+repository both plugins must version against, plus a release cycle for every one-line fix.
 
 **Additive, and no schema bump.** A v3 graph written before this table existed simply has no
 `external_link`, and the reader probes rather than assumes. An older server reading a newer graph
@@ -489,7 +534,7 @@ cannot see them, so its next export → build writes the graph back without them
 At v4 that server refuses the file and says to update the plugin instead. In the other direction
 nothing breaks. A v3 graph is a v4 graph with no `reference` table, the reader probes for the table,
 and every committed v3 graph opens and behaves as it did. A v3 graph becomes v4 in one of three ways:
-`python -m codebase_kg.upgrade`, any export → build, or the first reference written with a write
+`kg_cli.py upgrade`, any export → build, or the first reference written with a write
 tool, which creates the table and moves the stamp in place.
 
 Tools: `kg_node` returns `references`; `kg_find_by_reference(query, kind)` is the reverse lookup, by

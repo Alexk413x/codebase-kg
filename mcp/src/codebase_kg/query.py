@@ -1,8 +1,9 @@
-"""Query the code graph from a shell: query.py <tool> [json-args].
+"""Query the code graph from a shell: query.py <tool> [json-args | -].
 
 Runs one read tool and prints the same JSON the MCP tool returns. Arguments are
-one JSON object, given as the second argument or on stdin, with the MCP tool's
-parameter names. Stdlib only, so `mcp/launch/kg_cli.py query …` runs it without a venv.
+one JSON object with the MCP tool's parameter names, given as the second
+argument, or on stdin when that argument is `-`. With no argument the tool runs
+with none, and stdin is never read. Stdlib only, so `mcp/launch/kg_cli.py query …` runs it without a venv.
 """
 
 from __future__ import annotations
@@ -63,13 +64,13 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="kg_cli.py query", description=__doc__)
     ap.add_argument("--graph", help="path to code_graph.db (default: $CODEBASE_KG_PATH, then walk up)")
     ap.add_argument("tool", choices=sorted(TOOLS))
-    ap.add_argument("args", nargs="?", help="JSON object of arguments (default: read stdin, or none)")
+    ap.add_argument("args", nargs="?", help="JSON object of arguments, or - to read it from stdin (default: none)")
     ns = ap.parse_args(argv)
 
-    raw = ns.args if ns.args is not None else ("" if sys.stdin.isatty() else sys.stdin.read())
     try:
+        raw = cli.read_stdin() if ns.args == "-" else (ns.args or "")
         call_args = json.loads(raw) if raw.strip() else {}
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:
         return _fail(f"arguments are not JSON: {exc}")
     if not isinstance(call_args, dict):
         return _fail("arguments must be a JSON object")
@@ -87,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         return _fail(f"missing argument {exc}")
     finally:
         g.close()
-    print(json.dumps(result, ensure_ascii=False))
+    print(cli.dumps(result))
     return 0
 
 

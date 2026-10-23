@@ -24,7 +24,7 @@ request, and a request without the token gets 403, which Claude Code records as
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import json
 import os
 import sys
@@ -34,28 +34,17 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-SHIM = Path(__file__).resolve().parent.parent / "src" / "codebase_kg" / "shim.py"
-START_HOOK = Path(__file__).resolve().parents[2] / "hooks" / "kg_server_start.py"
+HOOKS = Path(__file__).resolve().parents[2] / "hooks"
 WAIT = 8.0
 START_WAIT = 10.0
 POLL = 0.1
 VALUE_OPTIONS = {"--port": "CODEBASE_KG_PORT", "--home": "CODEBASE_KG_CACHE_DIR", "--graph": ""}
 
 
-def _shim() -> Any:
-    spec = importlib.util.spec_from_file_location("codebase_kg_shim", SHIM)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _start_hook() -> Any:
-    spec = importlib.util.spec_from_file_location("codebase_kg_server_start", START_HOOK)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    if str(HOOKS) not in sys.path:
+        sys.path.insert(0, str(HOOKS))
+    return importlib.import_module("kg_server_start")
 
 
 def options(argv: list[str]) -> tuple[dict[str, str], set[str]]:
@@ -119,14 +108,14 @@ def headers(
     if cwd:
         out["X-Codebase-KG-Cwd"] = quote(cwd, safe="/\\:")
     try:
-        shim = _shim()
+        hook = _start_hook()
+        shim = hook.load_shim()
         if start:
             try:
                 register_agent(shim)
             except OSError:
                 pass
-            spawn = shim.spawn_server_outside_job if sys.platform == "win32" else None
-            _start_hook().ensure_server(shim, START_WAIT, spawn)
+            hook.ensure_server(shim, START_WAIT)
         found = token(shim, port(shim), wait)
     except Exception:  # noqa: BLE001 - any failure means no token header
         found = None

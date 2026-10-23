@@ -133,7 +133,7 @@ def parse_meta(text: str) -> Meta:
         if key == "codebase":
             meta.codebase = val
         elif key == "root":
-            meta.root = val
+            meta.root = "" if val == "." else val
         elif key == "counterpart":
             meta.counterpart = val
         elif key == "language":

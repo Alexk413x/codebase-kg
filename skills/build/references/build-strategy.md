@@ -65,11 +65,11 @@ Run buckets concurrently (one message, multiple `Agent` calls). Collect the retu
 
 ## After assembly
 
-Build with `uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" build .kg-export.json -o knowledge/code_graph.db`, then
-`rm .kg-export.json`. The builder is the first gate: it names any node that breaks a rule and writes
-nothing. Then `kg_validate` — ungreppable anchors mean a symbol was guessed, so re-grep and fix.
-Then `kg_stats` for the summary.
+Build with `uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" build .kg-export.json -o knowledge/code_graph.db`.
+The builder is the first gate: it names any node that breaks a rule and writes nothing. Then
+`kg_validate` — ungreppable anchors mean a symbol was guessed, so re-grep and fix. Then `kg_stats`
+for the summary.
 
-If `kg_validate` turns up a handful of fixable nodes, patch them with `kg_upsert_node` rather than
-re-running the whole assembly: it is one atomic call per fix, it re-validates the graph before
-landing, and it reports exactly what moved. Go back to the JSON only if the fix is structural.
+If `kg_validate` turns up a handful of fixable nodes, edit those nodes in `.kg-export.json` and
+build again. This skill does not use the MCP write tools. Run `rm .kg-export.json` when the
+validation is clean.

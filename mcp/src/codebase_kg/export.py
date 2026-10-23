@@ -16,7 +16,6 @@ merged back into a full document — not for rebuilding the graph from.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -72,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         graph.close()
 
-    text = json.dumps(doc, indent=args.indent, ensure_ascii=False)
+    text = cli.dumps(doc, indent=args.indent)
     if args.out:
         Path(args.out).write_text(text + "\n", encoding="utf-8")
         print(f"[codebase-kg] wrote {args.out} ({len(doc['nodes'])} nodes)")

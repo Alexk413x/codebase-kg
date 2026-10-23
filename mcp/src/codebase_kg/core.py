@@ -9,8 +9,8 @@ never imports fastmcp, so the always-on server stays small.
 pydantic's lax mode does in fastmcp: an integral float or a numeric string is
 an integer, `"true"`/`"off"`/`1`/`0` are booleans, an unknown argument is
 refused, and a missing one takes its default. The write tools' list items keep
-only their required keys checked, because `edits` validates the rest and
-answers with a refusal.
+only their required keys checked, because `edits` validates the rest, unknown
+keys included, and answers with a refusal.
 
 `Core.call_tool` resolves the session's graph, sends the call to a pool worker
 (or runs it here when `max_workers` is 0), and returns the `CallToolResult`.
@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, cast
 
-from . import resolve, shim, worker
+from . import cli, resolve, shim, worker
 from .pool import CallError, Pool, Refused, WorkerError
 
 CATALOG: dict[str, Any] = json.loads((Path(__file__).with_name("catalog.json")).read_text(encoding="utf-8"))
@@ -34,7 +34,7 @@ INSTRUCTIONS: str = CATALOG["instructions"]
 SERVER_INFO = {"name": "codebase-kg", "version": shim.package_version()}
 
 CLASSIC_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
-PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS = -32700, -32600, -32601, -32602
+PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR = -32700, -32600, -32601, -32602, -32603
 NO_CWD = "codebase-kg: the request names no working directory. Send an absolute X-Codebase-KG-Cwd header."
 EMPTY_LISTS = {"prompts/list": "prompts", "resources/list": "resources",
                "resources/templates/list": "resourceTemplates"}
@@ -46,7 +46,7 @@ _TYPES: dict[str, type] = {"string": str, "object": dict, "array": list}
 
 
 def dumps(obj: Any) -> str:
-    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+    return cli.dumps(obj, separators=(",", ":"))
 
 
 def _join(where: str, key: str) -> str:
@@ -115,7 +115,7 @@ def _object(schema: dict[str, Any], value: dict[str, Any], where: str, shallow: 
     missing = [k for k in schema.get("required", []) if k not in value]
     if missing:
         raise ValueError(f"{_join(where, missing[0])}: missing required argument")
-    if schema.get("additionalProperties") is False:
+    if schema.get("additionalProperties") is False and not (shallow and where):
         extra = [k for k in value if k not in props]
         if extra:
             raise ValueError(f"{_join(where, extra[0])}: unexpected argument")
@@ -230,6 +230,5 @@ def classic(core: Core, conn: resolve.Connection | None, msg: dict[str, Any]) ->
         else:
             result = core.call_tool(conn, params.get("name"), params.get("arguments"))
     else:
-        return {"jsonrpc": "2.0", "id": msg["id"],
-                "error": {"code": METHOD_NOT_FOUND, "message": "Method not found"}}
+        return shim.rpc_error(msg["id"], METHOD_NOT_FOUND, "Method not found")
     return {"jsonrpc": "2.0", "id": msg["id"], "result": result}

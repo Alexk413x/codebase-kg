@@ -3,10 +3,15 @@
     "Authoring template for a codebase-kg code graph. This JSON is the INPUT format;",
     "the committed artifact is knowledge/code_graph.db, built from it with:",
     "",
-    "    python -m codebase_kg.build graph.json -o knowledge/code_graph.db",
+    "    uv run --no-project --quiet \"<plugin>/mcp/launch/kg_cli.py\" build graph.json -o knowledge/code_graph.db",
     "",
     "Delete this file after building — it is a working file, not an artifact. To edit an",
-    "existing graph, get this shape back with `python -m codebase_kg.export -o graph.json`.",
+    "existing graph, get this shape back with the same runner:",
+    "",
+    "    uv run --no-project --quiet \"<plugin>/mcp/launch/kg_cli.py\" export -o graph.json",
+    "",
+    "`<plugin>` is the plugin folder (`${CLAUDE_PLUGIN_ROOT}` in a skill).",
+    "",
     "Keys starting with _ are ignored by the builder. See SCHEMA.md for the full contract.",
     "",
     "Every id in an `edges` list must be a node in this same document — the builder refuses",
@@ -97,7 +102,7 @@
         "`kind` says what the link means from this side; empty means unspecified.",
         "A target whose peer graph is not in this repo is a warning, not an error:",
         "each graph must be fully usable alone. A target whose peer EXISTS but lacks",
-        "the node is an error. See SCHEMA.md §12, and cartographer's docs/GRAPH-LINKS.md."
+        "the node is an error. See SCHEMA.md §12."
       ],
       "id": "feed_screen",
       "kind": "Composable",
@@ -106,7 +111,7 @@
       "anchors": ["ui/FeedScreen.kt#FeedScreen"],
       "edges": ["feed_ranker"],
       "external_links": [
-        {"target": "cartographer/baselines/baseline.db#feed-main", "kind": "presented-by"}
+        {"target": "baselines/baseline.db#feed-main", "kind": "presented-by"}
       ]
     },
     {

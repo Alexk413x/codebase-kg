@@ -22,10 +22,9 @@ import socketserver
 import threading
 from collections.abc import Callable
 from io import BufferedIOBase
-from pathlib import Path
 from typing import IO, Any, cast
 
-from . import core, resolve
+from . import core, resolve, shim
 
 logger = logging.getLogger("codebase_kg.tcp")
 
@@ -52,27 +51,30 @@ def serve_lines(
                 pass
 
     def call(msg: dict[str, Any]) -> None:
-        reply = core.classic(engine, conn, msg)
+        try:
+            reply = core.classic(engine, conn, msg)
+        except Exception:
+            logger.exception("request failed")
+            reply = None if "id" not in msg else shim.rpc_error(msg["id"], core.INTERNAL_ERROR, "Internal error")
         if reply is not None:
             write(reply)
 
     while True:
         raw = lines.readline(MAX_MESSAGE)
         if not raw:
-            return
+            break
         if not raw.endswith(b"\n") and len(raw) >= MAX_MESSAGE:
             logger.warning("a message over %d bytes; closing the session", MAX_MESSAGE)
-            return
+            break
         if not raw.strip():
             continue
         try:
             msg = json.loads(raw)
         except (ValueError, RecursionError):
-            write({"jsonrpc": "2.0", "id": None, "error": {"code": core.PARSE_ERROR, "message": "Parse error"}})
+            write(shim.rpc_error(None, core.PARSE_ERROR, "Parse error"))
             continue
         if not isinstance(msg, dict):
-            write({"jsonrpc": "2.0", "id": None,
-                   "error": {"code": core.INVALID_REQUEST, "message": "Invalid request"}})
+            write(shim.rpc_error(None, core.INVALID_REQUEST, "Invalid request"))
             continue
         if msg.get("method") == "tools/call":
             calls = [t for t in calls if t.is_alive()]
@@ -94,17 +96,19 @@ def accept(line: bytes, token: str, version: str) -> resolve.Connection:
     if not isinstance(hello, dict):
         raise ValueError("malformed handshake")  # noqa: TRY004 - callers catch ValueError
     offered = hello.get("token")
-    if not isinstance(offered, str) or not hmac.compare_digest(offered, token):
+    if not isinstance(offered, str) or not hmac.compare_digest(
+        offered.encode("utf-8", "surrogatepass"), token.encode("utf-8", "surrogatepass"),
+    ):
         raise ValueError("bad token")
     if hello.get("version") != version:
         raise ValueError(f"version mismatch: server is {version}, client is {hello.get('version')}")
-    cwd = hello.get("cwd")
-    if not isinstance(cwd, str) or not Path(cwd).is_absolute():
-        raise ValueError("cwd must be an absolute path")
     graph_path = hello.get("graph_path")
     if graph_path is not None and not isinstance(graph_path, str):
         raise ValueError("graph_path must be a string")
-    return resolve.Connection(cwd=Path(cwd), explicit=Path(cwd, graph_path) if graph_path else None)
+    conn = resolve.connection(hello.get("cwd"), graph_path)
+    if conn is None:
+        raise ValueError("cwd must be an absolute path")
+    return conn
 
 
 class TcpServer(socketserver.ThreadingTCPServer):

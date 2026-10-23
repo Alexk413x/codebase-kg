@@ -2,6 +2,86 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.15.0] — 2026-10-23 — Review fixes, PowerShell push gate and server start
+
+### Added
+
+- `kg_cli.py server start` starts the shared server when none answers and waits up to 15 s for it.
+  The `server` command takes `status|start|stop|sessions|register|unregister`.
+- `kg_cli.py server status` reports a port that accepts connections but does not answer `/health`.
+- The server log records the pid that started the server, each signal it receives, a heartbeat every
+  10 minutes and a traceback on a fatal error.
+- A graph stores self-edges (a node that lists itself in `edges`). A graph built earlier refuses one
+  until you run `kg_cli.py upgrade --force`.
+- `kg_cli.py migrate --force` overwrites an existing output file.
+- `kg_cli.py query <tool> -` reads the JSON arguments from stdin.
+
+### Changed
+
+- The push gate also checks `git push` run through the PowerShell tool. Before, only the git
+  `pre-push` hook caught it, after the push had started, so the refresh commit could not join that
+  push and the push failed once.
+- The search gate allows a search and gives one notice per session when nothing answers as
+  codebase-kg on the server port.
+- `kg_cli.py query <tool>` reads stdin only when the argument is `-`. It blocked when stdin was an
+  open pipe.
+- `kg_cli.py migrate` refuses to overwrite an existing output file unless you pass `--force`.
+- `kg_upsert_node` refuses unknown keys, in the node and in its anchor, link and reference items,
+  with a did-you-mean hint. The tool schema sets `additionalProperties` to false.
+- A link target that is absolute or contains `..` is refused on every write path. An existing one is
+  reported as malformed and the peer file is not opened.
+- A `covers` pattern outranks the pruned-directory defaults (`build`, `out`, `target`, `dist`,
+  `vendor`) at any depth. A leading wildcard such as `**/*.py` still does not descend into
+  `node_modules`, `.venv` or `vendor`. The post-edit nudge and the search gate read `covers`, and the
+  nudge reads `exempt`, from the graph.
+- The `.local.md` key `kg_path` works as an alias for `graph_path` in the hooks.
+- The `SessionStart` hook, the shim and the headers helper start the server outside the host's Windows
+  job object through WMI, and fall back to a plain detached start.
+- An HTTP request whose roots include no local folder gets an error result that tells the client to
+  send `X-Codebase-KG-Cwd`. The server no longer asks for roots again.
+- The `pre-commit` and `pre-push` wrappers use the first of `py -3`, `python3` and `python` that runs.
+- A push that only deletes refs passes the push gate and `pre-push`.
+- `pre-commit` reports the old path of a renamed file as a deletion.
+- `edits.py` is a facade over `edit_core.py`, `edit_nodes.py`, `edit_delete.py` and `edit_links.py`.
+  `hooks/_shell_search.py` holds the search gate's shell-command parsing, and `hooks/_shim_loader.py`
+  loads `shim.py`.
+
+### Fixed
+
+- The description scrub no longer deletes `SHA-256` and `UTF-8`.
+- The edit gate's `gap_count` counts every coverage gap, not only the listed ones.
+- `kg_find_by_path` keeps the leading dot of dot-directories.
+- A TCP session answers its in-flight calls before it closes.
+- `upgrade` accepts a relative path and refuses a graph with a newer schema.
+- Link resolution works for paths that contain `#` or `%`.
+- `extra` cannot overwrite the reserved meta keys.
+- `--rebaseline` without a source tree keeps the baselines.
+- `build` and `query` decode stdin as UTF-8 on Windows.
+- `root: .` is normalized to the whole repo.
+- Anchor symbols that start or end with a non-word character resolve.
+- A write detects a concurrent writer during an edit.
+- Search handles Unicode terms. `LIKE` wildcards in an id or kind query match literally.
+- An empty token file no longer makes the server answer 403 to every request.
+- The spawn lock checks the holder's pid before it counts as stale.
+- The pool replaces an idle worker that died.
+- A tool exception returns an error result instead of dropping the call.
+- A non-ASCII bearer token gets 403 instead of an exception.
+- An apostrophe in a Windows profile path no longer breaks the `codex-config` TOML.
+- Session-file writes retry on Windows.
+- The shim keeps the requests queued during a reconnect when the replay fails to send.
+- The post-edit nudge resets its counter when the graph file changes, not only when you edit it.
+- Git Bash `/c/...` paths work in the push gate and the search gate.
+- The push gate ignores heredoc bodies, and finds `git push` after `if`, `then` and `bash -lc`.
+- The search gate honors `root` and the ignored directories for shell searches, and treats a quoted
+  pattern that starts with `<` or `>` as a pattern.
+- A BOM in `.claude/codebase-kg.local.md` no longer disables the file.
+- The git hooks read non-ASCII file names unescaped.
+
+### Removed
+
+- `links.format_target`, `links.LINKS_SPEC_VERSION`, `CodeGraph.is_anchored` and
+  `codebase_kg.__version__`.
+
 ## [0.14.4] — 2026-10-21 — The server exits with its last session
 
 ### Added

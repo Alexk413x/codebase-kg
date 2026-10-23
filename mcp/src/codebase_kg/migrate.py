@@ -39,7 +39,6 @@ class MigrationReport:
     nodes: int = 0
     edges: int = 0
     anchors: int = 0
-    hashed: int = 0
     descriptions_scrubbed: int = 0
     chars_removed: int = 0
     dropped_edges: list[dict[str, str]] = field(default_factory=list)
@@ -71,7 +70,7 @@ def _retarget_counterpart(counterpart: str) -> str:
 
 
 def _normalize_parity(node: Node, report: MigrationReport) -> None:
-    """Force the parity triple into one of the three legal shapes (SCHEMA.md §8).
+    """Force the parity triple into one of the three legal shapes (SCHEMA.md §9).
 
     The old format allowed inconsistent combinations because nothing enforced
     them; the store's CHECK constraints do, so anything that would be rejected is
@@ -96,11 +95,11 @@ def _normalize_parity(node: Node, report: MigrationReport) -> None:
             drop("divergence set with no parity flag — divergence dropped", "divergence")
         return
 
-    if p not in {"matched", "divergent"} and not p.endswith("-only"):
+    if not clean.is_known_parity(p):
         drop(f"unrecognized parity '{p}' — parity dropped", "parity", "counterpart", "divergence")
         return
 
-    if p.endswith("-only"):
+    if clean.is_only_parity(p):
         if node.counterpart:
             drop(f"parity={p} cannot have a counterpart — counterpart dropped", "counterpart")
         if node.divergence:
@@ -126,12 +125,12 @@ def _normalize_parity(node: Node, report: MigrationReport) -> None:
 
 
 def _normalize_anchors(node: Node, report: MigrationReport) -> None:
-    """Drop line-number symbols (SCHEMA.md §4.1) and empty anchors."""
+    """Drop line-number symbols (SCHEMA.md §6.1) and empty anchors."""
     kept: list[Anchor] = []
     for a in node.anchors:
         if not a.path:
             continue
-        if a.symbol and a.symbol[0].isdigit():
+        if clean.is_line_number(a.symbol):
             report.normalized.append(
                 {"node": node.id, "issue": f"line-number anchor '{a}' reduced to its path"}
             )
@@ -185,7 +184,6 @@ def convert(
     report.nodes = build.nodes
     report.edges = build.edges
     report.anchors = build.anchors
-    report.hashed = build.hashed
     report.dropped_edges = [{"src": s, "dst": d} for s, d in build.dropped_edges]
     return report
 
@@ -244,6 +242,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "-o", "--out", help="output path (default: code_graph.db beside the source)"
     )
+    ap.add_argument(
+        "--force", action="store_true", help="overwrite the output file if it already exists"
+    )
     ap.add_argument("--generated", help="override the generated date (YYYY-MM-DD)")
     ap.add_argument("--json", action="store_true", help="emit the report as JSON")
     ap.add_argument(
@@ -259,6 +260,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     target = Path(args.out).resolve() if args.out else source.parent / "code_graph.db"
+    if target.exists() and not args.force:
+        sys.stderr.write(
+            f"[codebase-kg] {target} already exists. Pass --force to overwrite it, "
+            "or -o to write the graph elsewhere.\n"
+        )
+        return 1
     tmp_target = target
     if args.dry_run:
         import tempfile

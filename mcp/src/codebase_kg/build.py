@@ -24,7 +24,7 @@ DEFAULT_OUT = Path("knowledge") / "code_graph.db"
 
 
 def _load(source: str) -> object:
-    text = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
+    text = cli.read_stdin() if source == "-" else cli.decode_text(Path(source).read_bytes())
     return json.loads(text)
 
 
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         doc = _load(args.source)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         sys.stderr.write(f"[codebase-kg] cannot read {args.source}: {exc}\n")
         return 1
 
@@ -114,6 +114,10 @@ def main(argv: list[str] | None = None) -> int:
                 f"[codebase-kg] --source-root {args.source_root} resolves none of "
                 f"the anchor paths; building without source hashes.\n"
             )
+    if args.rebaseline and base is None:
+        sys.stderr.write(
+            "[codebase-kg] no source tree found; --rebaseline kept the recorded baselines.\n"
+        )
     try:
         report = writer.build(
             target,

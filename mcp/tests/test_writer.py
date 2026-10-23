@@ -151,9 +151,16 @@ def test_empty_id_rejected(tmp_path: Path, sample_meta: Meta) -> None:
         build(tmp_path / "g.db", sample_meta, [Node(id="", kind="K")])
 
 
-def test_self_edge_dropped(tmp_path: Path, sample_meta: Meta) -> None:
-    r = build(tmp_path / "g.db", sample_meta, [Node(id="a", kind="K", edges=["a"])])
-    assert r.edges == 0
+def test_self_edge_is_stored(tmp_path: Path, sample_meta: Meta) -> None:
+    db = tmp_path / "g.db"
+    r = build(db, sample_meta, [Node(id="a", kind="K", edges=["a"])])
+    assert r.edges == 1
+    assert r.dropped_edges == []
+    conn = sqlite3.connect(db)
+    try:
+        assert conn.execute("SELECT src, dst FROM edge").fetchall() == [("a", "a")]
+    finally:
+        conn.close()
 
 
 def test_duplicate_edges_collapse(tmp_path: Path, sample_meta: Meta) -> None:

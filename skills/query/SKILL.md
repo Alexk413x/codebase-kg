@@ -53,6 +53,12 @@ step 1, and:
 
 Never report "the graph has nothing" without having run `kg_search` with more than one phrasing.
 
+If nothing answers as the codebase-kg server on its port, the gate cannot be satisfied, so it
+allows the search and says so once per session. The message names the fix:
+`uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" server start`. Run it,
+then reconnect the server from `/mcp` or start a new session. Until then, `kg_*` MCP calls fail,
+but `kg_cli.py query` calls still run.
+
 ## Workflow
 
 ### 0. Confirm the repo has a graph

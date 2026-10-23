@@ -7,21 +7,14 @@ always exits 0. Stdlib only.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
-SHIM = Path(__file__).resolve().parents[1] / "mcp" / "src" / "codebase_kg" / "shim.py"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-
-def _shim() -> Any:
-    spec = importlib.util.spec_from_file_location("codebase_kg_shim", SHIM)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from _shim_loader import load_shim
 
 
 def unregister(shim: Any, raw: str) -> bool:
@@ -34,7 +27,7 @@ def unregister(shim: Any, raw: str) -> bool:
 
 def main() -> None:
     try:
-        unregister(_shim(), sys.stdin.read())
+        unregister(load_shim(), sys.stdin.read())
     except Exception:  # noqa: BLE001 - a session must never be held up by this
         return
 

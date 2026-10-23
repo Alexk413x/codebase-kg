@@ -22,5 +22,3 @@ A single SQLite file is the source of truth (see ../../SCHEMA.md):
 Everything except `server` depends only on the standard library. Nothing at
 runtime imports `server`; it needs the dev dependencies.
 """
-
-__version__ = "0.2.0"

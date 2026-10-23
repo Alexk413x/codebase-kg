@@ -42,10 +42,13 @@ argument, `$CODEBASE_KG_PATH` or its cwd, and no pool.
 
 from __future__ import annotations
 
+import atexit
+import faulthandler
 import json
 import logging
 import os
 import secrets
+import signal
 import sys
 import threading
 import time
@@ -61,36 +64,8 @@ DEFAULT_IDLE_TIMEOUT = 600.0
 DEFAULT_HTTP_IDLE_TIMEOUT = 8 * 3600.0
 ORPHAN_CHECK_INTERVAL = 5.0
 DEFAULT_SESSION_GRACE = 300.0
+HEARTBEAT = 600.0
 TICK = 0.25
-
-
-def idle_timeout(name: str = "CODEBASE_KG_IDLE_TIMEOUT", default: float = DEFAULT_IDLE_TIMEOUT) -> float:
-    raw = os.environ.get(name, "").strip()
-    try:
-        return float(raw) if raw else default
-    except ValueError:
-        return default
-
-
-def _write_private(path: Path, data: bytes) -> None:
-    """Replace `path` atomically with a file only this user can read.
-
-    On Windows the mode bits are ignored; the per-user cache directory's
-    inherited ACL is what keeps the token private there.
-    """
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
-    for _ in range(50):
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            # Windows refuses to replace a file another process has open, and a
-            # shim may be reading the previous state at this instant.
-            time.sleep(0.02)
-    os.replace(tmp, path)
 
 
 class Daemon:
@@ -171,10 +146,13 @@ class Daemon:
 
     def wait(self) -> None:
         """Return when the server should exit."""
-        checked = time.monotonic()
+        checked = beat = time.monotonic()
         while not self._stopping.wait(TICK):
             if self.idle():
                 return
+            if time.monotonic() - beat >= HEARTBEAT:
+                beat = time.monotonic()
+                logger.info("alive; %d call(s) in flight", self._active)
             if time.monotonic() - checked >= ORPHAN_CHECK_INTERVAL:
                 checked = time.monotonic()
                 if self.orphaned():
@@ -198,6 +176,27 @@ def _start(server: Any, name: str, running: list[Any]) -> None:
     running.append(server)
 
 
+def _log_exit_causes(daemon: Daemon) -> None:
+    """Leave a trace of how the process ends. A hard kill leaves none, and that absence is the signal."""
+    try:
+        faulthandler.enable(sys.stderr)
+    except (AttributeError, OSError, ValueError):
+        pass
+
+    def on_signal(number: int, _frame: object) -> None:
+        logger.warning("received signal %d; stopping", number)
+        daemon.stop()
+
+    for name in ("SIGTERM", "SIGINT", "SIGBREAK", "SIGHUP"):
+        number = getattr(signal, name, None)
+        if number is not None:
+            try:
+                signal.signal(number, on_signal)
+            except (OSError, ValueError):
+                pass
+    atexit.register(logger.info, "process exiting")
+
+
 def serve() -> None:
     logging.basicConfig(
         level=logging.INFO, stream=sys.stderr,
@@ -212,11 +211,13 @@ def serve() -> None:
             logger.info("codebase-kg %s already serves port %d; exiting", info["build"], port)
             return
     daemon = Daemon(
-        info["build"], secrets.token_hex(32), idle_timeout(),
+        info["build"], secrets.token_hex(32), shim.env_float("CODEBASE_KG_IDLE_TIMEOUT", DEFAULT_IDLE_TIMEOUT),
         http_port=http_sock.getsockname()[1] if http_sock is not None else None,
-        http_timeout=idle_timeout("CODEBASE_KG_HTTP_IDLE_TIMEOUT", DEFAULT_HTTP_IDLE_TIMEOUT),
-        session_grace=idle_timeout("CODEBASE_KG_SESSION_GRACE", DEFAULT_SESSION_GRACE),
+        http_timeout=shim.env_float("CODEBASE_KG_HTTP_IDLE_TIMEOUT", DEFAULT_HTTP_IDLE_TIMEOUT),
+        session_grace=shim.env_float("CODEBASE_KG_SESSION_GRACE", DEFAULT_SESSION_GRACE),
     )
+    _log_exit_causes(daemon)
+    logger.info("started by pid %d", os.getppid())
     limit = max_workers()
     pool = Pool(limit, timeout=call_timeout()) if limit > 0 else None
     engine = core.Core(pool)
@@ -233,7 +234,7 @@ def serve() -> None:
                 http_transport.health_reply({**info, "max_workers": limit}, os.getpid()),
                 on_request=daemon.touch, on_shutdown=daemon.stop,
             )
-        _write_private(state, json.dumps({
+        shim.write_atomic(state, json.dumps({
             "version": daemon.version, "port": tcp.port, "pid": os.getpid(), "token": daemon.token,
             "http_port": daemon.http_port,
         }).encode("utf-8"))

@@ -27,7 +27,6 @@ deliberate choice and does not need nagging toward clobbering its own config.
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import sys
@@ -35,12 +34,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _config import find_graph, load_config, project_dir
+from _config import as_local_path, find_graph, load_config, project_dir, skip_kg
 
 DEFAULT_HOOKS_DIR = ".githooks"
 PLUGIN_MANIFEST = Path(__file__).resolve().parents[1] / ".claude-plugin" / "plugin.json"
 _PINNED_TAG = re.compile(r"codebase-kg--v(\d+(?:\.\d+)*)")
-_PLUGIN_PATH = re.compile(r"(?:[A-Za-z]:)?[/\\][^'\"\s;,)]*codebase-kg[^'\"\s;,)]*")
+_PLUGIN_PATH = re.compile(r"(?<![\w:/.~}\-])(?:[A-Za-z]:)?[/\\][^'\"\s;,)]*codebase-kg[^'\"\s;,)]*")
 # Both must be present: kg_pre_commit.py imports the coverage rules from
 # kg_pre_push.py beside it, so one without the other is not a wired repo.
 VENDORED = ("kg_pre_push.py", "kg_pre_commit.py")
@@ -63,13 +62,6 @@ def _git(proj: Path, *args: str) -> str:
     except (OSError, subprocess.SubprocessError):
         return ""
     return proc.stdout.strip() if proc.returncode == 0 else ""
-
-
-def _same_dir(a: Path, b: Path) -> bool:
-    try:
-        return os.path.normcase(str(a.resolve())) == os.path.normcase(str(b.resolve()))
-    except OSError:
-        return False
 
 
 def _hooks_dir(proj: Path, configured: str) -> Path | None:
@@ -95,14 +87,6 @@ def plugin_version() -> str:
         return ""
 
 
-def _as_local_path(raw: str) -> Path:
-    """`/c/Users/...` is how Git Bash writes `C:/Users/...`."""
-    m = re.match(r"^/([A-Za-z])/(.*)$", raw)
-    if sys.platform == "win32" and m:
-        return Path(f"{m.group(1)}:/{m.group(2)}")
-    return Path(raw)
-
-
 def stale_pin(textconv: str, running: str) -> str | None:
     """Why this textconv is out of date, or None when it is current or not ours."""
     if "codebase-kg" not in textconv:
@@ -113,7 +97,7 @@ def stale_pin(textconv: str, running: str) -> str | None:
             return f"pins codebase-kg {tag.group(1)}, older than the installed {running}"
         return None
     for raw in _PLUGIN_PATH.findall(textconv):
-        if not _as_local_path(raw).exists():
+        if not as_local_path(raw).exists():
             return f"names {raw}, which no longer exists"
     return None
 
@@ -131,8 +115,6 @@ def advice(proj: Path) -> str | None:
     hooks = _hooks_dir(proj, configured)
     if hooks is None:
         return None
-    if configured and not _same_dir(proj / configured, hooks):
-        return None  # this repo points its hooks somewhere else on purpose
 
     textconv = _git(proj, "config", "--get", "diff.codegraph.textconv")
     if configured and textconv:
@@ -158,7 +140,7 @@ def advice(proj: Path) -> str | None:
 
 def main() -> None:
     try:
-        if os.environ.get("SKIP_KG"):
+        if skip_kg():
             return
         raw = sys.stdin.read()
         data = json.loads(raw) if raw.strip() else {}

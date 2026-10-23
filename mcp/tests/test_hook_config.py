@@ -231,20 +231,31 @@ def test_an_empty_root_means_the_whole_project(tmp_path: Path) -> None:
     assert c.is_source_file(tmp_path / "anywhere" / "A.kt", tmp_path, dict(c.DEFAULTS))
 
 
-def test_is_source_file_is_still_extension_based_not_covers_aware(
-    tmp_path: Path,
-) -> None:
-    """The known remaining inconsistency, pinned so it is a decision not a drift.
-
-    `kg_validate` and the pre-push gate both let a `covers` declaration outrank
-    IGNORE_DIRS (see test_declared_scope.py). This function has no access to the
-    declaration and still decides by extension, so a repo declaring `.githooks/*`
-    gets no nudge for those files. Lower stakes — a missed suggestion rather than
-    a wrong count — but it is the last surface with its own notion of "source".
-    """
+def test_is_source_file_without_covers_prunes_ignored_dirs(tmp_path: Path) -> None:
     assert not c.is_source_file(
         tmp_path / ".githooks" / "pre-push", tmp_path, dict(c.DEFAULTS)
     )
+
+
+def test_is_source_file_lets_covers_outrank_the_prune_and_the_extension_list(
+    tmp_path: Path,
+) -> None:
+    cfg = {**c.DEFAULTS, "covers": [".githooks/*", "app/src/**/*.kt", "docs/*.md"]}
+    assert c.is_source_file(tmp_path / ".githooks" / "pre-push", tmp_path, cfg)
+    assert c.is_source_file(
+        tmp_path / "app" / "src" / "main" / "build" / "Config.kt", tmp_path, cfg
+    )
+    assert c.is_source_file(tmp_path / "docs" / "a.md", tmp_path, cfg)
+    assert not c.is_source_file(tmp_path / "app" / "build" / "Skip.kt", tmp_path, cfg)
+
+
+def test_is_source_file_honours_exempt_and_root_with_covers(tmp_path: Path) -> None:
+    cfg = {
+        **c.DEFAULTS, "root": "app", "covers": ["src/**/*.kt"], "exempt": ["src/gen/*"],
+    }
+    assert c.is_source_file(tmp_path / "app" / "src" / "build" / "A.kt", tmp_path, cfg)
+    assert not c.is_source_file(tmp_path / "app" / "src" / "gen" / "A.kt", tmp_path, cfg)
+    assert not c.is_source_file(tmp_path / "other" / "src" / "A.kt", tmp_path, cfg)
 
 
 # --- hooks.json --------------------------------------------------------------

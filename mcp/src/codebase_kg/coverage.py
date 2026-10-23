@@ -33,6 +33,7 @@ kg_pre_push.py` carries a verbatim copy of `glob_to_regex`/`compile_patterns`/
 from __future__ import annotations
 
 import re
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -97,42 +98,64 @@ def matches_any(path: str, compiled: re.Pattern[str] | None) -> bool:
     return compiled.match(path.replace("\\", "/")) is not None
 
 
-def declared_roots(patterns: list[str] | tuple[str, ...]) -> set[str]:
-    """The directories a `covers` pattern names literally, before its first glob.
+def dir_may_hold(
+    rel_dir: str, patterns: Iterable[str], ignored: Collection[str]
+) -> bool:
+    """Whether a `covers` pattern could match a file beneath the directory `rel_dir`.
 
-    A tree walk prunes conventionally-non-source directories (`.git`,
-    `node_modules`, `.github`, …) so a large repo stays a cheap walk. That
-    default must never be able to veto the graph's own declaration: a repo whose
-    `covers` says `.githooks/*` has stated those files are source, and pruning
-    the directory anyway drops them into a fifth bucket — walked past, never
-    classified, invisible. That is precisely the failure this module exists to
-    prevent, so the declaration wins and the prune yields.
+    A tree walk prunes conventionally-non-source directories (`build`,
+    `node_modules`, `.githooks`, ...) so a large repo stays a cheap walk, but the
+    graph's own declaration outranks that guess: a directory named in `ignored`
+    survives the prune when some pattern can match beneath it.
 
-    Ancestors are included because a walk prunes top-down: reaching
-    `app/.generated/` means not pruning `app/` on the way.
+    Pattern segments are matched against the directory's segments, with `**`
+    spanning any number of them. A match carried only by a leading wildcard
+    (`**/*.py`, `*/x/*.py`) never admits a directory named in `ignored`: a pattern
+    that names no directory declares nothing about `node_modules` or `.venv`. Once
+    a literal segment has matched, as in `app/src/**/*.kt`, the wildcards below it
+    may span ignored names such as `app/src/main/kotlin/com/acme/build`.
 
-    A pattern that opens with a wildcard (`**/*.py`) declares no literal
-    directory and so lifts no prune — otherwise it would drag `.venv` and
-    `node_modules` back into every walk.
+    `ignored` holds lowercase directory names.
     """
-    out: set[str] = set()
+    dir_segs = [s for s in rel_dir.replace("\\", "/").split("/") if s]
     for raw in patterns:
         pat = raw.strip().replace("\\", "/")
         if not pat or pat.startswith("#"):
             continue
-        segs = pat.rstrip("/").split("/")
-        if not pat.endswith("/"):
-            segs = segs[:-1]  # the last segment names a file, not a directory
-        cur: list[str] = []
-        for seg in segs:
-            if not seg or seg in {".", ".."} or _GLOB_CHARS.search(seg):
-                break
-            cur.append(seg)
-            out.add("/".join(cur))
-    return out
+        if pat.endswith("/"):
+            pat += "**"
+        if _may_match(dir_segs, pat.split("/"), False, ignored):
+            return True
+    return False
 
 
-_GLOB_CHARS = re.compile(r"[*?\[]")
+def _may_match(
+    dir_segs: list[str], pat_segs: list[str], anchored: bool, ignored: Collection[str]
+) -> bool:
+    if not dir_segs:
+        return bool(pat_segs)
+    if not pat_segs:
+        return False
+    head, name = pat_segs[0], dir_segs[0]
+    if head == "**":
+        if len(pat_segs) == 1:
+            return anchored or not any(s.lower() in ignored for s in dir_segs)
+        if _may_match(dir_segs, pat_segs[1:], anchored, ignored):
+            return True
+        if not anchored and name.lower() in ignored:
+            return False
+        return _may_match(dir_segs[1:], pat_segs, anchored, ignored)
+    if "**" in head:
+        return anchored or not any(s.lower() in ignored for s in dir_segs)
+    if re.fullmatch(glob_to_regex(head), name) is None:
+        return False
+    literal = _WILDCARDS.search(head) is None
+    if not literal and not anchored and name.lower() in ignored:
+        return False
+    return _may_match(dir_segs[1:], pat_segs[1:], anchored or literal, ignored)
+
+
+_WILDCARDS = re.compile(r"[*?]")
 
 
 def parse_patterns(raw: str | None) -> list[str]:
@@ -163,6 +186,7 @@ class CoverageReport:
     declared: bool = False
     covered: int = 0
     gaps: list[str] = field(default_factory=list)
+    gap_total: int = 0
     exempt: int = 0
     out_of_scope: int = 0
     truncated: bool = False
@@ -171,7 +195,7 @@ class CoverageReport:
         d: dict[str, object] = {
             "declared": self.declared,
             "covered": self.covered,
-            "gap_count": len(self.gaps),
+            "gap_count": self.gap_total,
             "gaps": self.gaps,
             "exempt": self.exempt,
             "out_of_scope": self.out_of_scope,
@@ -218,10 +242,12 @@ def classify(
             report.covered += 1
         elif matches_any(rel, exempt_re):
             report.exempt += 1
-        elif len(report.gaps) < limit:
-            report.gaps.append(rel)
         else:
-            report.truncated = True
+            report.gap_total += 1
+            if len(report.gaps) < limit:
+                report.gaps.append(rel)
+            else:
+                report.truncated = True
     return report
 
 

@@ -12,14 +12,32 @@ duplicated git and was the entire source of the old maintenance burden.
 
 from __future__ import annotations
 
+import posixpath
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from .links import ExternalLink
+from .coverage import COVERS_KEY, EXEMPT_KEY, parse_patterns
+from .links import NODE_TABLE_KEY, ExternalLink
+
+if TYPE_CHECKING:
+    import sqlite3
+
+
+def slashes(path: str) -> str:
+    """`path` with every backslash turned into a forward slash, nothing else changed."""
+    return path.replace("\\", "/")
+
+
+def posix_path(path: str) -> str:
+    """`path` with forward slashes and no `.`, `..` or doubled separators in the middle."""
+    out = slashes(path)
+    return posixpath.normpath(out) if out else out
 
 
 @dataclass(frozen=True)
 class Anchor:
-    """A symbol pointer into source: `path#Symbol` (SCHEMA.md §4.1).
+    """A symbol pointer into source: `path#Symbol` (SCHEMA.md §6.1).
 
     `symbol` is None for a whole-file anchor (a manifest, a config file).
 
@@ -40,8 +58,9 @@ class Anchor:
         # In __post_init__ rather than in parse(), so direct construction
         # normalizes too — otherwise the invariant would hold only for anchors
         # that happened to come from text.
-        if "\\" in self.path:
-            object.__setattr__(self, "path", self.path.replace("\\", "/"))
+        normalized = posix_path(self.path)
+        if normalized != self.path:
+            object.__setattr__(self, "path", normalized)
 
     @classmethod
     def parse(cls, text: str) -> Anchor:
@@ -81,9 +100,16 @@ class Reference:
     def __post_init__(self) -> None:
         for name in ("url", "kind", "title"):
             object.__setattr__(self, name, str(getattr(self, name) or "").strip())
-        path = (self.path or "").strip().replace("\\", "/") or None
+        path = posix_path((self.path or "").strip()) or None
         object.__setattr__(self, "path", path)
         object.__setattr__(self, "symbol", (self.symbol or "").strip() or None)
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> Reference:
+        return cls(
+            url=row["url"], kind=row["kind"], title=row["title"],
+            path=row["path"], symbol=row["symbol"],
+        )
 
     @classmethod
     def parse(cls, raw: object) -> Reference:
@@ -167,6 +193,41 @@ class Node:
     # order, like anchors.
     references: list[Reference] = field(default_factory=list)
 
+    @classmethod
+    def from_row(
+        cls,
+        row: sqlite3.Row,
+        *,
+        anchors: list[Anchor],
+        edges: list[str],
+        links: list[ExternalLink],
+        references: list[Reference],
+    ) -> Node:
+        return cls(
+            id=row["id"],
+            kind=row["kind"],
+            description=row["description"],
+            anchors=anchors,
+            edges=edges,
+            section=row["section"],
+            parity=row["parity"],
+            counterpart=row["counterpart"],
+            divergence=row["divergence"],
+            links=links,
+            references=references,
+        )
+
+    def tidy_parity_fields(self) -> None:
+        """Make an empty parity field `None` and the counterpart path posix-separated.
+
+        The CHECK constraints test `IS NULL`, so an empty string is a value to
+        SQL and absent to `clean.parity_problems`; settling it first keeps the
+        two answers the same.
+        """
+        self.parity = (self.parity or "").strip() or None
+        self.counterpart = slashes((self.counterpart or "").strip()) or None
+        self.divergence = (self.divergence or "").strip() or None
+
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
             "id": self.id,
@@ -213,6 +274,23 @@ class Meta:
     covers: list[str] = field(default_factory=list)
     exempt: list[str] = field(default_factory=list)
     extra: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_rows(cls, rows: Mapping[str, str]) -> Meta:
+        known = {
+            "schema_version", "codebase", "root", "counterpart", "language",
+            "generated", COVERS_KEY, EXEMPT_KEY, NODE_TABLE_KEY,
+        }
+        return cls(
+            codebase=rows.get("codebase", ""),
+            root=rows.get("root", ""),
+            counterpart=rows.get("counterpart"),
+            language=rows.get("language"),
+            generated=rows.get("generated", ""),
+            covers=parse_patterns(rows.get(COVERS_KEY)),
+            exempt=parse_patterns(rows.get(EXEMPT_KEY)),
+            extra={k: v for k, v in rows.items() if k not in known},
+        )
 
     def __post_init__(self) -> None:
         # `.` and `` both mean the whole repo and must reach the readers as the

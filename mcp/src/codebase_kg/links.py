@@ -31,7 +31,11 @@ beside it instead.
 A target is `<db-file>#<node-id>` where `<db-file>` is relative to the project's
 `knowledge/` directory -- never absolute. An absolute path is a fact about one
 machine; committed into a shared artifact it breaks on the next clone and reads
-as a dangling link to everyone except its author.
+as a dangling link to everyone except its author. The rule is enforced, not
+advisory: `resolve` opens whatever file the target names, so an absolute path
+(drive letter, leading slash, UNC) or a `..` segment would let a committed link
+point it at any SQLite file on the machine. `split_target` raises `LinkError`
+for both and `resolve` reports `MALFORMED` without touching the filesystem.
 
 `kind` names what the link means from the source's side -- `implements`,
 `tests`, `documents`. Empty is allowed and means unspecified; it is not a
@@ -67,11 +71,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-
-#: Bumped whenever the table, the URI convention or the resolution rules change.
-#: Every copy carries it, so "are these two graphs speaking the same mechanism?"
-#: is one comparison rather than a diff of two files in two repositories.
-LINKS_SPEC_VERSION = 1
 
 #: What `<db-file>` is resolved against. The knowledge directory, not the repo
 #: root: every graph in a project lives there together, so a peer is named by
@@ -138,24 +137,32 @@ def normalize_target(target: str) -> str:
     return out
 
 
+def _check_db_file(target: str, db_file: str) -> None:
+    drive = len(db_file) > 1 and db_file[1] == ":" and db_file[0].isalpha()
+    if db_file.startswith("/") or drive:
+        raise LinkError(
+            f"{target!r}: <db-file> must be relative to knowledge/, not an absolute path"
+        )
+    if ".." in db_file.split("/"):
+        raise LinkError(f"{target!r}: <db-file> must not contain a '..' segment")
+
+
 def split_target(target: str) -> tuple[str, str]:
     """`"code_graph.db#rpn_screen"` -> `("code_graph.db", "rpn_screen")`.
 
-    Raises `LinkError` when either half is empty. The table's CHECK rejects a
-    missing or leading `#`, but SQLite's `instr` cannot also express "and
-    something follows it" -- so `code_graph.db#` is writable, and it resolves to
+    Raises `LinkError` when either half is empty, when `<db-file>` is absolute
+    (drive letter, leading slash, UNC), or when it has a `..` segment.
+
+    The table's CHECK rejects a missing or leading `#`, but SQLite's `instr`
+    cannot also express "and something follows it" -- so `code_graph.db#` is writable, and it resolves to
     a lookup for the empty id: a link that can never match anything and never
     says why.
     """
     db_file, sep, node_id = normalize_target(target).partition(SEPARATOR)
     if not sep or not db_file or not node_id:
         raise LinkError(f"{target!r} is not '<db-file>#<node-id>'")
+    _check_db_file(target, db_file)
     return db_file, node_id
-
-
-def format_target(db_file: str, node_id: str) -> str:
-    """Build a canonical target from its two halves."""
-    return normalize_target(f"{db_file}{SEPARATOR}{node_id}")
 
 
 @dataclass(frozen=True, order=True)
@@ -174,14 +181,6 @@ class ExternalLink:
         if canonical != self.target:
             object.__setattr__(self, "target", canonical)
 
-    @property
-    def db_file(self) -> str:
-        return split_target(self.target)[0]
-
-    @property
-    def node_id(self) -> str:
-        return split_target(self.target)[1]
-
     def as_dict(self) -> dict[str, str]:
         return {"target": self.target, "kind": self.kind}
 
@@ -194,7 +193,7 @@ class ExternalLink:
         which is exactly what a link written without a kind is.
         """
         if isinstance(raw, str):
-            return cls(target=raw)
+            return _relative(cls(target=raw))
         if isinstance(raw, dict):
             target = raw.get("target")
             if not isinstance(target, str) or not target.strip():
@@ -202,8 +201,13 @@ class ExternalLink:
             kind = raw.get("kind") or ""
             if not isinstance(kind, str):
                 raise LinkError(f"external link {target!r}: `kind` must be a string")
-            return cls(target=target.strip(), kind=kind.strip())
+            return _relative(cls(target=target.strip(), kind=kind.strip()))
         raise LinkError(f"external link {raw!r} must be a string or an object")
+
+
+def _relative(link: ExternalLink) -> ExternalLink:
+    _check_db_file(link.target, link.target.partition(SEPARATOR)[0])
+    return link
 
 
 def dedupe(links: Iterable[ExternalLink]) -> list[ExternalLink]:
@@ -311,6 +315,7 @@ def nodes_linking_to(
 
 def insert(con: sqlite3.Connection, node_id: str, link: ExternalLink) -> None:
     """Write one link. Plain INSERT: a duplicate is an authoring bug, not noise."""
+    split_target(link.target)
     con.execute(
         f"INSERT INTO {TABLE} (node_id, target, kind) VALUES (?,?,?)",
         (node_id, link.target, link.kind),
@@ -334,17 +339,6 @@ class Resolution(str, Enum):
     PEER_UNREADABLE = "peer-unreadable"
     #: The peer graph is readable and does not contain that node.
     DANGLING = "dangling"
-
-    @property
-    def is_error(self) -> bool:
-        """Only a link that is *provably* broken fails a validation run.
-
-        The two soft outcomes are soft for the same reason: we could not check.
-        Failing on them would mean a repo without the peer plugin installed can
-        never pass validation, which would make an optional dependency mandatory
-        by the back door.
-        """
-        return self in (Resolution.MALFORMED, Resolution.DANGLING)
 
 
 def peer_node_table(con: sqlite3.Connection) -> str | None:
@@ -371,6 +365,10 @@ def peer_node_table(con: sqlite3.Connection) -> str | None:
     return None
 
 
+def _quote(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
 def resolve(knowledge_dir: str | Path, target: str) -> Resolution:
     """Follow a link into its peer graph and report what was found there.
 
@@ -386,7 +384,7 @@ def resolve(knowledge_dir: str | Path, target: str) -> Resolution:
     if not peer.is_file():
         return Resolution.PEER_ABSENT
     try:
-        con = sqlite3.connect(f"file:{peer.as_posix()}?mode=ro", uri=True)
+        con = sqlite3.connect(f"{peer.resolve().as_uri()}?mode=ro", uri=True)
     except sqlite3.Error:
         return Resolution.PEER_UNREADABLE
     try:
@@ -394,7 +392,7 @@ def resolve(knowledge_dir: str | Path, target: str) -> Resolution:
         if table is None:
             return Resolution.PEER_UNREADABLE
         row = con.execute(
-            f"SELECT 1 FROM {table} WHERE id = ?",  # name from the peer's own schema
+            f"SELECT 1 FROM {_quote(table)} WHERE id = ?",
             (node_id,),
         ).fetchone()
     except sqlite3.Error:

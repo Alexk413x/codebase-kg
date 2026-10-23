@@ -25,7 +25,8 @@ symbols; never paste code). It is **descriptive**, not prescriptive.
 
 **If the repo already has a `knowledge/KNOWLEDGE_GRAPH.md`, stop and migrate instead:**
 `uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" migrate knowledge/KNOWLEDGE_GRAPH.md`. Converting preserves curated
-structure; rebuilding throws it away.
+structure; rebuilding throws it away. The command writes `knowledge/code_graph.db` and refuses to
+overwrite one that exists: add `--force` to replace it, or `-o <path>` to write elsewhere.
 
 **If the repo already has a `code_graph.db`** (the "too narrow to keep" case), the plugin's search
 gate denies an unscoped `Grep`/`Glob` until a graph query earns credit, telling you to query the
@@ -68,6 +69,8 @@ diff of the result.
   "language": "kotlin",
   "counterpart": "../../acme-ios/knowledge/code_graph.db",
   "generated": "2026-07-30",
+  "covers": ["**/*.kt"],
+  "exempt": ["**/test/**/*.kt"],
   "nodes": [
     {
       "id": "feed_ranker",
@@ -81,14 +84,19 @@ diff of the result.
 }
 ```
 
+`covers` and `exempt` declare which files under `root` need a node and which are deliberately
+unmapped (`${CLAUDE_PLUGIN_ROOT}/SCHEMA.md` §3.1). Paths in `anchors` use forward slashes and are
+relative to `root`.
+
 ## Workflow
 
 ### 1. Configure
-Read `.claude/codebase-kg.local.md` if present (`codebase`, `root`, `graph_path`, `counterpart`,
-`language`). If absent, infer: `root` = the main source dir, `codebase` = a short name. The graph is
-**always** written to `knowledge/code_graph.db` — create `knowledge/` if needed. There is no
-repo-root fallback; only a `graph_path` override in `.local.md` changes the location. Confirm the
-inferred config with the user in one message before building.
+Read `.claude/codebase-kg.local.md` if present. It can set `root` and `graph_path`. Infer the rest:
+`root` = the main source dir (unless the file sets it), `codebase` = a short name. `codebase`,
+`counterpart` and `language` go in the JSON document and then in the graph's `meta`. The local file
+does not carry them. The graph is **always** written to `knowledge/code_graph.db` — create
+`knowledge/` if needed. There is no repo-root fallback; only a `graph_path` override in `.local.md`
+changes the location. Confirm the inferred config with the user in one message before building.
 
 ### 2. Survey the source tree
 `git ls-files` (or `Glob`) under `root` to inventory files. Group them into **subsystems** — the
@@ -132,7 +140,7 @@ declared its scope cannot report a file type it never covered, so a clean result
 not evidence of anything.
 
 ### 6. Commit
-Add both lines to the repo's `.gitattributes`, then commit the graph:
+Add these lines to the repo's `.gitattributes`, then commit the graph:
 
 ```
 *.db binary diff=codegraph
@@ -140,9 +148,11 @@ code_graph.db binary diff=codegraph
 ```
 
 It is a committed artifact — that is the point of it. The `diff=codegraph` half makes the file
-reviewable once a clone runs `/codebase-kg:setup`; committing the attribute means every clone gets
-the wiring even though the driver itself is local config. Both lines, so a repo that overrides
-`graph_path` still matches.
+reviewable once a clone runs `<hooks dir>/install.sh`, which `/codebase-kg:setup` commits. Committing
+the attribute means every clone gets the routing even though the driver itself is local config. Both
+lines, so a repo that overrides `graph_path` still matches. If the repo has other `.db` files, add
+only `knowledge/code_graph.db binary diff=codegraph`, so a blanket `*.db` does not reroute them. Step
+7 of `/codebase-kg:setup` makes the same check.
 
 ### 7. Wire the repo
 Run `/codebase-kg:setup` once. It is idempotent and non-destructive: it vendors the advisory
