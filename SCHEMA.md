@@ -448,10 +448,9 @@ CREATE INDEX external_link_target ON external_link(target);
 - `target` is `<db-file>#<node-id>`. The writer stores it with forward slashes and strips a leading
   `knowledge/`.
 - `<db-file>` is relative to the `knowledge/` directory that holds the graph. It may not be absolute
-  (a leading slash, a drive letter or a UNC path) and may not contain a `..` segment. An absolute
-  path breaks on the next clone, and `resolve` opens the file the target names, so an escaping
-  target could point it at any SQLite file on the machine. The write tools and the builder refuse
-  such a target. `kg_validate` reports one that reached the file another way as `malformed`,
+  (a leading slash, a drive letter or a UNC path). An absolute path breaks on the next clone. A
+  relative path may use `..` to reach a sibling checkout, as in `../../other-repo/knowledge/code_graph.db`.
+  The write tools and the builder refuse an absolute target. `kg_validate` reports one that reached the file another way as `malformed`,
   without opening anything.
 - `kind` says what the link means from this side: `implements`, `tests`, `presented-by`, … Free text,
   and empty means unspecified.

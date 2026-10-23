@@ -117,7 +117,7 @@ command, so they need no extra permission.
 |---|---|
 | `kg_upsert_node(nodes)` | creates or updates node(s); only the fields you supply change; an unknown key is refused with a did-you-mean hint |
 | `kg_delete_node(ids, dry_run=true, cascade_inbound=false)` | previews the blast radius, then deletes |
-| `kg_add_link(node_id, target, kind)` | points a node at a node in another committed graph; refuses a target that is an absolute path or contains `..` |
+| `kg_add_link(node_id, target, kind)` | points a node at a node in another committed graph; refuses a target that is an absolute path |
 | `kg_remove_link(node_id, target)` | drops one such pointer |
 | `kg_add_reference(node_id, url, kind, title, path, symbol)` | records where a fact the node depends on is documented |
 | `kg_remove_reference(node_id, url, path, symbol)` | drops a node's reference(s) to a url |
