@@ -17,9 +17,8 @@ import threading
 from pathlib import Path
 
 from . import cli, links
-from .coverage import COVERS_KEY, EXEMPT_KEY, parse_patterns
 from .links import ExternalLink
-from .models import Anchor, Meta, Node, Reference
+from .models import Anchor, Meta, Node, Reference, slashes
 from .schema import (
     MIN_READABLE_VERSION,
     READ_PRAGMAS,
@@ -47,13 +46,6 @@ _ISOLATED = (
 )
 
 _REFERENCE_SELECT = f"SELECT node_id, kind, title, url, path, symbol FROM {REFERENCE_TABLE}"
-
-
-def _reference(row: sqlite3.Row) -> Reference:
-    return Reference(
-        url=row["url"], kind=row["kind"], title=row["title"],
-        path=row["path"], symbol=row["symbol"],
-    )
 
 
 def _contains(text: str) -> str:
@@ -167,20 +159,7 @@ class CodeGraph:
     @property
     def meta(self) -> Meta:
         rows = {r["key"]: r["value"] for r in self._q("SELECT key, value FROM meta")}
-        known = {
-            "schema_version", "codebase", "root", "counterpart", "language",
-            "generated", COVERS_KEY, EXEMPT_KEY, links.NODE_TABLE_KEY,
-        }
-        return Meta(
-            codebase=rows.get("codebase", ""),
-            root=rows.get("root", ""),
-            counterpart=rows.get("counterpart"),
-            language=rows.get("language"),
-            generated=rows.get("generated", ""),
-            covers=parse_patterns(rows.get(COVERS_KEY)),
-            exempt=parse_patterns(rows.get(EXEMPT_KEY)),
-            extra={k: v for k, v in rows.items() if k not in known},
-        )
+        return Meta.from_rows(rows)
 
     # ------------------------------------------------------------------- nodes
     def _in_chunks(self, sql: str, ids: list[str]) -> list[sqlite3.Row]:
@@ -259,7 +238,7 @@ class CodeGraph:
                 )
             )
             for r in ref_rows:
-                cited[r["node_id"]].append(_reference(r))
+                cited[r["node_id"]].append(Reference.from_row(r))
 
         edges: dict[str, list[str]] = {i: [] for i in ids}
         if with_edges:
@@ -274,16 +253,10 @@ class CodeGraph:
                 edges[e["src"]].append(e["dst"])
 
         return [
-            Node(
-                id=r["id"],
-                kind=r["kind"],
-                description=r["description"],
+            Node.from_row(
+                r,
                 anchors=anchors[r["id"]],
                 edges=edges[r["id"]],
-                section=r["section"],
-                parity=r["parity"],
-                counterpart=r["counterpart"],
-                divergence=r["divergence"],
                 links=outbound[r["id"]],
                 references=cited[r["id"]],
             )
@@ -405,7 +378,7 @@ class CodeGraph:
         applying the suffix rule to those few rows gives the same answers as
         `path LIKE '%/needle'` without that pattern's full scan of `anchor`.
         """
-        needle = _LEADING_DOT_SLASH.sub("", path.replace("\\", "/").strip())
+        needle = _LEADING_DOT_SLASH.sub("", slashes(path).strip())
         rows = self._q(
             "SELECT node_id, path, symbol FROM anchor WHERE base = ? ORDER BY node_id, ord",
             (needle.rsplit("/", 1)[-1],),
@@ -473,7 +446,7 @@ class CodeGraph:
             args.append(kind)
         sql = _REFERENCE_SELECT + (" WHERE " + " AND ".join(where) if where else "")
         return [
-            (r["node_id"], _reference(r))
+            (r["node_id"], Reference.from_row(r))
             for r in self._q(sql + " ORDER BY node_id, ord", tuple(args))
         ]
 

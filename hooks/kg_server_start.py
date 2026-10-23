@@ -16,7 +16,6 @@ belongs to another program, or the server did not come up in time. Stdlib only.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 import time
@@ -24,17 +23,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-SHIM = Path(__file__).resolve().parents[1] / "mcp" / "src" / "codebase_kg" / "shim.py"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _shim_loader import load_shim
+
 WAIT = 8.0
 POLL = 0.1
-
-
-def _shim() -> Any:
-    spec = importlib.util.spec_from_file_location("codebase_kg_shim", SHIM)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _serving(shim: Any, port: int, mine: dict[str, Any]) -> bool:
@@ -57,8 +51,7 @@ def ensure_server(shim: Any, wait: float = WAIT, spawn: Callable[[str], object] 
         return None
     build = mine["build"]
     shim.cache_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
-    locked = shim._take_lock(build)
-    try:
+    with shim.spawn_lock(build) as locked:
         if locked:
             (spawn or shim.spawn_server_detached)(build)
         deadline = time.monotonic() + wait
@@ -66,9 +59,6 @@ def ensure_server(shim: Any, wait: float = WAIT, spawn: Callable[[str], object] 
             if _serving(shim, port, mine):
                 return None
             time.sleep(POLL)
-    finally:
-        if locked:
-            shim._release_lock(build)
     return (
         f"codebase-kg: the server did not answer on port {port} within {wait:g} s. "
         f"Its log is {shim.log_path(build)}."
@@ -88,7 +78,7 @@ def register(shim: Any, raw: str) -> None:
 def main() -> None:
     try:
         raw = sys.stdin.read()
-        shim = _shim()
+        shim = load_shim()
         try:
             register(shim, raw)
         except OSError:

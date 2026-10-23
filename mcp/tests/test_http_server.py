@@ -576,7 +576,7 @@ def hook() -> Any:
 
 
 def _fake_shim(hook: Any, answers: list[tuple[str, dict[str, Any]]]) -> Any:
-    real = hook._shim()
+    real = hook.load_shim()
     spawned: list[str] = []
     calls = iter(answers)
     last = answers[-1] if answers else ("free", {})

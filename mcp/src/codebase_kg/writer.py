@@ -28,7 +28,7 @@ from typing import Literal
 
 from . import clean, links
 from .coverage import COVERS_KEY, EXEMPT_KEY, format_patterns
-from .models import Meta, Node
+from .models import Meta, Node, slashes
 from .schema import (
     APPLICATION_ID,
     DDL,
@@ -210,7 +210,7 @@ def _write(
         "generated": meta.generated,
     }
     if meta.counterpart:
-        rows_meta["counterpart"] = meta.counterpart.replace("\\", "/")
+        rows_meta["counterpart"] = slashes(meta.counterpart)
     if meta.language:
         rows_meta["language"] = meta.language
     # Stored newline-separated rather than as JSON: the vendored pre-push hook

@@ -20,7 +20,6 @@ agent or break a tool call; the git hook is still there to block.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shlex
@@ -31,7 +30,7 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _config import as_local_path, strip_heredocs
+from _config import as_local_path, emit_deny, run_hook, skip_kg, strip_heredocs
 
 LIST_CAP = 20
 
@@ -220,14 +219,10 @@ def stale_files(repo: Path) -> tuple[list[str], str] | None:
     return [checker._root_to_rel(p, root) for p in split.stale], graph_rel
 
 
-def _truthy(value: str | None) -> bool:
-    return bool((value or "").strip())
-
-
 def allowed_by_env(push_env: dict[str, str], count: int) -> bool:
     """SKIP_KG, or a KG_STALE_ACK naming exactly `count`, in the command or here."""
     for source in (push_env, os.environ):
-        if _truthy(source.get("SKIP_KG")):
+        if skip_kg(source):
             return True
         ack = (source.get("KG_STALE_ACK") or "").strip()
         if ack.isdigit() and int(ack) == count:
@@ -250,16 +245,6 @@ def deny_reason(stale: list[str], graph_rel: str) -> str:
     )
 
 
-def _deny(reason: str) -> None:
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        }
-    }))
-
-
 def _run(data: dict[str, object]) -> None:
     if data.get("tool_name") != "Bash":
         return
@@ -267,7 +252,7 @@ def _run(data: dict[str, object]) -> None:
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str) or "git" not in command or "push" not in command:
         return
-    if _truthy(os.environ.get("SKIP_KG")):
+    if skip_kg():
         return
     cwd = data.get("cwd")
     base = Path(cwd) if isinstance(cwd, str) and cwd else Path.cwd()
@@ -277,7 +262,7 @@ def _run(data: dict[str, object]) -> None:
         return
     checked: dict[Path, tuple[list[str], str] | None] = {}
     for push in pushes:
-        if push.deletes_only or _truthy(push.env.get("SKIP_KG")):
+        if push.deletes_only or skip_kg(push.env):
             continue
         repo = _repo_root(push.cwd)
         if repo is None:
@@ -290,19 +275,12 @@ def _run(data: dict[str, object]) -> None:
         stale, graph_rel = result
         if allowed_by_env(push.env, len(stale)):
             continue
-        _deny(deny_reason(stale, graph_rel))
+        emit_deny(deny_reason(stale, graph_rel))
         return
 
 
 def main() -> None:
-    try:
-        raw = sys.stdin.read()
-        data = json.loads(raw) if raw.strip() else {}
-        if isinstance(data, dict):
-            _run(data)
-    except Exception:  # noqa: BLE001
-        # Fail open: a gate that errors must let the push through to the git hook.
-        return
+    run_hook(_run)
 
 
 if __name__ == "__main__":

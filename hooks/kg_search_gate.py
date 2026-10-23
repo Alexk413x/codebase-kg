@@ -50,7 +50,6 @@ import os
 import re
 import shlex
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -59,13 +58,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _config import (
     DEFAULTS,
     IGNORE_DIRS,
+    as_int,
     as_local_path,
+    emit_deny,
     find_graph,
     graph_meta,
     is_anchored,
     load_config,
+    norm_path,
+    norm_root,
     project_dir,
+    read_state,
+    run_hook,
+    skip_kg,
+    state_dir,
+    state_path,
     strip_heredocs,
+    write_state,
 )
 
 _SEARCH_TOOLS = {"Grep", "Glob"}
@@ -116,15 +125,11 @@ GATE_MESSAGE = (
 )
 
 
-def _norm(p: Path) -> str:
-    return os.path.normcase(str(p))
+_STATE_DIR = "codebase-kg-gate"
 
 
 def _state_path(proj: Path, session: str) -> Path:
-    key = f"{_norm(proj)}\0{session}".encode()
-    d = Path(tempfile.gettempdir()) / "codebase-kg-gate"
-    d.mkdir(parents=True, exist_ok=True)
-    return d / f"{hashlib.sha1(key).hexdigest()[:16]}.json"
+    return state_path(_STATE_DIR, f"{norm_path(proj)}\0{session}")
 
 
 def _prune(directory: Path) -> None:
@@ -147,7 +152,7 @@ def _claim_call(tool_use_id: str) -> bool:
     spend credit or record a denial.
     """
     try:
-        d = Path(tempfile.gettempdir()) / "codebase-kg-gate" / "calls"
+        d = state_dir(_STATE_DIR) / "calls"
         d.mkdir(parents=True, exist_ok=True)
         name = hashlib.sha1(tool_use_id.encode("utf-8")).hexdigest()[:16]
         os.close(os.open(d / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
@@ -159,11 +164,7 @@ def _claim_call(tool_use_id: str) -> bool:
 
 
 def _read_state(proj: Path, session: str) -> dict[str, object]:
-    try:
-        data = json.loads(_state_path(proj, session).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return read_state(_state_path(proj, session))
 
 
 def _write_state(proj: Path, session: str, state: dict[str, object]) -> bool:
@@ -174,13 +175,11 @@ def _write_state(proj: Path, session: str, state: dict[str, object]) -> bool:
     would then refuse the same search forever. The gate degrades to `warn`
     rather than take that risk.
     """
-    try:
-        path = _state_path(proj, session)
-        path.write_text(json.dumps(state), encoding="utf-8")
-        _prune(path.parent)
-        return True
-    except OSError:
+    path = _state_path(proj, session)
+    if not write_state(path, state):
         return False
+    _prune(path.parent)
+    return True
 
 
 def search_key(tool: str, tool_input: dict[str, object]) -> str:
@@ -228,20 +227,9 @@ def _denied_list(state: dict[str, object]) -> list[str]:
     return []
 
 
-def _int_setting(cfg: dict[str, object], key: str, default: int) -> int:
-    """A non-negative integer setting. Negative and unparseable read as the
-    default, the same posture `nudge_every` keeps: a typo costs the setting,
-    never the feature."""
-    try:
-        value = int(cfg.get(key, default))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return default
-    return value if value >= 0 else default
-
-
 def gate_credit(cfg: dict[str, object]) -> int:
     """How many unlocated searches one graph query clears."""
-    return _int_setting(cfg, "gate_credit", 3)
+    return as_int(cfg.get("gate_credit", 3), 3, minimum=0)
 
 
 def gate_mode(cfg: dict[str, object]) -> str:
@@ -820,16 +808,6 @@ def searches_an_anchored_path(
     return is_anchored(graph, rel)
 
 
-def _deny(reason: str) -> None:
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        }
-    }))
-
-
 def _advise(message: str, notify_user: bool = False) -> None:
     out: dict[str, object] = {
         "hookSpecificOutput": {
@@ -875,27 +853,21 @@ def _run(data: dict[str, object]) -> None:
         # value outright would let a cheap follow-up query cost an agent the
         # allowance a bigger answer already earned it. Running out is not
         # terminal either way — asking again tops it back up.
-        try:
-            held = int(state.get("credit", 0))  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            held = 0
-        state["credit"] = max(held, earned)
+        state["credit"] = max(as_int(state.get("credit", 0), 0), earned)
         _write_state(proj, session, state)
         return
 
     if not _is_search_call(tool, tool_input, cfg):
         return
 
-    if gate_mode(cfg) == "off" or os.environ.get("SKIP_KG"):
+    if gate_mode(cfg) == "off" or skip_kg():
         return
 
     graph = find_graph(proj, cfg)
     if graph is None:
         return  # no graph in this repo → nothing to consult
 
-    raw_root = str(cfg.get("root") or graph_meta(graph, "root") or "")
-    root = raw_root.strip().replace("\\", "/").strip("/")
-    root = "" if root == "." else root
+    root = norm_root(str(cfg.get("root") or graph_meta(graph, "root") or ""))
     # A shell command answers from its own text the three questions
     # `tool_input["path"]` answers for Grep/Glob: which repo, reading what, and
     # does it already name the file.
@@ -940,10 +912,7 @@ def _run(data: dict[str, object]) -> None:
     if any(k in denied for k in keys):
         return
 
-    try:
-        credit = int(state.get("credit", 0))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        credit = 0
+    credit = as_int(state.get("credit", 0), 0)
     if credit > 0:
         state["credit"] = credit - 1
         _write_state(proj, session, state)
@@ -963,19 +932,11 @@ def _run(data: dict[str, object]) -> None:
         # the hook cannot see its tool list, so it informs instead of denying.
         _advise(message)
     else:
-        _deny(message)
+        emit_deny(message)
 
 
 def main() -> None:
-    try:
-        raw = sys.stdin.read()
-        data = json.loads(raw) if raw.strip() else {}
-        if isinstance(data, dict):
-            _run(data)
-    except Exception:  # noqa: BLE001
-        # Fail open. A gate that errors must let the search through, never
-        # strand the agent.
-        return
+    run_hook(_run)
 
 
 if __name__ == "__main__":

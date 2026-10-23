@@ -105,7 +105,7 @@ def test_the_process_table_lists_this_process() -> None:
 # --- the hooks and the CLI ----------------------------------------------------
 def test_the_start_hook_registers_the_session_with_the_agents_pid(cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     hook = _load(START_HOOK, "kg_server_start_for_sessions")
-    fake = hook._shim()
+    fake = hook.load_shim()
     monkeypatch.setattr(fake, "agent_pid", lambda: 4242)
     hook.register(fake, json.dumps({"session_id": "sess-9", "cwd": "."}))
     record = json.loads((shim.sessions_dir() / "sess-9.json").read_text(encoding="utf-8"))
@@ -115,16 +115,16 @@ def test_the_start_hook_registers_the_session_with_the_agents_pid(cache: Path, m
 @pytest.mark.parametrize("raw", ["", "not json", "[]", "{}", '{"session_id": 7}'])
 def test_the_start_hook_ignores_a_payload_with_no_session(cache: Path, raw: str) -> None:
     hook = _load(START_HOOK, "kg_server_start_for_bad_payloads")
-    hook.register(hook._shim(), raw)
+    hook.register(hook.load_shim(), raw)
     assert not shim.sessions_dir().exists()
 
 
 def test_the_end_hook_unregisters_the_session(cache: Path) -> None:
     hook = _load(END_HOOK, "kg_session_end_under_test")
     shim.register_session("sess-9", os.getpid())
-    assert hook.unregister(hook._shim(), json.dumps({"session_id": "sess-9", "reason": "other"}))
+    assert hook.unregister(hook.load_shim(), json.dumps({"session_id": "sess-9", "reason": "other"}))
     assert shim.live_sessions() == []
-    assert not hook.unregister(hook._shim(), "not json")
+    assert not hook.unregister(hook.load_shim(), "not json")
 
 
 def test_the_end_hook_prints_nothing_and_exits_zero(cache: Path) -> None:
@@ -145,7 +145,7 @@ def test_the_hooks_are_registered() -> None:
 
 def test_the_headers_helper_registers_a_codex_session_by_its_pid(cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     helper = _load(HEADERS, "kg_headers_for_sessions")
-    fake = helper._shim()
+    fake = helper._start_hook().load_shim()
     monkeypatch.setattr(fake, "agent_pid", lambda: os.getpid())
     helper.register_agent(fake)
     assert shim.live_sessions() == [f"codex-{os.getpid()}"]
@@ -155,7 +155,7 @@ def test_the_headers_helper_registers_with_no_pid_when_the_chain_is_unreadable(
     cache: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     helper = _load(HEADERS, "kg_headers_for_unknown_pid")
-    fake = helper._shim()
+    fake = helper._start_hook().load_shim()
     monkeypatch.setattr(fake, "agent_pid", lambda: None)
     helper.register_agent(fake)
     assert shim.live_sessions() == ["codex-unknown"]

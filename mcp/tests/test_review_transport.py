@@ -124,18 +124,18 @@ def test_claim_port_leaves_an_unresponsive_port_to_its_holder(
 # --- 33: the spawn lock --------------------------------------------------------
 def test_a_lock_held_by_a_dead_process_is_taken(cache: Path) -> None:
     shim.lock_path(BUILD).write_text(str(_dead_pid()), encoding="utf-8")
-    assert shim._take_lock(BUILD)
+    assert shim.take_lock(BUILD)
     assert shim.lock_path(BUILD).read_text(encoding="utf-8") == str(os.getpid())
 
 
 def test_a_lock_held_by_a_live_process_is_kept(cache: Path) -> None:
     shim.lock_path(BUILD).write_text(str(os.getpid()), encoding="utf-8")
-    assert not shim._take_lock(BUILD)
+    assert not shim.take_lock(BUILD)
 
 
 def test_a_lock_with_no_pid_yet_is_kept(cache: Path) -> None:
     shim.lock_path(BUILD).write_text("", encoding="utf-8")
-    assert not shim._take_lock(BUILD)
+    assert not shim.take_lock(BUILD)
 
 
 # --- 34: an unusable roots answer ----------------------------------------------

@@ -52,16 +52,10 @@ def stop(port: int) -> dict[str, object]:
                              f"{found.get('pid')} instead"}
         return {**found, "stopped": None}
     reply, state = holder
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2.0)
     try:
-        conn.request("POST", "/shutdown", headers={
-            "Host": f"127.0.0.1:{port}", "Authorization": f"Bearer {state['token']}", "Content-Length": "0",
-        })
-        conn.getresponse().read()
+        shim.request_shutdown(port, state["token"])
     except (OSError, http.client.HTTPException) as exc:
         return {"ok": False, "port": port, "error": f"could not reach the server: {exc}"}
-    finally:
-        conn.close()
     deadline = time.monotonic() + STOP_WAIT
     while time.monotonic() < deadline:
         if shim.health(port, timeout=0.5)[0] == shim.FREE:

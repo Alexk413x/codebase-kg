@@ -17,7 +17,7 @@ import re
 from typing import Any
 
 from .links import ExternalLink, LinkError, dedupe
-from .models import Anchor, Meta, Node, Reference, ReferenceFormatError
+from .models import Anchor, Meta, Node, Reference, ReferenceFormatError, slashes
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -114,7 +114,7 @@ def from_dict(doc: Any) -> tuple[Meta, list[Node], dict[str, str]]:
         # whole build over machine-written data the author never touched is not
         # a useful place to be strict.
         sources = {
-            str(k).replace("\\", "/"): v
+            slashes(str(k)): v
             for k, v in raw_sources.items()
             if isinstance(v, str) and _SHA256.fullmatch(v)
         }

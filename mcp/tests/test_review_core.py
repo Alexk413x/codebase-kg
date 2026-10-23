@@ -212,7 +212,7 @@ def test_query_reads_stdin_as_utf8(
 
     monkeypatch.setattr(query.tools, "kg_search", fake_search)
     monkeypatch.setattr(sys, "stdin", _Stdin(json.dumps({"query": "naïve"}, ensure_ascii=False).encode("utf-8")))
-    assert query.main(["--graph", str(db), "kg_search"]) == 0
+    assert query.main(["--graph", str(db), "kg_search", "-"]) == 0
     assert seen == ["naïve"]
     capsys.readouterr()
 

@@ -27,7 +27,6 @@ deliberate choice and does not need nagging toward clobbering its own config.
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import sys
@@ -35,7 +34,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _config import as_local_path, find_graph, load_config, project_dir
+from _config import as_local_path, find_graph, load_config, project_dir, skip_kg
 
 DEFAULT_HOOKS_DIR = ".githooks"
 PLUGIN_MANIFEST = Path(__file__).resolve().parents[1] / ".claude-plugin" / "plugin.json"
@@ -141,7 +140,7 @@ def advice(proj: Path) -> str | None:
 
 def main() -> None:
     try:
-        if os.environ.get("SKIP_KG"):
+        if skip_kg():
             return
         raw = sys.stdin.read()
         data = json.loads(raw) if raw.strip() else {}

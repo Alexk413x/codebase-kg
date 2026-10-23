@@ -15,7 +15,6 @@ import argparse
 import asyncio
 import json
 import os
-import statistics
 import subprocess
 import sys
 import time
@@ -27,19 +26,19 @@ from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cli_vs_mcp import CpuMeter, cpu_load, http_client, http_server
+from cli_vs_mcp import CpuMeter, _stats, cpu_load, emit_report, http_client, http_server
 from loop10 import CALLS, RUNNER, SHIM
 
 LOOKUPS = CALLS
 
 
 def _summary(times: list[float], wall: float, errors: int) -> dict:
-    s = sorted(times)
+    s = _stats(times)
     return {
         "wall_ms": round(wall, 1),
-        "call_median_ms": round(statistics.median(s), 1),
-        "call_p90_ms": round(s[int(len(s) * 0.9)], 1),
-        "call_max_ms": round(s[-1], 1),
+        "call_median_ms": s["median_ms"],
+        "call_p90_ms": s["p90_ms"],
+        "call_max_ms": s["max_ms"],
         "errors": errors,
     }
 
@@ -125,10 +124,7 @@ def main() -> int:
         with http_server(workers) as server:
             for n in agents:
                 timed(mode, n, lambda n=n: asyncio.run(mcp_agents(n, graph, server)))
-    text = json.dumps(report, indent=2)
-    print(text)
-    if a.out:
-        Path(a.out).write_text(text + "\n", encoding="utf-8")
+    emit_report(report, a.out)
     return 0
 
 

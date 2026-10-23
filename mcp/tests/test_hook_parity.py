@@ -226,20 +226,20 @@ def test_both_agree_a_non_source_file_does_not(tmp_path: Path, rel: str) -> None
 @pytest.mark.parametrize("raw", [".", "./", "/./", "  .  "])
 def test_both_hooks_fold_a_dot_root_to_empty(raw: str) -> None:
     assert kg_pre_push.norm_root(raw) == ""
-    assert kg_post_edit_check.norm_root(raw) == ""
+    assert _config.norm_root(raw) == ""
 
 
 @pytest.mark.parametrize("raw", ["app/src/main", "app/src/main/", "\\app\\src\\main"])
 def test_both_hooks_normalize_a_real_root_the_same_way(raw: str) -> None:
     assert kg_pre_push.norm_root(raw) == "app/src/main"
-    assert kg_post_edit_check.norm_root(raw) == "app/src/main"
+    assert _config.norm_root(raw) == "app/src/main"
 
 
 def test_norm_root_has_not_drifted_between_the_copies() -> None:
     import inspect
 
     assert _body(inspect.getsource(kg_pre_push.norm_root)) == _body(
-        inspect.getsource(kg_post_edit_check.norm_root)
+        inspect.getsource(_config.norm_root)
     )
 
 

@@ -335,7 +335,7 @@ def kg_parity_gaps(
         if wanted is not None:
             s = wanted
             if s == "only":
-                if not n.parity.lower().endswith("-only"):
+                if not clean.is_only_parity(n.parity.lower()):
                     continue
             elif s != n.parity.lower():
                 continue

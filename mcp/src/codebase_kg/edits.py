@@ -306,27 +306,14 @@ def _read_node(conn: sqlite3.Connection, node_id: str) -> Node | None:
     cited: list[Reference] = []
     if has_reference_table(conn):
         cited = [
-            Reference(url=r["url"], kind=r["kind"], title=r["title"],
-                      path=r["path"], symbol=r["symbol"])
+            Reference.from_row(r)
             for r in conn.execute(
                 f"SELECT kind, title, url, path, symbol FROM {REFERENCE_TABLE}"
                 " WHERE node_id = ? ORDER BY ord",
                 (node_id,),
             )
         ]
-    return Node(
-        id=row["id"],
-        kind=row["kind"],
-        description=row["description"],
-        anchors=anchors,
-        edges=edges,
-        section=row["section"],
-        parity=row["parity"],
-        counterpart=row["counterpart"],
-        divergence=row["divergence"],
-        links=outbound,
-        references=cited,
-    )
+    return Node.from_row(row, anchors=anchors, edges=edges, links=outbound, references=cited)
 
 
 def _ensure_reference_table(conn: sqlite3.Connection) -> list[Change]:

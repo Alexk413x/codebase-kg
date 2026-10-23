@@ -298,8 +298,9 @@ def test_zero_workers_run_calls_in_process(bound: Path, monkeypatch: pytest.Monk
 
 def test_the_worker_imports_no_fastmcp() -> None:
     python, *flags, _, _, src = pool_mod.worker_command()
-    probe = ("import sys, json; sys.path.insert(0, sys.argv[1]); from codebase_kg import worker; "
-             "worker._writes(); print(json.dumps(sorted(sys.modules)))")
+    probe = ("import os, sys, json; sys.path.insert(0, sys.argv[1]); from codebase_kg import worker; "
+             "worker.run({'tool': 'kg_remove_link', 'graph': os.path.abspath('absent.db'), "
+             "'args': {'node_id': 'a', 'target': 'b'}}); print(json.dumps(sorted(sys.modules)))")
     out = subprocess.run([python, *flags, "-c", probe, src], capture_output=True, text=True, timeout=30, check=False)
     assert out.returncode == 0, out.stderr
     modules = json.loads(out.stdout)

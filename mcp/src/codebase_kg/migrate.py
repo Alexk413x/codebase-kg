@@ -95,11 +95,11 @@ def _normalize_parity(node: Node, report: MigrationReport) -> None:
             drop("divergence set with no parity flag — divergence dropped", "divergence")
         return
 
-    if p not in {"matched", "divergent"} and not p.endswith("-only"):
+    if not clean.is_known_parity(p):
         drop(f"unrecognized parity '{p}' — parity dropped", "parity", "counterpart", "divergence")
         return
 
-    if p.endswith("-only"):
+    if clean.is_only_parity(p):
         if node.counterpart:
             drop(f"parity={p} cannot have a counterpart — counterpart dropped", "counterpart")
         if node.divergence:
@@ -130,7 +130,7 @@ def _normalize_anchors(node: Node, report: MigrationReport) -> None:
     for a in node.anchors:
         if not a.path:
             continue
-        if a.symbol and a.symbol[0].isdigit():
+        if clean.is_line_number(a.symbol):
             report.normalized.append(
                 {"node": node.id, "issue": f"line-number anchor '{a}' reduced to its path"}
             )

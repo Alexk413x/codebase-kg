@@ -15,9 +15,10 @@ carry an env var.
 from __future__ import annotations
 
 import codecs
+import json
 import sys
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 RUNNER = Path(__file__).resolve().parents[2] / "launch" / "kg_cli.py"
 
@@ -74,6 +75,11 @@ def read_stdin() -> str:
     if buffer is None:
         return sys.stdin.read()
     return decode_text(buffer.read())
+
+
+def dumps(obj: Any, **kwargs: Any) -> str:
+    """`json.dumps` that keeps non-ASCII characters as they are."""
+    return json.dumps(obj, ensure_ascii=False, **kwargs)
 
 
 def write_out(text: str) -> None:

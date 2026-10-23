@@ -116,23 +116,21 @@ class Clients:
         """The client's connection, or the result to answer with: an error or the roots request."""
         graph, cwd, client = (_decoded(headers.get(h)) for h in (GRAPH_HEADER, CWD_HEADER, CLIENT_HEADER))
         if cwd is not None:
-            if not Path(cwd).is_absolute():
-                return core.error_result("codebase-kg: X-Codebase-KG-Cwd must be an absolute path.")
-            return _new(Path(cwd), graph)
+            return resolve.connection(cwd, graph) or core.error_result(
+                "codebase-kg: X-Codebase-KG-Cwd must be an absolute path.")
         key = (client, graph) if client else None
         with self._lock:
             if key is not None and key in self.bound:
                 self.bound.move_to_end(key)
                 return self.bound[key]
         responses = params.get("inputResponses")
-        root = root_path(responses)
-        if root is None:
+        conn = resolve.connection(root_path(responses), graph)
+        if conn is None:
             if isinstance(responses, dict) and ROOTS_REQUEST in responses:
                 return core.error_result(
                     "codebase-kg: the client's roots include no local folder. Send an absolute X-Codebase-KG-Cwd header."
                 )
             return {"resultType": "input_required", "inputRequests": {ROOTS_REQUEST: {"method": "roots/list"}}}
-        conn = _new(root, graph)
         if key is not None:
             with self._lock:
                 self.bound[key] = conn
@@ -144,18 +142,12 @@ class Clients:
 def classic_connection(headers: Mapping[str, str | None]) -> resolve.Connection | None:
     """The session of a classic request, which names its folder in `X-Codebase-KG-Cwd` or not at all."""
     graph, cwd = (_decoded(headers.get(h)) for h in (GRAPH_HEADER, CWD_HEADER))
-    if cwd is None or not Path(cwd).is_absolute():
-        return None
-    return _new(Path(cwd), graph)
+    return resolve.connection(cwd, graph)
 
 
 def _decoded(value: str | None) -> str | None:
     value = (value or "").strip()
     return unquote(value) if value else None
-
-
-def _new(cwd: Path, graph: str | None) -> resolve.Connection:
-    return resolve.Connection(cwd=cwd, explicit=Path(cwd, graph) if graph else None)
 
 
 def _authorized(value: str, expected: str) -> bool:
@@ -226,10 +218,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json(status, {"error": error})
 
     def _rpc_error(self, request_id: Any, code: int, message: str, data: Any = None) -> None:
-        error: dict[str, Any] = {"code": code, "message": message}
-        if data is not None:
-            error["data"] = data
-        self._json(STATUS.get(code, 200), {"jsonrpc": "2.0", "id": request_id, "error": error})
+        self._json(STATUS.get(code, 200), shim.rpc_error(request_id, code, message, data))
 
     def _gate(self) -> bool:
         """Host, Origin, `/health`, the token and `/shutdown`. True when the request may reach `/mcp`."""
@@ -352,8 +341,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(202, content_type=None)
             return
-        request_id = msg["id"]
-        if isinstance(request_id, bool) or not isinstance(request_id, (str, int)):
+        request_id = shim.valid_id(msg)
+        if request_id is None:
             self._rpc_error(None, core.INVALID_REQUEST, NOT_ONE_MESSAGE)
             return
         if version is None:
@@ -399,8 +388,8 @@ class Handler(BaseHTTPRequestHandler):
         if "id" not in msg:
             self._send(202, content_type=None)
             return
-        request_id = msg["id"]
-        if isinstance(request_id, bool) or not isinstance(request_id, (str, int)):
+        request_id = shim.valid_id(msg)
+        if request_id is None:
             self._rpc_error(None, core.INVALID_REQUEST, NOT_ONE_MESSAGE)
             return
         conn = None
@@ -454,19 +443,6 @@ def bind(port: int) -> socket.socket:
     return sock
 
 
-def _ask_to_stop(port: int, token: str) -> None:
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2.0)
-    try:
-        conn.request("POST", "/shutdown", headers={
-            "Host": f"127.0.0.1:{port}", "Authorization": f"Bearer {token}", "Content-Length": "0",
-        })
-        conn.getresponse().read()
-    except (OSError, http.client.HTTPException):
-        pass
-    finally:
-        conn.close()
-
-
 def claim_port(port: int, mine: dict[str, Any]) -> socket.socket | None:
     """Bind the HTTP port, taking it from an older codebase-kg build. None leaves it to its holder.
 
@@ -501,7 +477,10 @@ def claim_port(port: int, mine: dict[str, Any]) -> socket.socket | None:
         )
         return None
     logger.info("asking codebase-kg %s to hand over port %d", theirs.get("build"), port)
-    _ask_to_stop(port, holder[1]["token"])
+    try:
+        shim.request_shutdown(port, holder[1]["token"])
+    except (OSError, http.client.HTTPException):
+        pass
     deadline = time.monotonic() + HANDOVER_TIMEOUT
     while time.monotonic() < deadline:
         try:

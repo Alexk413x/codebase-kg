@@ -17,72 +17,39 @@ OS temp dir — nothing is written into the user's repo.
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import re
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _config import (
+    as_int,
     find_graph,
     graph_meta,
     is_anchored,
     is_source_file,
     load_config,
+    norm_path,
+    norm_root,
     project_dir,
+    read_state,
+    run_hook,
+    state_path,
+    write_state,
 )
 
 _EDIT_TOOLS = {"Edit", "Write"}
 GRAPH_FILENAME = "code_graph.db"
 
 
-def _as_int(value: object, default: int) -> int:
-    """A config or state value as an int, falling back rather than raising.
-
-    `nudge_every` is user-typed and `pending` comes off disk, so both reach
-    `int()` as arbitrary objects. A bare `int("evry")` raises, `main` swallows
-    it, and the hook goes silent for that repo forever with no error anywhere —
-    the same invisible-disable that the frontmatter comment-strip exists to
-    prevent. A typo should cost the setting, not the feature.
-    """
-    try:
-        return int(value)  # type: ignore[call-overload]
-    except (TypeError, ValueError):
-        return default
-
-
-def _norm(p: Path) -> str:
-    return os.path.normcase(str(p))
-
-
 def _same(a: Path, b: Path) -> bool:
-    return _norm(a) == _norm(b)
+    return norm_path(a) == norm_path(b)
 
 
 def _state_path(proj: Path) -> Path:
-    h = hashlib.sha1(_norm(proj).encode("utf-8")).hexdigest()[:16]
-    d = Path(tempfile.gettempdir()) / "codebase-kg-hook"
-    d.mkdir(parents=True, exist_ok=True)
-    return d / f"{h}.json"
-
-
-def _read_state(proj: Path) -> dict[str, object]:
-    try:
-        data = json.loads(_state_path(proj).read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def _write_state(proj: Path, state: dict[str, object]) -> None:
-    try:
-        _state_path(proj).write_text(json.dumps(state), encoding="utf-8")
-    except OSError:
-        pass
+    return state_path("codebase-kg-hook", norm_path(proj))
 
 
 def _graph_stamp(graph: Path) -> int | None:
@@ -92,20 +59,12 @@ def _graph_stamp(graph: Path) -> int | None:
         return None
 
 
+def _write(proj: Path, state: dict[str, object]) -> None:
+    write_state(_state_path(proj), state)
+
+
 def _emit(message: str) -> None:
     print(json.dumps({"systemMessage": message}))
-
-
-def norm_root(root: str) -> str:
-    """`root` as a comparable prefix: posix separators, no slashes, `.` folded to ``.
-
-    `.` and `` both mean the whole repo, but a literal `.` is truthy while being
-    a prefix of no repo-relative path -- so every `startswith` against it fails
-    and the graph matches nothing. It hides because the package JOINS paths
-    (`repo / "."` is `repo`) while this file COMPARES them.
-    """
-    out = str(root).strip().replace("\\", "/").strip("/")
-    return "" if out == "." else out
 
 
 def _rel_to_root(path: Path, proj: Path, root: str) -> str | None:
@@ -173,12 +132,12 @@ def _run(data: dict[str, object]) -> None:
 def _check(fp: str, proj: Path, cfg: dict[str, object], graph: Path) -> bool:
     """Nudge for one edited file. True when a message was sent, so one call sends at most one."""
     edited = Path(fp).resolve()
-    state = _read_state(proj)
+    state = read_state(_state_path(proj))
     stamp = _graph_stamp(graph)
 
     # Touching the graph itself clears the pending counter.
     if _same(edited, graph) or edited.name == GRAPH_FILENAME:
-        _write_state(proj, {"pending": 0, "reported": [], "graph_stamp": stamp})
+        _write(proj, {"pending": 0, "reported": [], "graph_stamp": stamp})
         return False
 
     if not is_source_file(edited, proj, cfg):
@@ -191,12 +150,12 @@ def _check(fp: str, proj: Path, cfg: dict[str, object], graph: Path) -> bool:
 
     rel = _rel_to_root(edited, proj, str(cfg.get("root") or ""))
     reported = [str(r) for r in state.get("reported", []) if isinstance(r, str)]
-    pending = _as_int(state.get("pending"), 0) + 1
+    pending = as_int(state.get("pending"), 0) + 1
 
     # Signal 1: this file is not in the map. Report once per file per session.
     if rel is not None and rel not in reported and not is_anchored(graph, rel):
         reported.append(rel)
-        _write_state(proj, {"pending": pending, "reported": reported[-50:], "graph_stamp": stamp})
+        _write(proj, {"pending": pending, "reported": reported[-50:], "graph_stamp": stamp})
         _emit(
             f"codebase-kg: no node in {graph.name} anchors on {rel}. "
             f"Run /codebase-kg:refresh to add it, so the graph keeps answering "
@@ -204,12 +163,12 @@ def _check(fp: str, proj: Path, cfg: dict[str, object], graph: Path) -> bool:
         )
         return True
 
-    _write_state(proj, {"pending": pending, "reported": reported, "graph_stamp": stamp})
+    _write(proj, {"pending": pending, "reported": reported, "graph_stamp": stamp})
 
     # Signal 2: enough mapped files have changed that descriptions may have drifted.
     # `or 5` before the coercion, not after: a falsy `nudge_every` has always
     # meant "unset", and this line is fixing a crash, not redefining the config.
-    every = max(1, _as_int(cfg.get("nudge_every") or 5, 5))
+    every = max(1, as_int(cfg.get("nudge_every") or 5, 5))
     if pending % every == 0:
         _emit(
             f"codebase-kg: {pending} source edit(s) since {graph.name} was last rebuilt. "
@@ -221,14 +180,7 @@ def _check(fp: str, proj: Path, cfg: dict[str, object], graph: Path) -> bool:
 
 
 def main() -> None:
-    try:
-        raw = sys.stdin.read()
-        data = json.loads(raw) if raw.strip() else {}
-        if isinstance(data, dict):
-            _run(data)
-    except Exception:  # noqa: BLE001
-        # An advisory hook must never break an edit. Swallow everything.
-        return
+    run_hook(_run)
 
 
 if __name__ == "__main__":

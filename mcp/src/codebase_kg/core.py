@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, cast
 
-from . import resolve, shim, worker
+from . import cli, resolve, shim, worker
 from .pool import CallError, Pool, Refused, WorkerError
 
 CATALOG: dict[str, Any] = json.loads((Path(__file__).with_name("catalog.json")).read_text(encoding="utf-8"))
@@ -46,7 +46,7 @@ _TYPES: dict[str, type] = {"string": str, "object": dict, "array": list}
 
 
 def dumps(obj: Any) -> str:
-    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+    return cli.dumps(obj, separators=(",", ":"))
 
 
 def _join(where: str, key: str) -> str:
@@ -230,6 +230,5 @@ def classic(core: Core, conn: resolve.Connection | None, msg: dict[str, Any]) ->
         else:
             result = core.call_tool(conn, params.get("name"), params.get("arguments"))
     else:
-        return {"jsonrpc": "2.0", "id": msg["id"],
-                "error": {"code": METHOD_NOT_FOUND, "message": "Method not found"}}
+        return shim.rpc_error(msg["id"], METHOD_NOT_FOUND, "Method not found")
     return {"jsonrpc": "2.0", "id": msg["id"], "result": result}

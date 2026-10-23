@@ -64,35 +64,6 @@ DEFAULT_SESSION_GRACE = 300.0
 TICK = 0.25
 
 
-def idle_timeout(name: str = "CODEBASE_KG_IDLE_TIMEOUT", default: float = DEFAULT_IDLE_TIMEOUT) -> float:
-    raw = os.environ.get(name, "").strip()
-    try:
-        return float(raw) if raw else default
-    except ValueError:
-        return default
-
-
-def _write_private(path: Path, data: bytes) -> None:
-    """Replace `path` atomically with a file only this user can read.
-
-    On Windows the mode bits are ignored; the per-user cache directory's
-    inherited ACL is what keeps the token private there.
-    """
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
-    for _ in range(50):
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            # Windows refuses to replace a file another process has open, and a
-            # shim may be reading the previous state at this instant.
-            time.sleep(0.02)
-    os.replace(tmp, path)
-
-
 class Daemon:
     """When to exit: idle limits, an orphaned state file, or a shutdown request."""
 
@@ -212,10 +183,10 @@ def serve() -> None:
             logger.info("codebase-kg %s already serves port %d; exiting", info["build"], port)
             return
     daemon = Daemon(
-        info["build"], secrets.token_hex(32), idle_timeout(),
+        info["build"], secrets.token_hex(32), shim.env_float("CODEBASE_KG_IDLE_TIMEOUT", DEFAULT_IDLE_TIMEOUT),
         http_port=http_sock.getsockname()[1] if http_sock is not None else None,
-        http_timeout=idle_timeout("CODEBASE_KG_HTTP_IDLE_TIMEOUT", DEFAULT_HTTP_IDLE_TIMEOUT),
-        session_grace=idle_timeout("CODEBASE_KG_SESSION_GRACE", DEFAULT_SESSION_GRACE),
+        http_timeout=shim.env_float("CODEBASE_KG_HTTP_IDLE_TIMEOUT", DEFAULT_HTTP_IDLE_TIMEOUT),
+        session_grace=shim.env_float("CODEBASE_KG_SESSION_GRACE", DEFAULT_SESSION_GRACE),
     )
     limit = max_workers()
     pool = Pool(limit, timeout=call_timeout()) if limit > 0 else None
@@ -233,7 +204,7 @@ def serve() -> None:
                 http_transport.health_reply({**info, "max_workers": limit}, os.getpid()),
                 on_request=daemon.touch, on_shutdown=daemon.stop,
             )
-        _write_private(state, json.dumps({
+        shim.write_atomic(state, json.dumps({
             "version": daemon.version, "port": tcp.port, "pid": os.getpid(), "token": daemon.token,
             "http_port": daemon.http_port,
         }).encode("utf-8"))

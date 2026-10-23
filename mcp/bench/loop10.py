@@ -29,7 +29,7 @@ from fastmcp.client.transports import StdioTransport
 MCP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(MCP_DIR / "src"))
 sys.path.insert(0, str(MCP_DIR / "bench"))
-from cli_vs_mcp import _counters, _process_mb
+from cli_vs_mcp import _counters, _process_mb, emit_report
 from codebase_kg import query
 from codebase_kg.store import CodeGraph
 
@@ -144,10 +144,7 @@ def main() -> int:
     ap.add_argument("--out")
     a = ap.parse_args()
     report = asyncio.run(main_async(str(Path(a.graph).resolve()), a.rounds, a.python))
-    text = json.dumps(report, indent=2)
-    print(text)
-    if a.out:
-        Path(a.out).write_text(text + "\n", encoding="utf-8")
+    emit_report(report, a.out)
     return 0
 
 

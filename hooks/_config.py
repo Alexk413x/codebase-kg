@@ -7,10 +7,14 @@ frontmatter). Everything here is best-effort: callers must treat failures as
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import sqlite3
 import sys
+import tempfile
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 DEFAULTS: dict[str, object] = {
@@ -50,6 +54,87 @@ _IGNORE_LOWER = {d.lower() for d in IGNORE_DIRS}
 
 def project_dir(cwd: str | None) -> Path:
     return Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd or ".").resolve()
+
+
+def norm_path(p: Path) -> str:
+    return os.path.normcase(str(p))
+
+
+def as_int(value: object, default: int, minimum: int | None = None) -> int:
+    """`value` as an int, or `default` when it does not parse or is below `minimum`.
+
+    Settings are user-typed and state comes off disk, so both reach `int()` as
+    arbitrary objects. A raise would silence the hook for that repo with no error.
+    """
+    try:
+        out = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return default
+    return default if minimum is not None and out < minimum else out
+
+
+def norm_root(root: str) -> str:
+    """`root` as a comparable prefix: posix separators, no slashes, `.` folded to ``.
+
+    `.` and `` both mean the whole repo, but a literal `.` is truthy while being
+    a prefix of no repo-relative path -- so every `startswith` against it fails
+    and the graph matches nothing. It hides because the package JOINS paths
+    (`repo / "."` is `repo`) while this file COMPARES them.
+    """
+    out = str(root).strip().replace("\\", "/").strip("/")
+    return "" if out == "." else out
+
+
+def skip_kg(env: Mapping[str, str] | None = None) -> bool:
+    """True when `SKIP_KG` is set to anything but whitespace, as the git hooks read it."""
+    return bool(((env if env is not None else os.environ).get("SKIP_KG") or "").strip())
+
+
+def state_dir(name: str) -> Path:
+    return Path(tempfile.gettempdir()) / name
+
+
+def state_path(name: str, key: str) -> Path:
+    return state_dir(name) / f"{hashlib.sha1(key.encode('utf-8')).hexdigest()[:16]}.json"
+
+
+def read_state(path: Path) -> dict[str, object]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_state(path: Path, state: dict[str, object]) -> bool:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state), encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def emit_deny(reason: str) -> None:
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }))
+
+
+def run_hook(run: Callable[[dict[str, object]], None]) -> None:
+    """Run `run` on the JSON object from stdin. Any error returns silently: a hook
+    that errors must never break the tool call or strand the agent."""
+    try:
+        raw = sys.stdin.read()
+        data = json.loads(raw) if raw.strip() else {}
+        if isinstance(data, dict):
+            run(data)
+    except Exception:  # noqa: BLE001
+        return
 
 
 def _coerce(value: str) -> object:

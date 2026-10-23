@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         return _fail(f"missing argument {exc}")
     finally:
         g.close()
-    print(json.dumps(result, ensure_ascii=False))
+    print(cli.dumps(result))
     return 0
 
 

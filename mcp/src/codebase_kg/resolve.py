@@ -34,6 +34,13 @@ class Connection:
     resolved: Path | None = None
 
 
+def connection(cwd: str | Path | None, graph: str | None) -> Connection | None:
+    """The session that runs in `cwd` with the explicit graph path `graph`, relative to `cwd`; None unless `cwd` is absolute."""
+    if not isinstance(cwd, (str, Path)) or not Path(cwd).is_absolute():
+        return None
+    return Connection(cwd=Path(cwd), explicit=Path(cwd, graph) if graph else None)
+
+
 def from_process(argv: list[str]) -> Connection:
     """The session of a server that serves only the process that started it."""
     if len(argv) > 1 and argv[1].strip():
