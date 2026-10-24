@@ -683,9 +683,13 @@ def spawn_server_outside_job(build: str) -> None:
         f"os.environ.update({env!r});{_SERVER_ENTRY}"
     )
     command = subprocess.list2cmdline([base_python(), "-I", "-S", "-c", code, str(MCP_DIR / "src"), "--serve"])
+    # Without ShowWindow=0 the new python.exe gets a console of its own, and with Windows
+    # Terminal as the default terminal that console opens a blank terminal window.
     create = (
+        "$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0}; "
         "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
-        "-Arguments @{CommandLine=$env:KG_COMMAND; CurrentDirectory=$env:KG_CWD}; exit [int]$r.ReturnValue"
+        "-Arguments @{CommandLine=$env:KG_COMMAND; CurrentDirectory=$env:KG_CWD; ProcessStartupInformation=$si}; "
+        "exit [int]$r.ReturnValue"
     )
     powershell = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
     done = subprocess.run(
