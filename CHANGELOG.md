@@ -2,6 +2,18 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.15.2] — 2026-10-23 — No console window for the server started through WMI
+
+### Fixed
+
+- On Windows with Windows Terminal as the default terminal, each start of the shared server through
+  WMI (`shim.spawn_server_outside_job`, used by the SessionStart hook and `kg_cli.py server start`)
+  opened a blank terminal window titled with the path of `python.exe`, and the window stayed open for
+  the life of the server. `CREATE_NO_WINDOW` on the PowerShell launcher does not reach a process that
+  WMI creates, so the new `python.exe` allocated its own console. The WMI call now passes
+  `Win32_ProcessStartup` with `ShowWindow=0`, which opens no window. The plain start
+  (`shim.spawn_server`) already used `CREATE_NO_WINDOW` and is unchanged.
+
 ## [0.15.1] — 2026-10-23 — Link targets may climb with `..`
 
 ### Fixed

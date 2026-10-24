@@ -823,6 +823,7 @@ def test_the_outside_job_spawner_runs_the_server_through_wmi(
     assert "must-not-reach-the-server" not in line
     assert repr(str(shim.log_path(BUILD)))[1:-1] in line
     assert kwargs["env"]["KG_CWD"] == str(cache)
+    assert "ProcessStartupInformation=$si" in command[-1] and "ShowWindow=[uint16]0" in command[-1]
 
 
 def test_the_outside_job_spawner_reports_a_wmi_failure(cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -832,12 +833,22 @@ def test_the_outside_job_spawner_reports_a_wmi_failure(cache: Path, monkeypatch:
         shim.spawn_server_outside_job(BUILD)
 
 
+def _terminal_pids() -> set[str]:
+    listing = subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         "(Get-Process WindowsTerminal,OpenConsole -ErrorAction SilentlyContinue | ForEach-Object Id) -join ','"],
+        capture_output=True, text=True, timeout=TIMEOUT, check=False, creationflags=shim.NO_WINDOW,
+    ).stdout
+    return set(listing.strip().split(",")) - {""}
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="WMI exists only on Windows")
 def test_the_outside_job_spawner_starts_a_server_that_survives(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cache, port = tmp_path / "cache", _free_port()
     monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(cache))
     monkeypatch.setenv("CODEBASE_KG_PORT", str(port))
     cache.mkdir()
+    terminals = _terminal_pids()
     try:
         shim.spawn_server_outside_job(BUILD)
         deadline = time.monotonic() + TIMEOUT
@@ -845,6 +856,7 @@ def test_the_outside_job_spawner_starts_a_server_that_survives(tmp_path: Path, m
             time.sleep(0.1)
         assert shim.health(port)[0] == shim.OURS
         assert shim.verified_holder(port) is not None
+        assert _terminal_pids() <= terminals, "the server start opened a terminal window"
     finally:
         subprocess.run([sys.executable, "-I", str(CLI), "server", "stop", "--port", str(port)],
                        env={**os.environ, "CODEBASE_KG_CACHE_DIR": str(cache)},
