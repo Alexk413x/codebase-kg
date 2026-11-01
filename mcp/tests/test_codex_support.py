@@ -162,6 +162,15 @@ def test_codex_hooks_use_no_field_codex_ignores_and_no_shell_syntax():
         assert str(hook["commandWindows"]).startswith("py -3 "), hook
 
 
+def test_codex_windows_hooks_read_plugin_root_from_the_powershell_environment():
+    # Codex runs commandWindows in PowerShell, where ${CLAUDE_PLUGIN_ROOT} is an empty
+    # variable, so the script path became C:\hooks\... and every hook exited 1.
+    for _, hook in _codex_commands():
+        text = str(hook["commandWindows"])
+        assert "$env:PLUGIN_ROOT/hooks/" in text, text
+        assert "${CLAUDE_PLUGIN_ROOT}" not in text, text
+
+
 def test_every_codex_hook_script_exists_and_hooks_json_runs_it_too():
     claude = (ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
     for _, hook in _codex_commands():
