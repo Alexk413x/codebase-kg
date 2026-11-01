@@ -2,6 +2,15 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.15.3] — 2026-11-01 — Codex hooks run on Windows
+
+### Fixed
+
+- Under Codex on Windows, every codebase-kg hook exited 1. Codex runs a hook's `commandWindows` in
+  PowerShell, where `${CLAUDE_PLUGIN_ROOT}` is an empty variable, so each script path resolved to
+  `C:\hooks\...`. `hooks/codex-hooks.json` now names the scripts through `$env:PLUGIN_ROOT`, which Codex
+  sets for plugin hooks. The Claude hooks are unchanged.
+
 ## [0.15.2] — 2026-10-23 — No console window for the server started through WMI
 
 ### Fixed
