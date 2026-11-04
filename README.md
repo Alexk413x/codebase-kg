@@ -32,6 +32,10 @@ claude plugin marketplace add Alexk413x/marketplace
 claude plugin install codebase-kg@alexk413x
 ```
 
+For **GitHub Copilot CLI**, use the separate [Copilot setup](copilot/README.md).
+It adds a stdio transport configuration and hook adapter without changing the
+Claude Code or Codex setup.
+
 ## How it works
 
 Each repo gets a committed `knowledge/code_graph.db`. A node is a row:

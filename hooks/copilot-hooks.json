@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "exec": "python",
+        "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/kg_copilot.py", "pre"],
+        "timeoutSec": 20
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "exec": "python",
+        "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/kg_copilot.py", "post"],
+        "timeoutSec": 10
+      }
+    ]
+  }
+}
