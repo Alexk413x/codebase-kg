@@ -271,7 +271,7 @@ codebase-kg/
 ├── templates/
 │   ├── code_graph.template.json
 │   └── codebase-kg.local.md.example
-├── skills/                   # query / build / refresh / audit / link / validate, and setup (user-invoked only)
+├── skills/                   # query / build / refresh / audit / link / validate, and setup
 ├── mcp/
 │   ├── src/codebase_kg/      # the server and the CLIs (module map in mcp/README.md)
 │   ├── launch/               # kg_cli.py (CLI runner), kg-shim and kg-shim.cmd (stdio relay), kg_headers.py (HTTP headers helper)

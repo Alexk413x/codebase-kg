@@ -2,6 +2,30 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.15.4] — 2026-11-08 — Claude can start setup from the SessionStart notice
+
+### Added
+
+- GitHub Copilot CLI support, separate from the Claude Code and Codex entry points: a manifest in
+  `.github/plugin/plugin.json`, a hook adapter in `hooks/copilot-hooks.json`, and
+  `mcp/launch/kg_copilot.py`, which prints a project-scoped stdio MCP configuration so each Copilot
+  session reaches its own repository's graph. See `copilot/README.md`.
+
+### Fixed
+
+- The vendored commit check left an untracked `.githooks/__pycache__/kg_pre_push.cpython-*.pyc` in
+  every repo it ran in, because `kg_pre_commit.py` imports `kg_pre_push.py` from the hooks dir.
+  `kg_pre_commit.py` now turns off bytecode writing before that import. Re-run `/codebase-kg:setup`
+  to re-vendor it, then delete any `__pycache__/` already in the hooks dir.
+
+### Changed
+
+- Claude can start `/codebase-kg:setup` itself. The skill drops `disable-model-invocation`, and its
+  description triggers when the SessionStart notice reports an unwired clone or an older pinned
+  diff driver, or when the user asks to wire, repair or update codebase-kg in a repo. When Claude
+  starts it, the skill lists the committed files and git config it changes and asks before it writes.
+- `setup` pre-approves the CLI runner it uses for merge-conflict resolution, as the other skills do.
+
 ## [0.15.3] — 2026-11-01 — Codex hooks run on Windows
 
 ### Fixed

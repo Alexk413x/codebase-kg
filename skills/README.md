@@ -1,8 +1,9 @@
 # skills/
 
 Seven skills. Each is a `SKILL.md` (third-person trigger description + imperative workflow), with
-the heavy multi-agent procedures pushed into `references/`. `setup` runs only when the user types
-`/codebase-kg:setup` (`disable-model-invocation: true`), because it writes git hooks and git config.
+the heavy multi-agent procedures pushed into `references/`. Claude may start `setup` on its own when
+the SessionStart notice reports an unwired clone or an old diff-driver pin. Because it writes git hooks
+and git config, it then lists the changes and asks before it writes.
 
 | Skill | Use when | Writes? |
 |---|---|---|
@@ -12,7 +13,7 @@ the heavy multi-agent procedures pushed into `references/`. `setup` runs only wh
 | [`link`](link/SKILL.md) | establish/maintain cross-codebase parity (counterpart links) | rebuilds both graphs |
 | [`validate`](validate/SKILL.md) | cheap deterministic drift check against source | report only |
 | [`query`](query/SKILL.md) | "where does X live", "what depends on X" — find code through the graph | report only |
-| [`setup`](setup/SKILL.md) | wire the git hooks, the textconv driver and `install.sh` into a repo (user-invoked only) | writes the hooks dir (default `.githooks/`), `.gitattributes`, git config |
+| [`setup`](setup/SKILL.md) | wire the git hooks, the textconv driver and `install.sh` into a repo, or repair the wiring the SessionStart notice reports (asks first when Claude starts it) | writes the hooks dir (default `.githooks/`), `.gitattributes`, git config |
 
 The six graph skills lean on the MCP query surface and the schema (`../SCHEMA.md`). List **both** server names
 in `allowed-tools` — `mcp__codebase-kg__*` when the server is installed directly and

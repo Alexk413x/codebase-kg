@@ -41,6 +41,9 @@ import os
 import sys
 from pathlib import Path
 
+# This file runs inside host repos: without it, importing kg_pre_push writes an
+# untracked __pycache__/ into their hooks dir.
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from kg_pre_push import (
