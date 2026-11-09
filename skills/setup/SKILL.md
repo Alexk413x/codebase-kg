@@ -1,8 +1,9 @@
 ---
 name: setup
-description: Wires codebase-kg into the current repo in one pass. It installs pre-commit and pre-push staleness checks, the textconv driver that makes the committed graph readable in git diffs, and a committed install.sh so every other clone gets the same wiring from one command. It is idempotent, leaves existing hooks intact, and is safe to re-run to repair or update the wiring. Runs only when the user invokes /codebase-kg:setup.
+description: Wires codebase-kg into the current repo in one pass. It installs pre-commit and pre-push staleness checks, the textconv driver that makes the committed graph readable in git diffs, and a committed install.sh so every other clone gets the same wiring from one command. It is idempotent, leaves existing hooks intact, and is safe to re-run to repair or update the wiring. This skill writes committed files and git config, so it asks before writing when Claude starts it. Use when the codebase-kg SessionStart notice reports that this clone is not wired for the graph or that its diff driver pins an older release, or when the user asks to wire, set up, repair or update codebase-kg in a repo.
 argument-hint: "[repo path | empty = current repo]"
-disable-model-invocation: true
+allowed-tools:
+  - Bash(uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" *)
 ---
 
 # /codebase-kg:setup
@@ -10,6 +11,19 @@ disable-model-invocation: true
 One command for everything a repo needs. Run it after `/codebase-kg:build`, and again whenever the
 wiring needs repairing — every step below is idempotent and none of them overwrite work that is
 already there.
+
+## Ask before writing when you start this yourself
+
+If you started this skill yourself (for example, from the SessionStart notice) and the user did not
+type `/codebase-kg:setup`, write nothing until the user agrees. Run the read-only checks first
+(steps 1 and 3, and the `git check-attr` in step 7). Then list what this run changes in this repo:
+
+- **Committed files:** the hooks dir (default `.githooks/`): `kg_pre_commit.py`, `kg_pre_push.py`,
+  `install.sh`, and a new or edited `pre-commit` and `pre-push`; the `.gitattributes` line for the
+  graph; and the exec-bit mode changes in the index.
+- **Local git config** (`.git/config`): `core.hooksPath` and the three `diff.codegraph.*` settings.
+
+Ask whether to go ahead, and continue only if the user says yes.
 
 ## What is already handled without this command
 

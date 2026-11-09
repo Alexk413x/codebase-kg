@@ -46,7 +46,7 @@ These are locked — change them only with a deliberate reason.
 |---|---|---|
 | **Storage format** | Committed SQLite (`code_graph.db`) | Constant-time open, write-time integrity, persisted FTS5. Supersedes "Markdown-as-source". |
 | **Human readability** | Explicitly a non-goal | The artifact is AI-consumed. It is not read raw. A textconv driver renders it as JSON in `git diff` for review, but no workflow depends on it. |
-| **Plugin name** | `codebase-kg` | Unchanged **on purpose** — see "The rename we didn't do". Skills `/codebase-kg:query\|build\|refresh\|audit\|link\|validate`, plus `setup`, which only the user invokes; MCP server `codebase-kg`. |
+| **Plugin name** | `codebase-kg` | Unchanged **on purpose** — see "The rename we didn't do". Skills `/codebase-kg:query\|build\|refresh\|audit\|link\|validate`, plus `setup`, which asks before writing when Claude starts it; MCP server `codebase-kg`. |
 | **MCP tool names** | `kg_*` | Unchanged, same reason. |
 | **Repo layout** | Standalone plugin at root | `.claude-plugin/plugin.json`. It installs from the `alexk413x` marketplace (`Alexk413x/marketplace`), which reads this repo's `release` branch. |
 | **Graph location** | Per-repo `knowledge/code_graph.db` | Always `knowledge/` (no repo-root fallback); override per clone via `graph_path` in `.local.md`. |

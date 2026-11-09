@@ -94,10 +94,14 @@ def test_there_are_skills_to_check() -> None:
     assert len(SKILLS) >= 7, [p.parent.name for p in SKILLS]
 
 
-def test_setup_runs_only_when_the_user_invokes_it() -> None:
-    """Setup writes git hooks and git config, so Claude must not start it alone."""
+def test_setup_asks_before_writing_when_claude_starts_it() -> None:
+    """Setup writes git hooks and git config. Claude may start it from the
+    SessionStart notice, but only if the body makes it ask first."""
     setup = ROOT / "skills" / "setup" / "SKILL.md"
-    assert frontmatter(setup).get("disable-model-invocation") is True
+    assert "disable-model-invocation" not in frontmatter(setup)
+    body = setup.read_text(encoding="utf-8").split("---", 2)[2]
+    assert "## Ask before writing when you start this yourself" in body
+    assert "continue only if the user says yes" in body
 
 
 def test_no_feature_appears_in_the_slash_menu_twice() -> None:

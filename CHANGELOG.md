@@ -2,6 +2,16 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [Unreleased]
+
+### Changed
+
+- Claude can start `/codebase-kg:setup` itself. The skill drops `disable-model-invocation`, and its
+  description triggers when the SessionStart notice reports an unwired clone or an older pinned
+  diff driver, or when the user asks to wire, repair or update codebase-kg in a repo. When Claude
+  starts it, the skill lists the committed files and git config it changes and asks before it writes.
+- `setup` pre-approves the CLI runner it uses for merge-conflict resolution, as the other skills do.
+
 ## [0.15.3] — 2026-11-01 — Codex hooks run on Windows
 
 ### Fixed
