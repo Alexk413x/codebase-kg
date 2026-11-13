@@ -306,17 +306,14 @@ LAUNCH_TAIL = '.cmd"; exit $LASTEXITCODE'
 
 
 def _launch_commands() -> list[tuple[str, str]]:
-    """Every command string the plugin hands a shell: the hook commands and the headers helper."""
+    """Every hook command string the plugin hands a shell."""
     import json
 
-    found = [
+    return [
         ("hooks.json", str(h["command"]))
         for groups in json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))["hooks"].values()
         for group in groups for h in group["hooks"]
     ]
-    mcp = json.loads((ROOT / "mcp" / "claude.mcp.json").read_text(encoding="utf-8"))
-    found.append(("claude.mcp.json", str(mcp["mcpServers"]["codebase-kg"]["headersHelper"])))
-    return found
 
 
 def test_every_command_sources_one_launcher_that_runs_in_sh_and_powershell() -> None:
@@ -326,7 +323,7 @@ def test_every_command_sources_one_launcher_that_runs_in_sh_and_powershell() -> 
     PowerShell 5.1 has no `&&`, and the interpreter is chosen inside the launcher. The tail hands
     the script's exit code to PowerShell."""
     commands = _launch_commands()
-    assert len(commands) == 32
+    assert len(commands) == 31
     for source, command in commands:
         assert command.startswith(LAUNCH_PREFIX) and command.endswith(LAUNCH_TAIL), (source, command)
         name = command[len(LAUNCH_PREFIX):-len(LAUNCH_TAIL)] + ".cmd"
@@ -514,6 +511,134 @@ def test_the_launcher_finds_the_script_in_sh_without_the_variable(tmp_path: Path
                           capture_output=True, timeout=30, check=False)
     assert done.returncode == 3, done.stderr
     assert done.stdout.decode().strip() == 'got:{"k": 4}'
+
+
+# --- the headers helper -------------------------------------------------------
+HEADERS_LAUNCHER = '"${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_headers.cmd"'
+HELPER_SHELLS = ["cmd", "powershell", "pwsh", "sh", "bash", "dash"]
+
+
+def _headers_helper() -> str:
+    import json
+
+    mcp = json.loads((ROOT / "mcp" / "claude.mcp.json").read_text(encoding="utf-8"))
+    return str(mcp["mcpServers"]["codebase-kg"]["headersHelper"])
+
+
+def test_the_headers_helper_runs_the_launcher_in_cmd_and_sources_it_in_sh() -> None:
+    """Claude Code starts the headers helper with Node's `shell: true`: `cmd.exe` on Windows and
+    `/bin/sh` elsewhere, never Git Bash. `cmd.exe` cannot run `. "<file>"`. It reads
+    `call="<file>"; ...` as `call "<file>"`, because `=` and `;` separate words there, and the
+    launcher ignores the words it is passed. `sh` reads it as a variable assignment, then sources
+    the launcher. PowerShell reports the first statement as an unknown command and runs the second."""
+    assert _headers_helper() == f"call={HEADERS_LAUNCHER}; . {HEADERS_LAUNCHER}; exit $LASTEXITCODE"
+
+
+def _run_helper(shell: str, root: Path, env: dict[str, str]):
+    """Run the configured headers helper with the placeholder already replaced, as Claude Code does."""
+    import os
+    import shutil
+    import subprocess
+
+    windows_only = shell in ("cmd", "powershell", "pwsh")
+    if windows_only and sys.platform != "win32":
+        pytest.skip(f"{shell} on Windows only")
+    if shell == "cmd":
+        # Node's `shell: true` on Windows: ComSpec, `/d /s /c`, the command quoted once and
+        # passed verbatim, which subprocess does with a string argument.
+        comspec = os.environ.get("ComSpec", "cmd.exe")
+        command = _headers_helper().replace("${CLAUDE_PLUGIN_ROOT}", str(root))
+        args: object = f'"{comspec}" /d /s /c "{command}"'
+    else:
+        exe = shutil.which(shell)
+        if exe is None:
+            pytest.skip(f"no {shell}")
+        command = _headers_helper().replace(
+            "${CLAUDE_PLUGIN_ROOT}", str(root) if windows_only else root.as_posix())
+        args = [exe, "-NoProfile", "-NonInteractive", "-Command", command] if windows_only else [exe, "-c", command]
+    return subprocess.run(args, env=env, cwd=root, capture_output=True, timeout=60, check=False)
+
+
+def _helper_plugin(tmp_path: Path, folder: str) -> tuple[Path, Path, dict[str, str]]:
+    """The headers launcher in a plugin folder named `folder`, a stand-in `kg_headers.py` that
+    records each run and prints one JSON object, and no `CLAUDE_PLUGIN_ROOT` in the environment."""
+    import os
+    import shutil
+
+    root = tmp_path / folder
+    (root / "mcp" / "launch" / "run").mkdir(parents=True)
+    shutil.copy(RUN / "kg_headers.cmd", root / "mcp" / "launch" / "run" / "kg_headers.cmd")
+    runs = tmp_path / "runs"
+    (root / "mcp" / "launch" / "kg_headers.py").write_bytes((
+        "import json\n"
+        f"open({str(runs)!r}, 'a').write('x')\n"
+        "print(json.dumps({'X-Codebase-KG-Client': 'c'}))\n"
+    ).encode())
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PLUGIN_ROOT"}
+    return root, runs, env
+
+
+@pytest.mark.parametrize("shell", HELPER_SHELLS)
+@pytest.mark.parametrize("folder", ["plugin", "plug in (x86) & co"])
+def test_the_headers_helper_prints_one_json_object_once_in_each_shell(
+    tmp_path: Path, shell: str, folder: str
+) -> None:
+    import json
+
+    root, runs, env = _helper_plugin(tmp_path, folder)
+    done = _run_helper(shell, root, env)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == {"X-Codebase-KG-Client": "c"}
+    assert runs.read_text(encoding="utf-8") == "x"
+    if shell not in ("powershell", "pwsh"):
+        assert done.stderr == b""
+
+
+def test_the_headers_helper_says_so_in_cmd_when_no_interpreter_starts(tmp_path: Path) -> None:
+    import os
+
+    root, runs, env = _helper_plugin(tmp_path, "plug in")
+    env["PATH"] = os.path.join(os.environ.get("SystemRoot", "C:/Windows"), "System32")
+    done = _run_helper("cmd", root, env)
+    assert done.returncode == 127 and b"no working Python" in done.stderr
+    assert done.stdout == b""
+    assert not runs.exists()
+
+
+@pytest.mark.parametrize("shell", ["cmd", "sh"])
+def test_the_real_headers_helper_prints_its_headers_through_the_platform_shell(shell: str) -> None:
+    """The plugin's own `kg_headers.py`, through the shell Claude Code uses on this platform. A
+    program that is not codebase-kg answers on the port, so the helper sends no token and does not
+    wait for a server."""
+    import http.server
+    import json
+    import os
+    import threading
+
+    if (shell == "cmd") != (sys.platform == "win32"):
+        pytest.skip("Claude Code uses cmd.exe on Windows and sh elsewhere")
+
+    class NotFound(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_error(404)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    other = http.server.HTTPServer(("127.0.0.1", 0), NotFound)
+    threading.Thread(target=other.serve_forever, daemon=True).start()
+    try:
+        env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_PLUGIN_ROOT", "CODEBASE_KG_PATH")}
+        env["CLAUDE_CODE_MCP_SERVER_URL"] = f"http://127.0.0.1:{other.server_address[1]}/mcp"
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        done = _run_helper(shell, ROOT, env)
+    finally:
+        other.shutdown()
+        other.server_close()
+    assert done.returncode == 0, done.stderr
+    assert len(done.stdout.decode().strip().splitlines()) == 1
+    headers = json.loads(done.stdout)
+    assert set(headers) == {"X-Codebase-KG-Client"}, headers
 
 
 def test_the_async_credit_hook_says_why_it_is_async() -> None:

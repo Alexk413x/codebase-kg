@@ -2,6 +2,29 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.16.1] — 2026-11-13 — The MCP server connects on Windows again
+
+### Fixed
+
+- On Windows the `codebase-kg` MCP server never connected: `/mcp` showed "requires authentication",
+  and Authenticate and Reconnect both failed. Claude Code starts the `headersHelper` with `cmd.exe`
+  on Windows, not with the Git Bash or PowerShell it uses for hooks, and `cmd.exe` cannot run the
+  0.16.0 command `. "<launcher>"`. The helper printed nothing, so Claude Code sent no bearer token
+  and the server answered 403. The `headersHelper` is now
+  `call="${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_headers.cmd"; . "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_headers.cmd"; exit $LASTEXITCODE`.
+  `cmd.exe` reads the first statement as `call "<launcher>"`. `sh` reads it as a variable
+  assignment and then sources the launcher. PowerShell runs the second statement. Each prints one
+  JSON object and exits 0; PowerShell also writes an unknown-command error for `call` to stderr. A
+  plugin folder whose path holds `^` or `%` does not work in `cmd.exe`. After you update, restart
+  Claude Code or run Reconnect in `/mcp`.
+- Hook commands are unchanged: Claude Code runs them in `sh`, Git Bash or PowerShell, never in
+  `cmd.exe`.
+- New tests run the configured `headersHelper` string through `cmd.exe` the way Node's
+  `shell: true` starts it, and through `sh`, `bash`, `dash`, Windows PowerShell and PowerShell 7,
+  with the placeholder replaced. Each run must print one JSON object and exit 0.
+- The 0.16.0 release renamed an older `[Unreleased]` heading in this file to the 0.16.0 title.
+  The heading reads `[Unreleased]` again.
+
 ## [0.16.0] — 2026-11-12 — Plugin updates need no setup re-run, and the hooks run in PowerShell
 
 ### Changed
@@ -19,8 +42,9 @@ All notable changes to the `codebase-kg` plugin.
   path in `[mcp_servers.codebase-kg]`, and a codebase-kg `CLAUDE_PLUGIN_ROOT` in
   `[shell_environment_policy.set]`, to the installed plugin's folder when the old folder is missing
   or holds an older release. The first session after an update may need a restart of Codex.
-- Hook commands in `hooks.json`, and the `headersHelper` in `mcp/claude.mcp.json`, now run in
-  Windows PowerShell (Windows without Git Bash) as well as in `sh` and Git Bash. Each is
+- Hook commands in `hooks.json` now run in Windows PowerShell (Windows without Git Bash) as well
+  as in `sh` and Git Bash. The `headersHelper` in `mcp/claude.mcp.json` got the same command, which
+  fails on Windows, where Claude Code runs it in `cmd.exe`; 0.16.1 fixes that. Each hook command is
   `. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/<script>.cmd"; exit $LASTEXITCODE`: one launcher file that `sh` sources and
   PowerShell runs through `cmd.exe`. It picks one interpreter (`py -3`, else a `python3` that
   starts, else `python`) and runs the script once; a script that exited non-zero used to run again
@@ -1777,7 +1801,7 @@ JSON round trip, and migration fidelity against the fixtures.
 
 - **`kg-audit` skill frontmatter now parses.** Its `description` was an unquoted YAML scalar containing `: ` (`…the deep, SEMANTIC, multi-agent sweep: it partitions the KG…`), which YAML reads as a key/value separator. The frontmatter failed to parse, and Claude Code drops **all** frontmatter fields when that happens — so the skill loaded with no `name`, `description`, or `allowed-tools`, meaning it could not trigger reliably and its tool allowlist was silently lost. Converted to a `>-` block scalar; text unchanged.
 
-## [0.16.0] — 2026-11-12 — Plugin updates need no setup re-run, and the hooks run in PowerShell
+## [Unreleased]
 
 ### Fixed — 2026-07-03 — code-review findings: live-reloading server, push-accurate gate, loader hardening
 
