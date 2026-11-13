@@ -34,6 +34,7 @@ from codebase_kg.writer import build
 SRC = Path(__file__).resolve().parent.parent / "src"
 SHIM = SRC / "codebase_kg" / "shim.py"
 BUILD = shim.server_build()
+LAUNCHER = '. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/'
 TIMEOUT = 30.0
 
 def _sha(p: Path) -> str:
@@ -346,7 +347,7 @@ def _shim(cwd: Path, cache: Path, **env: str) -> subprocess.Popen[bytes]:
             if k not in {"CODEBASE_KG_PATH", "CODEBASE_KG_SHARED", "VIRTUAL_ENV"}}
     full.update({"CODEBASE_KG_CACHE_DIR": str(cache), "CODEBASE_KG_IDLE_TIMEOUT": "60", **env})
     return subprocess.Popen(
-        [shutil.which("python3") or sys.executable, str(SHIM)], cwd=cwd, env=full,
+        [sys.executable, str(SHIM)], cwd=cwd, env=full,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
 
@@ -517,10 +518,7 @@ def test_claude_mcp_json_declares_the_http_server_with_the_headers_helper():
     entry = json.loads((root / "mcp" / "claude.mcp.json").read_text(encoding="utf-8"))["mcpServers"]["codebase-kg"]
     assert entry["type"] == "http"
     assert entry["url"] == "http://127.0.0.1:${user_config.server_port}/mcp"
-    helper = '"${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_headers.py"'
-    assert entry["headersHelper"] == (
-        f"command -v py >/dev/null 2>&1 && py -3 {helper} || python3 {helper} || python {helper}"
-    )
+    assert entry["headersHelper"] == f'{LAUNCHER}kg_headers.cmd"; exit $LASTEXITCODE'
     assert (root / "mcp" / "launch" / "kg_headers.py").is_file()
     manifest = json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert manifest["userConfig"]["server_port"]["type"] == "number"
@@ -541,6 +539,42 @@ def test_the_platform_shim_launchers_stay_for_stdio_clients():
     assert (launch / ".." / "src" / "codebase_kg" / "shim.py").resolve().is_file()
     assert posix.startswith("#!/bin/sh") and "\r\n" not in posix
     assert "py -3" in windows and "\r\n" in windows
+
+
+def _launcher_run(tmp_path: Path, stubs: dict[str, str], *args: str) -> subprocess.CompletedProcess[bytes]:
+    sh = shutil.which("sh")
+    if sh is None:
+        pytest.skip("no POSIX shell")
+    launcher = Path(__file__).resolve().parents[2] / "mcp" / "launch" / "kg-shim"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, body in stubs.items():
+        (bin_dir / name).write_bytes(body.encode())
+        (bin_dir / name).chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir.as_posix()}{os.pathsep}{os.environ.get('PATH', '')}"}
+    return subprocess.run([sh, str(launcher), *args], env=env, capture_output=True, timeout=30, check=False)
+
+
+def test_the_posix_shim_launcher_skips_a_python3_that_does_not_start(tmp_path: Path) -> None:
+    """The Microsoft Store `python3` stub exists on PATH and fails when run, so the
+    launcher probes each candidate (`py -3`, `python3`, `python`) before `exec`."""
+    out = tmp_path / "ran"
+    fail = "#!/bin/sh\nexit 9\n"
+    stubs = {
+        "py": fail,
+        "python3": "#!/bin/sh\necho 'Python was not found' >&2\nexit 9\n",
+        "python": f'#!/bin/sh\n[ -n "$1" ] && [ "$1" != -c ] && echo "$@" > "{out.as_posix()}"\nexit 0\n',
+    }
+    done = _launcher_run(tmp_path, stubs, "one", "two")
+    assert done.returncode == 0, done.stderr
+    ran = out.read_text(encoding="utf-8").split()
+    assert ran[0].endswith("shim.py") and ran[-2:] == ["one", "two"]
+
+
+def test_the_posix_shim_launcher_says_so_when_no_interpreter_starts(tmp_path: Path) -> None:
+    fail = "#!/bin/sh\nexit 9\n"
+    done = _launcher_run(tmp_path, {"py": fail, "python3": fail, "python": fail})
+    assert done.returncode == 127 and b"no working Python" in done.stderr
 
 
 def test_the_plugin_has_no_top_level_bin_directory():
@@ -564,7 +598,7 @@ def test_the_shim_run_as_a_file_skips_its_own_folder_on_sys_path(tmp_path: Path)
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
     env["CODEBASE_KG_SHARED"] = "0"
     done = subprocess.run(
-        [shutil.which("python3") or sys.executable, str(folder / "shim.py")], cwd=tmp_path,
+        [sys.executable, str(folder / "shim.py")], cwd=tmp_path,
         env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=TIMEOUT, check=False
     )
     assert b"shadowed the stdlib" not in done.stderr, done.stderr.decode("utf-8", "replace")

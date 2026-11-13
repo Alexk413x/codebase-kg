@@ -128,14 +128,16 @@ command, so they need no extra permission.
 
 A write runs against a private copy of the file, inside one transaction, and the copy replaces the
 original only after `kg_validate` confirms it introduced no new finding. So a rejected edit leaves
-the committed graph **byte-identical** — not rolled back, never opened for writing.
+the committed graph **byte-identical** — not rolled back, never opened for writing. An accepted
+edit is rewritten through the same build as `export` → `build`, so the file it leaves is byte-identical
+to a rebuild of its own content, and a git diff shows only what the edit changed.
 
 ## The server
 
 One server process per machine and build serves every session. Claude Code and Codex reach it over
 HTTP at `http://127.0.0.1:47821/mcp`; other stdio clients, and Codex when you choose the fallback,
 launch `mcp/launch/kg-shim`, which relays stdio to the same process over a loopback socket. The server
-imports only the Python standard library: it runs on your Python 3.10 or later with no venv, starts
+imports only the Python standard library: it runs on your Python 3.9 or later with no venv, starts
 in about 0.2 s and holds about 25 MB while idle.
 
 - **Starting it.** A `SessionStart` hook starts the server when nothing answers `GET /health` on the
@@ -143,6 +145,9 @@ in about 0.2 s and holds about 25 MB while idle.
   then gives up for that session. On Windows the hook starts the server outside the host's job object
   when WMI allows it, so the host cannot end the server with the session. To start the server by hand,
   run `kg_cli.py server start`. It waits up to 15 s for the server to answer.
+- **Which shell.** Claude Code runs the hook commands and the headers helper in `sh`, Git Bash or, on
+  Windows without Git Bash, PowerShell. One command works in all of them; see "How a hook starts" in
+  [hooks/README.md](hooks/README.md).
 - **Which repo.** The server asks Claude Code for the session's roots on the first tool call and
   resolves the graph from the first root, as a shim resolves it from its cwd. `CODEBASE_KG_PATH`
   still names a graph explicitly. Codex opens with a classic `initialize` and cannot answer a roots
@@ -156,7 +161,10 @@ in about 0.2 s and holds about 25 MB while idle.
   arguments, because Codex gives the helper no environment and expands no variable in the command.
   The helper prints the bearer token and starts the server when nothing serves the port. Add
   `--port N` or `--home DIR` to `codex-config` to print a table for another port or cache folder.
-  The path in the table holds the plugin version, so run the command again after each update. If
+  The path in the table holds the plugin version. You paste the table once: after an update, the
+  Codex SessionStart hook moves the path, and a codebase-kg `CLAUDE_PLUGIN_ROOT` set as below, to
+  the new plugin folder and prints one line. It moves a path only when its folder is missing or
+  holds an older release. If
   the HTTP table does not work on your machine, run `codex-config --stdio` and paste that table
   instead: it starts one small relay process per session and needs no HTTP server or `py`.
   Codex sets `CLAUDE_PLUGIN_ROOT` for plugin hooks but not for the commands an agent runs, and the
@@ -170,6 +178,9 @@ in about 0.2 s and holds about 25 MB while idle.
   [shell_environment_policy.set]
   CLAUDE_PLUGIN_ROOT = '/absolute/path/to/codebase-kg'
   ```
+
+  `.codex/config.toml.example` in the plugin folder holds this same table, to copy to a gitignored
+  `.codex/config.toml` when you work on the plugin itself.
 - **Port.** The plugin setting `server_port` (default 47821) moves it. When another program holds
   the port, the hook prints one line naming the setting. A newer codebase-kg build takes the port
   from an older one; an older build leaves a newer one running.
@@ -258,6 +269,13 @@ codebase-kg/
 │   └── plugin.json           # plugin manifest (name: codebase-kg)
 ├── .codex-plugin/
 │   └── plugin.json           # Codex manifest; names hooks/codex-hooks.json
+├── .codex/
+│   └── config.toml.example   # a Codex config table to copy from
+├── .github/
+│   ├── plugin/plugin.json    # GitHub Copilot CLI manifest; names hooks/copilot-hooks.json
+│   └── workflows/release.yml # release automation
+├── copilot/                  # Copilot CLI setup notes (README.md)
+├── evals/                    # eval cases for the skills (build, query, refresh, validate triggers), with fixtures and mocks
 ├── SCHEMA.md                 # ← the spec: node shape, anchors, parity, the description contract
 ├── README.md
 ├── CHANGELOG.md
@@ -274,9 +292,9 @@ codebase-kg/
 ├── skills/                   # query / build / refresh / audit / link / validate, and setup
 ├── mcp/
 │   ├── src/codebase_kg/      # the server and the CLIs (module map in mcp/README.md)
-│   ├── launch/               # kg_cli.py (CLI runner), kg-shim and kg-shim.cmd (stdio relay), kg_headers.py (HTTP headers helper)
+│   ├── launch/               # kg_cli.py (CLI runner), kg-shim and kg-shim.cmd (stdio relay), kg_headers.py (HTTP headers helper), kg_copilot.py (Copilot CLI stdio configuration printer), run/ (one launcher per hook script and for kg_headers.py)
 │   └── claude.mcp.json       # registers the HTTP endpoint, with kg_headers.py as the headersHelper
-├── hooks/                    # Claude Code and Codex hooks: the search gate, the push gate, the post-edit nudge, the unwired-clone notice, the server start, the session end
+├── hooks/                    # Claude Code, Codex and Copilot CLI hooks: the search gate, the push gate, the post-edit nudge, the unwired-clone notice, the server start, the session end
 └── git-hooks/                # advisory pre-commit + pre-push staleness checks and install.sh, vendored into any repo (stdlib-only)
 ```
 
@@ -356,9 +374,11 @@ Plain git, POSIX sh and `uv` — no Claude Code, no plugin install. Idempotent. 
 (never a local plugin-cache path, which resolves on one machine and breaks on the next update), and
 then probes the driver against the real graph rather than trusting the value it just wrote.
 
-The plugin's `SessionStart` hook prints one line in a clone that has not run it. It only prints — a
-plugin the user installed may suggest, but wiring `core.hooksPath` for them would route around the
-protection git is providing.
+The plugin's `SessionStart` hook prints one line in a clone that has not run it. It does not wire
+the clone — a plugin the user installed may suggest, but wiring `core.hooksPath` for them would
+route around the protection git is providing. In a clone that is wired, the hook keeps the driver
+current: after a plugin update it moves the release the driver pins to the installed one, once that
+tag is published, and prints one line. A plugin update needs no re-run of `/codebase-kg:setup`.
 
 Neither checks a date. An earlier version blocked pushes when the graph's `refreshed:` header wasn't
 today; that measured whether someone edited the file, not whether the nodes matched the code — and
@@ -367,6 +387,20 @@ it went wrong in practice. See
 
 Because refresh reads the peer graph, two linked repos stay **eventually consistent**: each side
 reconciles parity when *it* commits, so you only ever manage one repo's commit at a time.
+
+## Privacy
+
+The plugin collects nothing and has no telemetry. The graph is a file in your repo, and the MCP
+server listens on `127.0.0.1` only, behind a token kept in your user cache folder.
+
+It contacts the network in two cases, both to the plugin's own GitHub repository:
+
+- Git runs the graph diff driver through `uvx`, which downloads the pinned codebase-kg release the
+  first time and then uses its cache.
+- After a plugin update, the SessionStart hook runs one `git ls-remote` to confirm that the new
+  release tag is published before it moves the diff driver's pin.
+
+Neither sends your code or your graph anywhere.
 
 ## License
 

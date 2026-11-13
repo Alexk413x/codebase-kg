@@ -174,9 +174,9 @@ def test_codex_windows_hooks_read_plugin_root_from_the_powershell_environment():
 def test_every_codex_hook_script_exists_and_hooks_json_runs_it_too():
     claude = (ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
     for _, hook in _codex_commands():
-        script = str(hook["command"]).split("/hooks/")[1].rstrip('"')
+        script = str(hook["command"]).split("/hooks/")[1].split('"')[0]
         assert (ROOT / "hooks" / script).is_file(), script
-        assert script in claude, script
+        assert f"/mcp/launch/run/{script.removesuffix('.py')}.cmd" in claude, script
 
 
 def test_codex_matchers_name_only_tools_codex_reports():

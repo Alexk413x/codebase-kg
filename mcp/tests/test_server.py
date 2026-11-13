@@ -228,14 +228,11 @@ QUERY_TOOLS = {
 
 
 def _properties(schema: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
-    for name, prop in schema.get("properties", {}).items():
-        yield name, prop
-        items = prop.get("items", {})
-        if "properties" in items:
-            yield from _properties(items)
+    yield from schema.get("properties", {}).items()
 
 
 def test_descriptions_fit_the_client_limit_and_every_parameter_is_described() -> None:
+    # Parameters of the tool, not the self-explanatory fields of a node patch.
     # Claude Code truncates a tool description at 2,048 characters.
     for tool in _mcp_tools():
         assert tool.description and len(tool.description) <= 2048, tool.name

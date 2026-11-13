@@ -52,6 +52,7 @@ import sys
 import time
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -145,7 +146,7 @@ def _prune(directory: Path) -> None:
     worth a failure, and a leftover file only costs a few bytes."""
     cutoff = time.time() - _STATE_TTL
     try:
-        for f in [*directory.glob("*.json"), *directory.glob("calls/*")]:
+        for f in [*directory.glob("*.json"), *directory.glob(".*.tmp"), *directory.glob("calls/*")]:
             if f.stat().st_mtime < cutoff:
                 f.unlink()
     except OSError:
@@ -310,10 +311,23 @@ SERVER_DOWN_MESSAGE = (
 )
 
 
+# One run of the hook loads `shim.py` at most once: `_run` opens this dict, and the
+# probe and the notice share the module. Outside a run nothing is cached.
+_run_cache: dict[str, Any] | None = None
+
+
+def _shim() -> Any:
+    if _run_cache is None:
+        return load_shim()
+    if "shim" not in _run_cache:
+        _run_cache["shim"] = load_shim()
+    return _run_cache["shim"]
+
+
 def server_answers() -> bool:
     """False only when the shared server's port is known and nothing answers as codebase-kg there."""
     try:
-        shim = load_shim()
+        shim = _shim()
         port = shim.http_port()
         return port == 0 or shim.health(port, timeout=0.5)[0] == shim.OURS
     except Exception:  # noqa: BLE001 - a failed probe keeps the gate on
@@ -321,7 +335,7 @@ def server_answers() -> bool:
 
 
 def _server_down_message() -> str:
-    shim = load_shim()
+    shim = _shim()
     root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parents[1])
     return SERVER_DOWN_MESSAGE.format(port=shim.http_port(), cli=root / "mcp" / "launch" / "kg_cli.py")
 
@@ -469,6 +483,15 @@ def _deny(
 
 
 def _run(data: dict[str, object]) -> None:
+    global _run_cache
+    _run_cache = {}
+    try:
+        _gate(data)
+    finally:
+        _run_cache = None
+
+
+def _gate(data: dict[str, object]) -> None:
     tool = data.get("tool_name")
     if not isinstance(tool, str) or not tool:
         return
@@ -480,7 +503,9 @@ def _run(data: dict[str, object]) -> None:
     cfg = load_config(proj)
 
     if _KG_TOOL.match(tool):
-        _grant_credit(proj, session, cfg)
+        # No graph, nothing to gate: leave no state behind.
+        if find_graph(proj, cfg) is not None:
+            _grant_credit(proj, session, cfg)
         return
 
     graph = _graph_if_gated(tool, tool_input, proj, cfg)

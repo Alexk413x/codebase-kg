@@ -25,6 +25,10 @@ nothing when a textconv command cannot resolve — it falls back silently.
    | `git-hooks/install.sh` | `KG_VERSION` default |
    | `mcp/uv.lock` | the `codebase-kg` entry (uv rewrites it) |
 
+   When `SCHEMA_VERSION` in `mcp/src/codebase_kg/schema.py` changes, also add the new schema
+   and this release to `SCHEMA_SINCE` in `hooks/kg_session_start.py`. The SessionStart hook
+   uses it to report a diff driver that is pinned too low to read the graph.
+
 2. **Write the changelog entry** at the top of `CHANGELOG.md`, above the previous
    release. Name the defect and what it cost, not the diff.
 
@@ -41,6 +45,13 @@ nothing when a textconv command cannot resolve — it falls back silently.
 
    `--scaffold` runs each case's `scaffold.sh`. Without it the query cases have no graph to query,
    and the query skill correctly skips the graph tools.
+
+   The cases copy `evals/fixtures/app` (a small Kotlin tree with a built `knowledge/code_graph.db`)
+   or `evals/fixtures/nograph` into the working folder. `evals/fixtures/graph.json` is the authoring
+   JSON that `app`'s database was built from; a test checks that building it gives the same nodes.
+   Rebuild the database from it with `kg_cli.py build evals/fixtures/graph.json -o
+   evals/fixtures/app/knowledge/code_graph.db --source-root evals/fixtures/app/src` when the fixture
+   changes. `evals/mocks/codebase-kg` holds the mocked tool list and answers the `mocked` cases use.
 
    `claude plugin eval` refuses the hard links in `mcp/.venv`. Run it on a copy made with
    `git ls-files -co --exclude-standard`, which leaves `.venv` out.

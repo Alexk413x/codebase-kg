@@ -4,7 +4,8 @@
 which git never clones. A repo can commit the checkers, the wrappers and the
 `.gitattributes` line and still hand every fresh checkout inert hooks and
 "Binary files differ", with no error anywhere. This hook notices, says one line,
-and — the property these tests exist for — **changes nothing**.
+and — the property these tests exist for — **wires nothing**. Its one write to
+git config moves the release an installed diff driver pins.
 
 The silence cases matter as much as the message: a hook that speaks in a repo
 that made a different choice is a nag, and gets turned off.
@@ -166,8 +167,11 @@ def test_the_hook_source_runs_no_write_command() -> None:
     assert "--get" in src
     for banned in ("update-index", "check-ignore --", "config --replace"):
         assert banned not in src
-    # Every git call in this hook is a read.
+    # Every `_git` call is a read. The one write is `repin`, which sets the
+    # textconv of a driver that is already installed and nothing else.
     assert src.count('_git(') >= 3
+    assert src.count('"config", "diff.codegraph.textconv", moved') == 1
+    assert '"core.hooksPath",' not in src.replace('"--get", "core.hooksPath"', "")
 
 
 def test_main_is_silent_on_a_malformed_payload(capsys: pytest.CaptureFixture[str]) -> None:
@@ -232,8 +236,120 @@ def test_someone_elses_driver_is_not_ours_to_judge() -> None:
     assert hook.stale_pin("my-own-exporter --json", "0.8.2") is None
 
 
-def test_the_notice_names_setup_for_a_stale_pin(repo: Path) -> None:
+def _wire(repo: Path, textconv: str) -> None:
     _git(repo, "config", "core.hooksPath", ".githooks")
-    _git(repo, "config", "diff.codegraph.textconv", URL.format("0.1.0"))
+    _git(repo, "config", "diff.codegraph.textconv", textconv)
+
+
+def test_a_stale_pin_moves_to_the_installed_release(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked: list[tuple[str, str]] = []
+    monkeypatch.setattr(hook, "plugin_version", lambda: "0.8.2")
+    monkeypatch.setattr(hook, "tag_published", lambda url, v: asked.append((url, v)) or True)
+    _wire(repo, URL.format("0.1.0"))
     msg = hook.advice(repo)
-    assert msg is not None and "/codebase-kg:setup" in msg and "0.1.0" in msg
+    assert msg is not None and "0.1.0" in msg and "0.8.2" in msg and "setup" not in msg
+    assert asked == [("https://github.com/Alexk413x/codebase-kg.git", "0.8.2")]
+    assert _git(repo, "config", "--get", "diff.codegraph.textconv") == URL.format("0.8.2")
+    assert hook.advice(repo) is None  # current now, so the next session is silent
+
+
+def test_a_stale_pin_stays_when_the_new_tag_is_not_published(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A driver that names a missing tag makes `git diff` on the graph fail."""
+    monkeypatch.setattr(hook, "plugin_version", lambda: "0.8.2")
+    monkeypatch.setattr(hook, "tag_published", lambda url, v: False)
+    _wire(repo, URL.format("0.7.0"))
+    assert hook.advice(repo) is None
+    assert _git(repo, "config", "--get", "diff.codegraph.textconv") == URL.format("0.7.0")
+
+
+def test_an_unmoved_pin_that_cannot_read_the_graph_is_reported(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Silence is right only while the old exporter still reads the graph."""
+    monkeypatch.setattr(hook, "plugin_version", lambda: "0.8.2")
+    monkeypatch.setattr(hook, "tag_published", lambda url, v: False)
+    schema = int(hook.graph_meta(repo / "knowledge" / "code_graph.db", "schema_version"))
+    monkeypatch.setattr(hook, "SCHEMA_SINCE", {schema: "0.7.0"})
+    _wire(repo, URL.format("0.6.1"))
+    msg = hook.advice(repo)
+    assert msg is not None and "0.6.1" in msg and "0.7.0" in msg and f"schema v{schema}" in msg
+    assert _git(repo, "config", "--get", "diff.codegraph.textconv") == URL.format("0.6.1")
+    _wire(repo, URL.format("0.7.0"))
+    assert hook.advice(repo) is None
+
+
+def test_the_newest_schema_names_its_first_release() -> None:
+    """A schema bump without a row here leaves a broken pin unreported."""
+    from codebase_kg.schema import MIN_READABLE_VERSION, SCHEMA_VERSION
+
+    assert set(range(MIN_READABLE_VERSION + 1, SCHEMA_VERSION + 1)) <= set(hook.SCHEMA_SINCE)
+
+
+def test_a_newer_pin_is_never_moved_back(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hook, "tag_published", lambda url, v: True)
+    assert hook.repin(repo, URL.format("0.9.0"), "0.8.2") is None
+    assert _git(repo, "config", "--get", "diff.codegraph.textconv") == ""
+
+
+def test_the_notice_names_setup_for_a_missing_plugin_folder(repo: Path, tmp_path: Path) -> None:
+    gone = (tmp_path / "gone" / "codebase-kg" / "kg_cli.py").as_posix()
+    textconv = f'python3 "{gone}" textconv'
+    _wire(repo, textconv)
+    msg = hook.advice(repo)
+    assert msg is not None and "/codebase-kg:setup" in msg
+    assert _git(repo, "config", "--get", "diff.codegraph.textconv") == textconv
+
+
+def test_an_unreachable_remote_is_not_a_published_tag(tmp_path: Path) -> None:
+    assert hook.tag_published((tmp_path / "no-such-repo").as_uri(), "0.8.2") is False
+
+
+def test_a_stale_pin_on_an_offline_machine_stays_inside_the_hook_timeout(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """hooks.json allows 10 s. Every git call, however slow, draws on one budget."""
+    clock = [1000.0]
+    calls: list[float] = []
+
+    def slow(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        limit = float(kwargs["timeout"])  # type: ignore[arg-type]
+        calls.append(limit)
+        clock[0] += limit
+        raise subprocess.TimeoutExpired(command, limit)
+
+    _wire(repo, URL.format("0.1.0"))
+    monkeypatch.setattr(hook, "plugin_version", lambda: "0.8.2")
+    monkeypatch.setattr(hook.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(hook, "_deadline", clock[0] + hook.HOOK_BUDGET)
+    monkeypatch.setattr(hook.subprocess, "run", slow)
+    assert hook.advice(repo) is None
+    assert calls and sum(calls) <= hook.HOOK_BUDGET < 10
+    assert clock[0] - 1000.0 < 10
+
+
+def test_every_git_call_is_skipped_once_the_budget_is_spent(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hook, "_deadline", hook.time.monotonic() - 1)
+    monkeypatch.setattr(hook.subprocess, "run", lambda *a, **k: pytest.fail("a git call ran"))
+    assert hook._git(repo, "status") == ""
+    assert hook.tag_published("https://example.invalid/x.git", "1.0.0") is False
+    assert hook.repin(repo, URL.format("0.1.0"), "0.8.2") is None
+
+
+def test_a_url_that_looks_like_an_option_is_not_read_as_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen.append(command)
+        return subprocess.CompletedProcess(command, 1, "", "")
+
+    monkeypatch.setattr(hook.subprocess, "run", run)
+    url = "--upload-pack=touch x"
+    assert hook.tag_published(url, "0.8.2") is False
+    (command,) = seen
+    assert command[command.index(url) - 1] == "--"

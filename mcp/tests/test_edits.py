@@ -10,11 +10,13 @@ that it says what it did in enough detail to review.
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
-from codebase_kg import edits, tools
+from codebase_kg import edit_core, edits, tools
 from codebase_kg.links import ExternalLink
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.store import CodeGraph
@@ -500,3 +502,124 @@ def test_every_change_reports_the_field_before_and_after(graph: Path) -> None:
 def test_a_missing_graph_says_how_to_make_one(tmp_path: Path) -> None:
     with pytest.raises(edits.EditError, match="codebase-kg:build"):
         edits.upsert_node(tmp_path / "nope.db", [{"id": "a", "kind": "K"}])
+
+
+def test_a_write_removes_the_copies_an_abandoned_write_left_behind(graph: Path) -> None:
+    """A write that outlives the call timeout loses its worker before it can clean up."""
+    old = graph.parent / f".{graph.name}.abandoned.edit"
+    live = graph.parent / f".{graph.name}.inflight.edit"
+    other = graph.parent / ".other.db.abandoned.edit"
+    for leftover in (old, live, other):
+        leftover.write_bytes(b"partial")
+    stale = time.time() - 2 * edit_core.STALE_EDIT_AGE
+    os.utime(old, (stale, stale))
+    os.utime(other, (stale, stale))
+    edits.upsert_node(graph, [{"id": "a", "description": "Does the A thing, revised."}])
+    assert not old.exists()
+    assert live.exists() and other.exists()
+    assert sorted(p.name for p in graph.parent.glob(f".{graph.name}.*.edit")) == [live.name]
+
+
+# --- an edit leaves the bytes a rebuild of the same content gives -------------
+def _rebuilt_bytes(db: Path, tmp_path: Path) -> bytes:
+    """`export -> build` of `db`'s content, as the refresh loop does it."""
+    from codebase_kg import codec
+
+    g = CodeGraph(db)
+    try:
+        doc = codec.to_dict(g.meta, g.all_nodes(), g.sources())
+    finally:
+        g.close()
+    meta, nodes, sources = codec.from_dict(doc)
+    out = tmp_path / "rebuilt" / "code_graph.db"
+    build(out, meta, nodes, sources=sources)
+    return out.read_bytes()
+
+
+def _write_tools():
+    return {
+        "upsert_node": lambda db: edits.upsert_node(
+            db, [{"id": "c", "kind": "Entity", "description": "New.", "edges": ["a"],
+                  "anchors": ["B.kt#B"]}]),
+        "upsert_update": lambda db: edits.upsert_node(db, [{"id": "a", "description": "Revised."}]),
+        "add_link": lambda db: edits.add_link(db, "a", "cartographer_graph.db#s", "presented-by"),
+        "add_reference": lambda db: edits.add_reference(
+            db, "a", "https://developer.android.com/reference/android/view/View", "doc", "View"),
+        "delete_node": lambda db: edits.delete_node(db, ["a"], dry_run=False, cascade_inbound=True),
+    }
+
+
+@pytest.mark.parametrize("tool", list(_write_tools()))
+def test_each_write_tool_leaves_the_bytes_of_a_rebuild_of_its_own_export(
+    graph: Path, tmp_path: Path, tool: str
+) -> None:
+    result = _write_tools()[tool](graph)
+    assert result["written"] is True
+    assert graph.read_bytes() == _rebuilt_bytes(graph, tmp_path)
+
+
+def test_removing_a_link_and_a_reference_also_ends_in_rebuild_bytes(graph: Path, tmp_path: Path) -> None:
+    edits.add_link(graph, "a", "cartographer_graph.db#s", "presented-by")
+    edits.add_reference(graph, "a", "https://example.com/doc", "doc", "Doc")
+    edits.remove_link(graph, "a", "cartographer_graph.db#s")
+    assert graph.read_bytes() == _rebuilt_bytes(graph, tmp_path)
+    edits.remove_reference(graph, "a", "https://example.com/doc")
+    assert graph.read_bytes() == _rebuilt_bytes(graph, tmp_path)
+
+
+def test_an_edit_keeps_the_recorded_baselines_exactly(graph: Path) -> None:
+    before = CodeGraph(graph)
+    try:
+        sources = before.sources()
+    finally:
+        before.close()
+    (graph.parent.parent / "src" / "A.kt").write_text("class A { fun changed() {} }\n", encoding="utf-8")
+    edits.upsert_node(graph, [{"id": "a", "description": "Revised."}])
+    after = CodeGraph(graph)
+    try:
+        assert after.sources() == sources
+    finally:
+        after.close()
+
+
+def test_an_edit_leaves_no_working_copy_behind(graph: Path) -> None:
+    edits.upsert_node(graph, [{"id": "a", "description": "Revised."}])
+    assert sorted(p.name for p in graph.parent.iterdir()) == ["code_graph.db"]
+
+
+def test_a_v3_graph_stays_v3_until_a_reference_is_written(graph: Path, tmp_path: Path) -> None:
+    from codebase_kg.writer import build as build_graph
+
+    g = CodeGraph(graph)
+    try:
+        meta, nodes, sources = g.meta, g.all_nodes(), g.sources()
+    finally:
+        g.close()
+    v3 = tmp_path / "v3" / "code_graph.db"
+    build_graph(v3, meta, nodes, sources=sources, keep_v3=True)
+
+    def stamp() -> tuple[str, bool]:
+        conn = sqlite3.connect(str(v3))
+        try:
+            (v,) = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+            ref = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'reference'").fetchone() is not None
+            return v, ref
+        finally:
+            conn.close()
+
+    assert stamp() == ("3", False)
+    edits.upsert_node(v3, [{"id": "a", "description": "Revised."}])
+    assert stamp() == ("3", False)
+    edits.add_reference(v3, "a", "https://example.com/doc", "doc", "Doc")
+    assert stamp() == ("4", True)
+    assert v3.read_bytes() == _rebuilt_bytes(v3, tmp_path)
+
+
+def test_a_write_also_removes_an_abandoned_canonical_rebuild(graph: Path) -> None:
+    stale = graph.parent / ".code_graph.db.abc.tmp"
+    stale.write_bytes(b"x")
+    old = time.time() - edit_core.STALE_EDIT_AGE - 60
+    os.utime(stale, (old, old))
+    edits.upsert_node(graph, [{"id": "a", "description": "Revised."}])
+    assert not stale.exists()

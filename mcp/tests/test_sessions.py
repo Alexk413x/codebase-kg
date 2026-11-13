@@ -18,6 +18,7 @@ from test_http_server import BUILD, TIMEOUT, _free_port, _start, _state, _stop
 ROOT = Path(__file__).resolve().parents[2]
 START_HOOK = ROOT / "hooks" / "kg_server_start.py"
 HEADERS = ROOT / "mcp" / "launch" / "kg_headers.py"
+LAUNCHER = '. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/'
 END_HOOK = ROOT / "hooks" / "kg_session_end.py"
 
 
@@ -137,9 +138,8 @@ def test_the_end_hook_prints_nothing_and_exits_zero(cache: Path) -> None:
 
 def test_the_hooks_are_registered() -> None:
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
-    script = '"${CLAUDE_PLUGIN_ROOT}/hooks/kg_session_end.py"'
     commands = [h["command"] for entry in hooks["SessionEnd"] for h in entry["hooks"]]
-    assert commands == [f"command -v py >/dev/null 2>&1 && py -3 {script} || python3 {script} || python {script}"]
+    assert commands == [f'{LAUNCHER}kg_session_end.cmd"; exit $LASTEXITCODE']
     assert all(h["timeout"] <= 5 for entry in hooks["SessionEnd"] for h in entry["hooks"])
 
 

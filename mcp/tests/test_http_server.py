@@ -36,6 +36,7 @@ from test_shared_server import Client as LineClient
 ROOT = Path(__file__).resolve().parents[2]
 HOOK = ROOT / "hooks" / "kg_server_start.py"
 HEADERS = ROOT / "mcp" / "launch" / "kg_headers.py"
+LAUNCHER = '. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/'
 SRC_SHIM = ROOT / "mcp" / "src" / "codebase_kg" / "shim.py"
 
 
@@ -638,8 +639,7 @@ def test_the_hook_runs_silently_and_exits_zero_when_a_server_answers(http_daemon
 def test_the_hook_is_registered_for_session_start() -> None:
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
     commands = [h["command"] for entry in hooks["SessionStart"] for h in entry["hooks"]]
-    script = '"${CLAUDE_PLUGIN_ROOT}/hooks/kg_server_start.py"'
-    assert f"command -v py >/dev/null 2>&1 && py -3 {script} || python3 {script} || python {script}" in commands
+    assert f'{LAUNCHER}kg_server_start.cmd"; exit $LASTEXITCODE' in commands
 
 
 # --- the headers helper ------------------------------------------------------
@@ -824,6 +824,23 @@ def test_the_outside_job_spawner_runs_the_server_through_wmi(
     assert repr(str(shim.log_path(BUILD)))[1:-1] in line
     assert kwargs["env"]["KG_CWD"] == str(cache)
     assert "ProcessStartupInformation=$si" in command[-1] and "ShowWindow=[uint16]0" in command[-1]
+
+
+def test_the_outside_job_spawner_forwards_the_plugin_settings(cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_SERVER_PORT", "47998")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MAX_WORKERS", "3")
+    shim.spawn_server_outside_job(BUILD)
+    line = calls[0]["env"]["KG_COMMAND"]
+    assert "'CLAUDE_PLUGIN_OPTION_SERVER_PORT': '47998'" in line
+    assert "'CLAUDE_PLUGIN_OPTION_MAX_WORKERS': '3'" in line
 
 
 def test_the_outside_job_spawner_reports_a_wmi_failure(cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:

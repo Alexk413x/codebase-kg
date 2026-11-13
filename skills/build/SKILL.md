@@ -180,4 +180,7 @@ which reads both codebases. Building one side cleanly first is the right order.
 
 - **`references/build-strategy.md`** — partitioning a large repo across parallel sub-agents, and the
   node-derivation checklist per subsystem.
+- **`${CLAUDE_PLUGIN_ROOT}/templates/code_graph.template.json`** — the JSON document the builder reads,
+  with the top-level keys (`codebase`, `root`, `covers`, …) and a node shape to copy from. Its `_comment`
+  lines are ignored by the builder.
 - **`${CLAUDE_PLUGIN_ROOT}/SCHEMA.md`** — the node/edge/parity contract.

@@ -371,10 +371,9 @@ def test_the_wrapper_skips_a_python3_stub_and_uses_the_py_launcher(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     marker = tmp_path / "ran"
-    (bin_dir / "python3").write_text("#!/bin/sh\nexit 9\n", encoding="utf-8", newline="\n")
-    (bin_dir / "py").write_text(
-        f'#!/bin/sh\n[ "$1" = "-c" ] || [ "$2" = "-c" ] && exit 0\necho "$@" > "{marker.as_posix()}"\n',
-        encoding="utf-8", newline="\n",
+    (bin_dir / "python3").write_bytes(b"#!/bin/sh\nexit 9\n")
+    (bin_dir / "py").write_bytes(
+        f'#!/bin/sh\n[ "$1" = "-c" ] || [ "$2" = "-c" ] && exit 0\necho "$@" > "{marker.as_posix()}"\n'.encode()
     )
     for stub in bin_dir.iterdir():
         stub.chmod(0o755)
@@ -411,6 +410,20 @@ def test_a_search_is_allowed_with_one_notice_when_the_server_is_down(
     notice = first["hookSpecificOutput"]["additionalContext"]
     assert "server start" in notice and "kg_cli.py" in notice
     assert _gate_output(repo, "grep -rn other src", monkeypatch, capsys) == ""
+
+
+def test_the_server_down_notice_loads_the_shim_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _graph_repo(tmp_path)
+    shim = search_gate.load_shim()
+    loads: list[int] = []
+    monkeypatch.setattr(search_gate, "load_shim", lambda: (loads.append(1), shim)[1])
+    monkeypatch.setattr(shim, "health", lambda port, timeout=1.0: (shim.FREE, {}))
+    monkeypatch.setenv("CODEBASE_KG_PORT", "47999")
+    out = json.loads(_gate_output(repo, "grep -rn thing src", monkeypatch, capsys))
+    assert "server start" in out["hookSpecificOutput"]["additionalContext"]
+    assert len(loads) == 1
 
 
 def test_a_search_is_still_denied_when_the_server_answers(

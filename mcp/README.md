@@ -6,7 +6,7 @@ agent answers "where does X live / what depends on it / what diverges from the p
 call instead of re-grepping every session, and fixes one wrong description without regenerating the
 whole artifact.
 
-The server and everything it imports are **stdlib only**: it runs on the base Python 3.10 or later,
+The server and everything it imports are **stdlib only**: it runs on the base Python 3.9 or later,
 with no venv. The tool definitions are fastmcp registrations in `server.py`, a dev-only module;
 `scripts/gen_catalog.py` turns them into `src/codebase_kg/catalog.json`, which the server serves.
 
@@ -52,7 +52,8 @@ Three properties, held by `edits.py` and the `edit_*.py` modules behind it:
 
 - **Atomic.** The mutation runs against a private copy of the file inside one transaction, and the
   copy replaces the original only at the very end. A rejected edit leaves the committed graph
-  byte-identical — not rolled back, never opened for writing.
+  byte-identical — not rolled back, never opened for writing. An accepted edit is rewritten through
+  `writer.build`, so it ends in the bytes of `export` → `build` of the same content.
 - **Validated, not merely constrained.** `kg_validate` — the same function `kg_cli.py query kg_validate` calls — runs
   against the copy, and the write is refused if it introduced a finding the graph did not already
   have. The test is *no new findings*, never *clean*: a real graph carries findings, and demanding
@@ -247,7 +248,7 @@ server was running.
 | `shim.py` | What stdio clients launch: finds or starts the shared server and relays the session to it. Stdlib only. It also holds the HTTP port, token and `/health` helpers that the hooks and `kg_headers.py` load by path. |
 | `tools.py` | The read-only queries the MCP tools wrap. |
 | `edits.py` | The targeted-write facade. It re-exports the tools from the `edit_*.py` modules. |
-| `edit_core.py` | The edit engine: copy, mutate in one transaction, validate, swap in — or discard, leaving the committed file byte-identical. |
+| `edit_core.py` | The edit engine: copy, mutate in one transaction, validate, rebuild canonically through `writer.build` — or discard, leaving the committed file byte-identical. |
 | `edit_nodes.py` | Node reads, patch parsing and `upsert_node`. |
 | `edit_delete.py` | `delete_node` and the impact preview. |
 | `edit_links.py` | `add_link`, `remove_link`, `add_reference` and `remove_reference`. |

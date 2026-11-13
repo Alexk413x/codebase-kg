@@ -1,5 +1,5 @@
 {
-  "description": "codebase-kg hooks for Codex. The same gates as hooks.json, on the tool names Codex reports: a PreToolUse search gate and push gate on shell commands (each script decides whether the command is a search or a git push), a search-gate credit hook on codebase-kg MCP calls, a PostToolUse nudge on apply_patch, and the SessionStart notice. Codex has no Grep or Glob tool, runs no per-hook `if`, and starts no MCP server from a plugin, so hooks.json entries for those are left out. The headers helper in the Codex config table starts the server.",
+  "description": "codebase-kg hooks for Codex. The same gates as hooks.json, on the tool names Codex reports: a PreToolUse search gate and push gate on shell commands (each script decides whether the command is a search or a git push), a search-gate credit hook on codebase-kg MCP calls, a PostToolUse nudge on apply_patch, and the SessionStart notice, run with --codex so it also moves the codebase-kg paths in Codex's config.toml to the installed plugin after an update. Codex has no Grep or Glob tool, runs no per-hook `if`, and starts no MCP server from a plugin, so hooks.json entries for those are left out. The headers helper in the Codex config table starts the server.",
   "hooks": {
     "PreToolUse": [
       {
@@ -51,8 +51,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_session_start.py\"",
-            "commandWindows": "py -3 \"$env:PLUGIN_ROOT/hooks/kg_session_start.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kg_session_start.py\" --codex",
+            "commandWindows": "py -3 \"$env:PLUGIN_ROOT/hooks/kg_session_start.py\" --codex",
             "timeout": 10
           }
         ]

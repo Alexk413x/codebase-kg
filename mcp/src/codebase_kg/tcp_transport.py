@@ -136,7 +136,7 @@ class TcpServer(socketserver.ThreadingTCPServer):
 class TcpHandler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
         srv = cast(TcpServer, self.server)
-        srv.on_open()
+        opened = False
         try:
             self.connection.settimeout(HANDSHAKE_TIMEOUT)
             line = self.rfile.readline(MAX_HANDSHAKE)
@@ -146,6 +146,10 @@ class TcpHandler(socketserver.StreamRequestHandler):
                 logger.warning("rejected a connection: %s", exc)
                 self._reply({"ok": False, "error": str(exc)})
                 return
+            # Only an authenticated client counts as a use of the server: an
+            # unauthenticated local process must not keep the daemon alive.
+            srv.on_open()
+            opened = True
             self._reply({"ok": True, "version": srv.version, "pid": os.getpid()})
             self.connection.settimeout(None)
             serve_lines(srv.core, conn, self.rfile, self.wfile)
@@ -155,7 +159,8 @@ class TcpHandler(socketserver.StreamRequestHandler):
             # One broken session must not take the listener, and every other session with it, down.
             logger.exception("connection failed")
         finally:
-            srv.on_close()
+            if opened:
+                srv.on_close()
 
     def _reply(self, obj: dict[str, Any]) -> None:
         self.wfile.write(json.dumps(obj).encode("utf-8") + b"\n")

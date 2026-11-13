@@ -412,4 +412,111 @@ def test_powershell_backtick_continuation_and_ack(
 def test_hooks_json_routes_powershell_git_commands_to_the_push_gate() -> None:
     config = json.loads((Path(gate.__file__).parent / "hooks.json").read_text(encoding="utf-8"))
     rules = {h.get("if"): h["command"] for m in config["hooks"]["PreToolUse"] for h in m["hooks"]}
-    assert "kg_push_gate.py" in rules["PowerShell(git *)"]
+    assert rules["PowerShell(git *)"].endswith("/kg_push_gate.cmd\"; exit $LASTEXITCODE")
+
+
+# --- review fixes: comments, wrappers, dry runs ---------------------------------
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit -m fix#12 && git push",
+        "echo a#b; git push",
+        "# publish\ngit push",
+        "git status # now push\ngit push",
+        "git commit -m \"it's # fine\" && git push",
+    ],
+)
+def test_a_hash_inside_a_word_does_not_hide_a_push(command: str) -> None:
+    assert len(gate.find_pushes(command, Path("/repo"))) == 1
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["git status # git push", "# git push", "git status\n# git push\ngit log"],
+)
+def test_a_push_inside_a_comment_is_not_a_push(command: str) -> None:
+    assert gate.find_pushes(command, Path("/repo")) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "timeout 60 git push",
+        "timeout -s KILL 60 git push origin main",
+        "nice git push",
+        "nice -n 5 git push",
+        "stdbuf -oL git push",
+        "xargs git push",
+        "xargs -n 1 git push",
+        "eval 'git push'",
+        "eval git push origin main",
+        "echo `git push`",
+        "echo $(git push)",
+        "cmd /c git push",
+        "cmd.exe /c \"git push origin main\"",
+        "pwsh -c 'git push'",
+        "pwsh -NoProfile -Command \"git add . ; git push\"",
+        "powershell -Command git push",
+        "git \\\npush",
+        "sudo --user me git push",
+        "sudo -u me git push",
+        "git subtree push --prefix=lib origin main",
+        "env -u HOME git push",
+    ],
+)
+def test_a_wrapped_push_is_detected(command: str) -> None:
+    assert len(gate.find_pushes(command, Path("/repo"))) == 1
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "timeout 60 git status",
+        "nice ls",
+        "xargs echo push",
+        "eval 'git status'",
+        "echo `date`",
+        "cmd /c dir",
+        "pwsh -c 'git status'",
+        "git subtree split --prefix=lib",
+        "echo timeout git push",
+    ],
+)
+def test_wrapped_commands_that_do_not_push_are_not_a_push(command: str) -> None:
+    assert gate.find_pushes(command, Path("/repo")) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push --dry-run",
+        "git push -n",
+        "git push -n origin main",
+        "git push --dry-run origin main",
+        "git push -fn",
+        "git push --help",
+        "git push -h",
+    ],
+)
+def test_a_push_that_sends_nothing_is_not_gated(command: str) -> None:
+    assert gate.find_pushes(command, Path("/repo")) == []
+
+
+def test_a_push_option_value_that_looks_like_dry_run_is_still_a_push() -> None:
+    assert len(gate.find_pushes("git push -o -n origin main", Path("/repo"))) == 1
+
+
+def test_powershell_here_strings_and_escaped_quotes_still_find_the_push() -> None:
+    here = "git commit -m @'\nit's \"quoted\"\n'@\ngit push"
+    assert len(gate.find_pushes(gate.powershell_to_shell(here), Path("/repo"))) == 1
+    escaped = 'git commit -m "say `"hi`"" ; git push'
+    assert len(gate.find_pushes(gate.powershell_to_shell(escaped), Path("/repo"))) == 1
+    both = 'Write-Output "a `"b`""; git push origin main'
+    assert len(gate.find_pushes(gate.powershell_to_shell(both), Path("/repo"))) == 1
+
+
+def test_a_hidden_push_is_denied_end_to_end(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    repo = _make_repo(tmp_path, drift=(KNOWN,))
+    out = _call("git commit -m fix#12 --allow-empty && timeout 60 git push", repo, capsys)
+    assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert _call("git push --dry-run", repo, capsys) == ""

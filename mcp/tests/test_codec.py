@@ -315,3 +315,22 @@ def test_an_explicit_path_is_never_second_guessed(
     monkeypatch.chdir(repo)
     assert export.main([str(repo / "nope.db")]) == 1
     assert "nope.db" in capsys.readouterr().err
+
+
+def test_the_evals_fixture_graph_json_builds_the_fixture_database(tmp_path: Path) -> None:
+    """`evals/fixtures/graph.json` is the source `evals/fixtures/app`'s database was built from
+    (docs/RELEASING.md); the two must not drift apart."""
+    from codebase_kg import codec
+    from codebase_kg.store import CodeGraph
+    from codebase_kg.writer import build
+
+    fixtures = Path(__file__).resolve().parents[2] / "evals" / "fixtures"
+    meta, nodes, _ = codec.from_dict(json.loads((fixtures / "graph.json").read_text(encoding="utf-8")))
+    out = tmp_path / "g.db"
+    build(out, meta, nodes, source_root=fixtures / "app" / "src")
+    built, shipped = CodeGraph(out), CodeGraph(fixtures / "app" / "knowledge" / "code_graph.db")
+    try:
+        assert codec.to_dict(built.meta, built.all_nodes()) == codec.to_dict(shipped.meta, shipped.all_nodes())
+    finally:
+        built.close()
+        shipped.close()

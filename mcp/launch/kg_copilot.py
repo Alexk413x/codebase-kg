@@ -34,7 +34,7 @@ def hooks_config(python: str) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("component", choices=["mcp", "hooks"])
-    parser.add_argument("--python", default=sys.executable, help="Python 3.10+ executable on this machine")
+    parser.add_argument("--python", default=sys.executable, help="Python 3.9+ executable on this machine")
     args = parser.parse_args()
     config = mcp_config(args.python) if args.component == "mcp" else hooks_config(args.python)
     print(json.dumps(config, indent=2))

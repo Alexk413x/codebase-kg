@@ -6,17 +6,63 @@ no `knowledge/code_graph.db`. The server start and the session end run in every 
 
 | File | Role |
 |---|---|
-| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob`, on `Bash` and `PowerShell` calls that an `if` rule names as a search (`Bash(grep *)`, `PowerShell(Select-String *)`, one rule per search word), and asynchronously on the codebase-kg MCP tools → `kg_search_gate.py`; `Bash(git *)` calls → `kg_push_gate.py`; PostToolUse on `Edit\|Write` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_server_start.py`, then `kg_session_start.py`; SessionEnd → `kg_session_end.py`. Each hook runs `py -3` when the `py` launcher exists, else `python3`, else `python`. |
+| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob`, on `Bash` and `PowerShell` calls that an `if` rule names as a search (`Bash(grep *)`, `PowerShell(Select-String *)`, one rule per search word), and on the codebase-kg MCP tools → `kg_search_gate.py` (`async: true`, on purpose: the hook only credits the query, so the query never waits for it); `Bash(git *)` calls → `kg_push_gate.py`; PostToolUse on `Edit\|Write` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_server_start.py`, then `kg_session_start.py`; SessionEnd → `kg_session_end.py`. Every hook command is `. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/<script>.cmd"`; see "How a hook starts" below. |
 | `codex-hooks.json` | The same hooks for Codex, named by `hooks` in `.codex-plugin/plugin.json`: the search gate and push gate on `Bash`, the credit hook on codebase-kg MCP calls, the nudge on `apply_patch`, and the session notice. It has no `if`, `Grep`, `Glob` or `PowerShell` entry, because Codex ignores `if` and reports shell commands as `Bash`, so each script decides for itself whether a command is a search or a push. It has no server start hook: the `--start` option of `mcp/launch/kg_headers.py`, which the Codex config table runs as its headers helper, or the stdio shim starts the server. `commandWindows` runs `py -3` and names the script through `$env:PLUGIN_ROOT`, because Codex runs it in PowerShell, where `${CLAUDE_PLUGIN_ROOT}` is empty; `command` runs `python3`. |
+| `copilot-hooks.json` | The hooks for GitHub Copilot CLI, named by `hooks` in `.github/plugin/plugin.json`: `preToolUse` and `postToolUse` run `kg_copilot.py` with `python`. |
+| `kg_copilot.py` | The Copilot CLI adapter. Turns Copilot's hook payloads into the shape the shared search gate, push gate and nudge read, so those scripts stay unchanged. |
 | `kg_search_gate.py` | The gate. Denies a search aimed at mapped code with the instruction to query the graph, and keeps doing it — a query buys credit, a located search is free, a repeat always passes. |
 | `kg_push_gate.py` | The push gate. Denies an agent's `git push` while any mapped file is stale against `HEAD`. |
 | `kg_post_edit_check.py` | The nudge. Two signals: the edited file isn't in the graph at all, or enough mapped files have changed since the graph was rebuilt. |
 | `kg_server_start.py` | The server start, and the session register. Starts the shared HTTP server when nothing answers on the `server_port` setting, or an older build does, and registers the session. One line only when the port belongs to another program or the server does not come up. |
 | `kg_session_end.py` | The session unregister, on `SessionEnd`. Deletes the session's registry file; prints nothing. |
-| `kg_session_start.py` | The unwired-clone notice. One line when this clone has the committed checkers but no `core.hooksPath` or no `diff.codegraph.textconv`. Prints; never writes. |
+| `kg_session_start.py` | The unwired-clone notice. One line when this clone has the committed checkers but no `core.hooksPath` or no `diff.codegraph.textconv`. It never wires a clone. In a wired clone it moves the release the diff driver pins to the installed plugin's, and with `--codex` it runs `_codex_config.py`. |
+| `_codex_config.py` | Moves the codebase-kg paths in Codex's `config.toml` to the installed plugin's folder after an update. |
 | `_config.py` | Reads `root`, `covers` and `exempt` from the committed graph's `meta` table (auto-discovers `knowledge/code_graph.db`); a gitignored `.claude/codebase-kg.local.md` may override. Decides what counts as a source file. Holds the helpers the hooks share: state files, the deny output, the `SKIP_KG` test. |
 | `_shell_search.py` | The search gate's shell-command parsing: which clauses of a Bash or PowerShell command are searches, where each looks and for what. The gate decision stays in `kg_search_gate.py`. |
 | `_shim_loader.py` | Loads `mcp/src/codebase_kg/shim.py` by path, for the hooks that start or register with the server. |
+
+## How a hook starts
+
+Claude Code runs a shell-form hook command with `sh -c` on macOS and Linux, in Git Bash on Windows,
+and in PowerShell on Windows when Git Bash is not installed (it falls back to `powershell.exe`, 5.1,
+when there is no `pwsh`). One command string has to work in all of them, so each hook is
+
+```
+. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_search_gate.cmd"; exit $LASTEXITCODE
+```
+
+`.` sources the file in `sh` and runs it in PowerShell (PowerShell resolves the placeholder from
+`${env:CLAUDE_PLUGIN_ROOT}`). The file is one text that both read. The first line, `:<<"::KG_CMD"`,
+opens a here-document in `sh` that hides the batch lines, and is a label to `cmd.exe`, which runs the
+batch lines when PowerShell starts the `.cmd`. Each half probes `py -3`, then `python3`, then `python`
+by running it with `-c ""`, so the Microsoft Store `python3` stub is skipped, and then runs the script
+once: a script that exits non-zero is not retried under another interpreter. The headers helper in
+`mcp/claude.mcp.json` uses the same launcher for `kg_headers.py`.
+
+PowerShell is a full path, not a fallback: it is on every Windows machine, and Git Bash is not.
+
+- **Exit code.** PowerShell reports only success or failure for a command unless the command exits
+  with the code itself, so the string ends in `; exit $LASTEXITCODE`. `sh` never reaches that
+  part, because the sourced launcher ends in `exec` or `exit`. In the batch half each run ends in
+  `call exit /b %%errorlevel%%`; a bare `exit /b` there returned 0 whatever the script returned.
+- **Finding the script.** The batch half builds the script path from its own folder (`%~dp0`), so
+  it needs no environment variable. The `sh` half uses `CLAUDE_PLUGIN_ROOT`, then the launcher's
+  own path when the shell is bash, then the working folder, which is the plugin folder when Claude
+  Code runs the headers helper.
+- **No script policy.** The launcher is a `.cmd` file, so the PowerShell execution policy, which
+  blocks `.ps1` files on a default Windows install, does not apply.
+- **Tested** in Windows PowerShell 5.1 and PowerShell 7 (`test_hook_config.py`): a payload on
+  stdin, the exit code, one run per call, a missing interpreter (exit 127), and plugin folders
+  whose names hold a space, parentheses and `&`. A folder name with `%` is not supported by
+  `cmd.exe`. Not tested: a Claude Code session on Windows without Git Bash. There is one launcher per script
+because `sh` ignores arguments after a sourced file (`dash` does), and `test_hook_config.py` checks
+that the seven are one template. The files keep LF endings (`.gitattributes`): `sh` cannot read a CR,
+and the batch half has no labels or `goto`, which are what LF breaks in `cmd.exe`.
+
+Claude Code also offers an exec form (`args`) that starts no shell. It is not used because `command`
+must name one executable on every platform, and no interpreter name does: `py` exists only on Windows,
+and `python3` is a Store stub there. `hooks/codex-hooks.json` keeps its `command` and `commandWindows`
+pair, because Codex has that field.
 
 ## The search gate (PreToolUse)
 
@@ -83,7 +129,10 @@ files with the total count.
 
 - **Detects the push by parsing the command.** It finds `git push` after `&&`, `||`, `;`, `|`, a
   newline, `cd <dir>`, `git -C <dir>`, `git -c k=v`, an env prefix (`SKIP_KG=1 git push`), `env`,
-  `command`, control keywords such as `if` and `then`, and `bash -c '…'` (also `-lc`).
+  `command`, `sudo`, `timeout`, `nice`, `stdbuf`, `xargs`, control keywords such as `if` and `then`,
+  backticks, `eval`, `bash -c '…'` (also `-lc`), `cmd /c`, `pwsh -c` and `git subtree push`. A `#`
+  starts a comment only at the start of a word, so `fix#12` hides nothing. A dry run (`--dry-run`,
+  `-n`) and `--help` send nothing and pass.
   `git commit -m "push"`, `git stash push` and `echo git push` are not a push, and a heredoc body is
   not scanned. A Git Bash path such as `/c/Users/…` after `cd` or `git -C` resolves to its Windows
   drive path. Claude Code starts the hook only for Bash commands that match `Bash(git *)` and
@@ -139,25 +188,47 @@ codebase-kg: this clone is not wired for code_graph.db (git hooks and graph diff
 git does not clone .git/config, so run:  sh .githooks/install.sh
 ```
 
-**It never runs `git config`, and it must not.** Git leaves `.git/config` out of a clone on purpose:
+**It never wires a clone, and it must not.** Git leaves `.git/config` out of a clone on purpose:
 cloning a repo must not be able to make it execute code. A plugin that set `core.hooksPath` on the
 user's behalf would route around that protection and make the repo's vendored `.githooks/*.py` live
 in a fresh clone without anyone choosing to run them. A plugin the user installed may suggest; it may
 not decide.
+
+It makes two writes, both to wiring someone already installed, and prints one line for each:
+
+- **The diff driver's release.** When `diff.codegraph.textconv` pins a codebase-kg tag older than
+  the installed plugin, the hook asks the remote for the installed version's tag
+  (`git ls-remote --tags`, no credential prompt) and, when the tag is published, sets the
+  textconv to it. When the tag cannot be confirmed it changes nothing, and the next session tries
+  again. It says nothing while the older pin still exports the graph. When the pin is too old to
+  read the graph's schema (`SCHEMA_SINCE` in the hook), it prints one line saying that `git diff`
+  on the graph fails until the pin moves. The committed `install.sh` keeps
+  its own pin until someone re-runs `/codebase-kg:setup`.
+- **Codex's config.** `codex-hooks.json` runs the hook with `--codex`. `_codex_config.py` then moves
+  the launcher path in `[mcp_servers.codebase-kg]`, and a codebase-kg `CLAUDE_PLUGIN_ROOT` in
+  `[shell_environment_policy.set]`, to this plugin's folder in `~/.codex/config.toml` (or
+  `$CODEX_HOME/config.toml`). A path moves only when its folder is missing or holds an older
+  release. Every other line is written back unchanged. Codex may connect to MCP servers before the
+  hook runs, so the first session after an update can need a restart.
 
 Silent unless **all** of these hold:
 
 - inside a git work tree;
 - the graph (`graph_path`) exists;
 - a hooks dir with both vendored checkers exists (`core.hooksPath` if set, otherwise `.githooks/`);
-- `core.hooksPath` is unset, **or** `diff.codegraph.textconv` is unset, **or** the textconv pins a
-  codebase-kg release older than the installed plugin, **or** it names a codebase-kg folder that no
-  longer exists. The last two name `/codebase-kg:setup`, which restamps the pin.
+- `core.hooksPath` is unset, **or** `diff.codegraph.textconv` is unset, **or** the textconv names a
+  codebase-kg folder that no longer exists. The last names `/codebase-kg:setup`.
 
 And never when `core.hooksPath` points at a folder that lacks the vendored checkers — that repo made
 a deliberate choice, and nagging it toward clobbering its own config is worse than saying nothing.
-`SKIP_KG` silences it like the rest. Any error exits silently; a session never fails to start
+`SKIP_KG` silences it like the rest, and that skips the Codex config refresh too. The hook's git
+calls share one 8 s budget, inside the 10 s hook timeout, so an offline machine cannot overrun it.
+Any error exits silently; a session never fails to start
 because of this.
+
+`compact` is left out on purpose: both `SessionStart` hooks run on `startup|resume|clear` only. A compact
+does not stop the server or drop the session registration, so running the hooks again would only
+repeat work and could repeat the notice.
 
 ## The server start (SessionStart)
 
@@ -210,6 +281,6 @@ See `../templates/codebase-kg.local.md.example`.
 | `root` | from the graph | only paths under here count |
 | `graph_path` | `knowledge/code_graph.db` | where the graph lives (`kg_path` is an alias) |
 
-`SKIP_KG=1` in the environment silences the search gate, the push gate, the unwired-clone notice and
-the `pre-commit` and `pre-push` checks for that shell, for a change that deliberately outruns the
+`SKIP_KG=1` in the environment silences the search gate, the push gate, the unwired-clone notice (and the
+Codex config refresh it runs) and the `pre-commit` and `pre-push` checks for that shell, for a change that deliberately outruns the
 graph. It does not silence the post-edit nudge, the server start or the session end.
