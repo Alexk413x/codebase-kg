@@ -32,8 +32,10 @@ from .models import Meta, Node, slashes
 from .schema import (
     APPLICATION_ID,
     DDL,
+    MIN_READABLE_VERSION,
     NODE_TABLE,
     PAGE_SIZE,
+    REFERENCE_DDL,
     REFERENCE_TABLE,
     SCHEMA_VERSION,
     split_identifier,
@@ -200,11 +202,13 @@ def _write(
     nodes: list[Node],
     sources: dict[str, str],
     report: BuildReport,
+    *,
+    keep_v3: bool = False,
 ) -> None:
-    conn.executescript(DDL)
+    conn.executescript(DDL.replace(REFERENCE_DDL, "") if keep_v3 else DDL)
 
     rows_meta = {
-        "schema_version": str(SCHEMA_VERSION),
+        "schema_version": str(MIN_READABLE_VERSION if keep_v3 else SCHEMA_VERSION),
         "codebase": meta.codebase,
         "root": meta.root,
         "generated": meta.generated,
@@ -261,7 +265,8 @@ def _write(
             for link in links.dedupe(n.links)
         ],
     )
-    insert_references(conn, nodes)
+    if not keep_v3:
+        insert_references(conn, nodes)
     conn.executemany(
         "INSERT INTO node_fts (node_id, text) VALUES (?, ?)",
         [(n.id, fts_text(n)) for n in nodes],
@@ -294,6 +299,7 @@ def build(
     source_root: str | Path | None = None,
     sources: dict[str, str] | None = None,
     rebaseline: bool = False,
+    keep_v3: bool = False,
 ) -> BuildReport:
     """Write `nodes` to a fresh `code_graph.db` at `path`, atomically.
 
@@ -303,12 +309,18 @@ def build(
     baselines and re-hashes everything — say that only when the descriptions
     have actually been re-checked against the code.
 
+    `keep_v3=True` writes the v3 shape (no `reference` table, version stamp 3). Only
+    the edit engine asks for it, so an edit to a v3 graph does not upgrade it; the
+    nodes must carry no references.
+
     Returns a `BuildReport`. Raises `BuildError` (having written nothing) when
     the input cannot produce a valid graph.
     """
     target = Path(path)
     report = BuildReport()
     ordered = _validate(list(nodes), dangling, report)
+    if keep_v3 and any(n.references for n in ordered):
+        raise BuildError("a v3 graph has no reference table, so its nodes cannot carry references")
 
     carried = {} if rebaseline and source_root is not None else dict(sources or {})
     if source_root is not None:
@@ -337,7 +349,7 @@ def build(
             conn.execute("PRAGMA journal_mode = DELETE")
             conn.execute("PRAGMA foreign_keys = ON")
             with conn:
-                _write(conn, meta, ordered, resolved, report)
+                _write(conn, meta, ordered, resolved, report, keep_v3=keep_v3)
             # Packs the file and drops free pages, so the byte layout depends on
             # the data alone rather than on the order pages happened to be filled.
             conn.execute("VACUUM")

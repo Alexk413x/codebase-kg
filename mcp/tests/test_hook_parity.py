@@ -404,3 +404,12 @@ def test_both_hooks_let_covers_decide(tmp_path: Path, rel: str) -> None:
         rel, "", None, kg_pre_push.compile_patterns(covers), None
     )
     assert _config.is_source_file(tmp_path / rel, tmp_path, cfg) is expected
+
+
+def test_every_hook_setting_is_documented_in_the_template_and_the_schema() -> None:
+    """`exclude_ext` was read by the hooks but named in neither place."""
+    template = (ROOT / "templates" / "codebase-kg.local.md.example").read_text(encoding="utf-8")
+    schema = (ROOT / "SCHEMA.md").read_text(encoding="utf-8")
+    for key in _config.DEFAULTS:
+        assert key in template, f"{key} is missing from the local.md template"
+        assert key in schema, f"{key} is missing from SCHEMA.md"

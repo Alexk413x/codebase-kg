@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Wires codebase-kg into the current repo in one pass. It installs pre-commit and pre-push staleness checks, the textconv driver that makes the committed graph readable in git diffs, and a committed install.sh so every other clone gets the same wiring from one command. It is idempotent, leaves existing hooks intact, and is safe to re-run to repair or update the wiring. This skill writes committed files and git config, so it asks before writing when Claude starts it. Use when the codebase-kg SessionStart notice reports that this clone is not wired for the graph or that its diff driver pins an older release, or when the user asks to wire, set up, repair or update codebase-kg in a repo.
+description: Wires codebase-kg into the current repo in one pass. It installs pre-commit and pre-push staleness checks, the textconv driver that makes the committed graph readable in git diffs, and a committed install.sh so every other clone gets the same wiring from one command. It is idempotent, leaves existing hooks intact, and is safe to re-run to repair or update the wiring. This skill writes committed files and git config, so it asks before writing when Claude starts it. Use when the codebase-kg SessionStart notice reports that this clone is not wired for the graph or that its diff driver names a missing folder, or when the user asks to wire, set up, repair or update codebase-kg in a repo.
 argument-hint: "[repo path | empty = current repo]"
 allowed-tools:
   - Bash(uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg_cli.py" *)
@@ -91,7 +91,9 @@ Stamp the pin after copying:
    ```
 
 The stamp is a starting value, not a live link. `install.sh` is committed, so the pin only moves when
-someone re-runs this command and commits the change — which is what a pin is for. Anyone can override
+someone re-runs this command and commits the change — which is what a pin is for. A clone that has
+the plugin does not wait for that: at session start the plugin moves the release its own
+`diff.codegraph.textconv` pins to the installed one, once that tag is published. Anyone can override
 per-clone with `KG_VERSION=`, `KG_SOURCE=`, `KG_TEXTCONV=` or `KG_GRAPH_PATH=` (the graph the
 installer probes, default `knowledge/code_graph.db`) without editing the committed file.
 
@@ -273,8 +275,9 @@ Then tell the user what is now live:
 - **Post-edit nudge** (from the plugin, no install): advisory, points at `/codebase-kg:refresh`.
 - **Unwired-clone notice** (from the plugin, no install): at session start, a clone of this repo with
   no `core.hooksPath` or no `diff.codegraph.textconv` gets one line naming `sh <hooks dir>/install.sh`.
-  It only prints — it never writes git config, because git leaves `.git/config` out of a clone
-  precisely so that cloning cannot cause code to run.
+  It never wires a clone, because git leaves `.git/config` out of a clone precisely so that cloning
+  cannot cause code to run. In a clone that is already wired, it moves the release the diff driver
+  pins to the installed plugin's, so a plugin update needs no re-run of this command.
 - **Git hooks** (installed here): they answer "does this change move the code away from the map?" —
   `pre-commit` over what is staged, `pre-push` over what is being pushed. Both also report the
   repo-wide staleness total, which no change set can see: a file that drifts and is never re-derived
@@ -301,8 +304,9 @@ uv run --no-project --quiet "<plugin root>/mcp/launch/kg_cli.py" codex-config
 ```
 
 Show the output to the user and tell them to paste it into `~/.codex/config.toml`. Do not edit that
-file yourself. The path holds the plugin version, so the user runs the command again after each
-plugin update.
+file yourself. The path holds the plugin version. The user pastes the table once: after a plugin
+update, the Codex SessionStart hook moves the path to the new plugin folder and prints one line. The
+first session after an update may need a restart of Codex to load the tools.
 
 The table sets `url` and an `http_headers_helper` that runs `mcp/launch/kg_headers.py` with literal
 `--port`, `--cwd` and `--start` arguments. The helper prints the bearer token and the session's folder

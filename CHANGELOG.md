@@ -2,6 +2,90 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.16.0] — 2026-11-12 — Plugin updates need no setup re-run, and the hooks run in PowerShell
+
+### Changed
+
+- Shorter tool descriptions: the 13-tool catalog the server sends every session drops from 17.1 KB
+  to 11.8 KB, and `kg_upsert_node` from 4.4 KB to 2.3 KB. The descriptions keep the choice between
+  sibling tools, argument shapes, the replace-the-whole-list, `null`-clears and `dry_run` rules, and
+  what comes back. Rationale and field notes the error messages already carry are gone. No tool,
+  parameter, type or behaviour changed.
+- A plugin update no longer asks you to re-run `/codebase-kg:setup`. When a wired clone's
+  `diff.codegraph.textconv` pins an older codebase-kg release, the SessionStart hook moves the pin
+  to the installed release and prints one line. It first checks that the new tag is published, and
+  changes nothing when it cannot. The committed `install.sh` keeps its own pin until setup is re-run.
+- Codex: you paste the `codex-config` table once. The Codex SessionStart hook moves the launcher
+  path in `[mcp_servers.codebase-kg]`, and a codebase-kg `CLAUDE_PLUGIN_ROOT` in
+  `[shell_environment_policy.set]`, to the installed plugin's folder when the old folder is missing
+  or holds an older release. The first session after an update may need a restart of Codex.
+- Hook commands in `hooks.json`, and the `headersHelper` in `mcp/claude.mcp.json`, now run in
+  Windows PowerShell (Windows without Git Bash) as well as in `sh` and Git Bash. Each is
+  `. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/<script>.cmd"; exit $LASTEXITCODE`: one launcher file that `sh` sources and
+  PowerShell runs through `cmd.exe`. It picks one interpreter (`py -3`, else a `python3` that
+  starts, else `python`) and runs the script once; a script that exited non-zero used to run again
+  under the next interpreter in the old `||` chain. See "How a hook starts" in `hooks/README.md`.
+- Python 3.9 is the floor everywhere: `requires-python`, the pyright target and the `kg_cli.py`
+  header move from 3.10 to the 3.9 that `ruff.toml` already stated. `fastmcp`, a dev dependency,
+  needs 3.10, so it carries a marker and the tests that import it are skipped on 3.9.
+- `compact` stays out of the SessionStart matchers on purpose; `hooks/README.md` says why. The README
+  and `docs/RELEASING.md` now describe `.codex/config.toml.example`, `evals/fixtures/graph.json` and
+  `templates/code_graph.template.json`, and `skills/build` points at the template.
+- The SessionStart notice keeps all its git calls inside one 8 s budget, so a stale pin on an
+  offline machine can no longer pass the 10 s hook timeout. `git ls-remote` gets `--` before the URL.
+- The search-gate credit hook leaves no state file in a repo without a graph, and loads the server
+  shim once per run. Gate state is replaced through a temp file instead of rewritten in place.
+- Windows: a server started through WMI keeps the `server_port` and `max_workers` plugin settings.
+  The Codex config refresh keeps the file mode of `config.toml` and writes through a symlink.
+- `git-hooks/README.md`, `hooks/README.md`, `docs/DESIGN.md`, the layout tree in `README.md`,
+  `SCHEMA.md` and the local config template describe the current behaviour, including `exclude_ext`.
+
+### Fixed
+
+- Every write tool (`kg_upsert_node`, links, references, `kg_delete_node`) now leaves the bytes an
+  `export` -> `build` of the same content gives, instead of the page layout the in-place edit left.
+  An edit still keeps the recorded baselines and a v3 graph stays v3 until a reference is written.
+  On a 20,000-node graph an edit takes about 4 s, as before.
+- `mcp/launch/kg-shim` runs each interpreter (`py -3`, `python3`, `python`) before it uses it, so the
+  Microsoft Store `python3` stub no longer breaks the launcher under Git Bash on Windows.
+- The push gate no longer misses a push hidden by a `#` inside a word (`git commit -m fix#12 && git
+  push`) or a comment line, and sees pushes behind `timeout`, `nice`, `stdbuf`, `xargs`, `eval`,
+  backticks, `cmd /c`, `pwsh -c`, a backslash-newline, `sudo --user`, and `git subtree push`.
+  PowerShell here-strings and backtick-escaped quotes no longer make it give up. `git push
+  --dry-run`, `-n` and `--help` send nothing and are no longer denied.
+- A write that outlived the call timeout left `.code_graph.db.*.edit` in `knowledge/`; the next
+  write removes copies older than 10 minutes.
+- An unauthenticated local connection no longer keeps the shared server alive: the server counts a
+  connection as use only after the handshake succeeds.
+- Two processes that both found the spawn lock abandoned could both take it; clearing it is now
+  exclusive, and a process releases the lock only when it still holds it.
+
+### Added — after the review
+
+- The SessionStart hook reports a diff driver whose pin is too old to read the graph's schema when
+  it could not move the pin (offline, or the release tag is not published). Before, that case was
+  silent and `git diff` on the graph failed with no reason given.
+- The server-start hook shows "Starting the codebase-kg server" while it waits.
+- A Privacy section in the README, and `privacyPolicyUrl` in the manifest that points to it.
+
+### Fixed — after the review
+
+- A refused HTTP request (403, 404, 405, 406) could reach the client as an aborted connection on
+  Windows. The server closed the connection with the request body unread, which resets it. The
+  server now reads up to 1 MB of the body, for at most 2 s, before it closes.
+- The package builds on Python 3.9: the build backend is `hatchling>=1.27.0`, down from 1.29.0.
+
+### Changed — PowerShell is a full path for the hooks
+
+- A hook script's exit code now reaches Claude Code through PowerShell. Before, a script that
+  exited 3 came back as 0: the batch half of the launcher ended in a bare `exit /b`, and PowerShell
+  reports only success or failure unless the command exits with the code. Each hook command and
+  the headers helper now end in `; exit $LASTEXITCODE`, and the launcher ends each run in
+  `call exit /b %%errorlevel%%`.
+- The launcher finds its script from its own folder in PowerShell, and falls back to its own path
+  or the working folder in `sh`, so it no longer depends on `CLAUDE_PLUGIN_ROOT` being exported.
+- The plugin has an icon, `.claude-plugin/icon.png`.
+
 ## [0.15.4] — 2026-11-08 — Claude can start setup from the SessionStart notice
 
 ### Added
@@ -1693,7 +1777,7 @@ JSON round trip, and migration fidelity against the fixtures.
 
 - **`kg-audit` skill frontmatter now parses.** Its `description` was an unquoted YAML scalar containing `: ` (`…the deep, SEMANTIC, multi-agent sweep: it partitions the KG…`), which YAML reads as a key/value separator. The frontmatter failed to parse, and Claude Code drops **all** frontmatter fields when that happens — so the skill loaded with no `name`, `description`, or `allowed-tools`, meaning it could not trigger reliably and its tool allowlist was silently lost. Converted to a `>-` block scalar; text unchanged.
 
-## [Unreleased]
+## [0.16.0] — 2026-11-12 — Plugin updates need no setup re-run, and the hooks run in PowerShell
 
 ### Fixed — 2026-07-03 — code-review findings: live-reloading server, push-accurate gate, loader hardening
 

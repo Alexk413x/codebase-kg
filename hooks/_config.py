@@ -14,6 +14,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Collection, Iterable, Mapping
 from pathlib import Path
 
@@ -107,12 +108,31 @@ def read_state(path: Path) -> dict[str, object]:
 
 
 def write_state(path: Path, state: dict[str, object]) -> bool:
+    """Replace `path` with `state` in one step, so a concurrent reader never sees a
+    half-written file. False when it could not be written."""
+    tmp: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state), encoding="utf-8")
+        fd, name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+        tmp = Path(name)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(state))
+        for attempt in range(3):
+            try:
+                os.replace(tmp, path)
+                return True
+            except PermissionError:  # Windows: another writer holds the target for a moment
+                if attempt == 2:
+                    raise
+                time.sleep(0.01)
     except OSError:
-        return False
-    return True
+        pass
+    if tmp is not None:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    return False
 
 
 def emit_deny(reason: str) -> None:

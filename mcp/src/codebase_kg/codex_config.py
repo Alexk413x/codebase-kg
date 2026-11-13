@@ -8,7 +8,8 @@ among them, and starts the server when nothing serves the port. Codex gives
 the helper no variables and expands none in its command, so every setting is a
 literal argument. `--stdio` prints the older table that runs the stdio shim
 (`mcp/launch/kg-shim`) instead, which needs no HTTP server. The path in both
-holds the plugin version, so run the command again after each update.
+holds the plugin version. After an update, the Codex SessionStart hook moves it
+to the new plugin folder (`hooks/_codex_config.py`), so you paste the table once.
 Stdlib only.
 """
 

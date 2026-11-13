@@ -11,7 +11,8 @@ This module is the other half. Three properties make a write safe enough to
 point at a committed artifact:
 
 **It lands whole or not at all.** Every operation runs against a private copy of
-the file, inside one SQLite transaction, and the copy is moved over the original
+the file, inside one SQLite transaction, and once validated its content is
+rebuilt through `writer.build` (the bytes of `export -> build`) over the original
 only once everything has passed. A CHECK violated by the third of five nodes
 leaves the committed graph *untouched* rather than rolled back -- nothing ever
 opened it for writing. This is the mechanism `writer.build` already uses, and

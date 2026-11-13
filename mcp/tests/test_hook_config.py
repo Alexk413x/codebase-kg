@@ -265,7 +265,7 @@ def _handlers(tool: str, script: str = "kg_search_gate.py") -> list[dict[str, ob
     config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
     return [
         h for group in config["hooks"]["PreToolUse"] if group["matcher"] == tool
-        for h in group["hooks"] if script in str(h["command"])
+        for h in group["hooks"] if f"/{script.removesuffix('.py')}.cmd" in str(h["command"])
     ]
 
 
@@ -294,3 +294,280 @@ def test_the_push_gate_starts_only_for_git_commands() -> None:
     handlers = _handlers("Bash", "kg_push_gate.py")
     assert [h["if"] for h in handlers] == ["Bash(git *)"]
 
+
+
+# --- the interpreter launcher ------------------------------------------------
+ROOT = HOOKS.parent
+RUN = ROOT / "mcp" / "launch" / "run"
+LAUNCH_PREFIX = '. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/'
+# PowerShell reports only success or failure for `-Command` unless the command exits with the
+# code itself. sh never reaches this part: the sourced launcher ends in `exec` or `exit`.
+LAUNCH_TAIL = '.cmd"; exit $LASTEXITCODE'
+
+
+def _launch_commands() -> list[tuple[str, str]]:
+    """Every command string the plugin hands a shell: the hook commands and the headers helper."""
+    import json
+
+    found = [
+        ("hooks.json", str(h["command"]))
+        for groups in json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))["hooks"].values()
+        for group in groups for h in group["hooks"]
+    ]
+    mcp = json.loads((ROOT / "mcp" / "claude.mcp.json").read_text(encoding="utf-8"))
+    found.append(("claude.mcp.json", str(mcp["mcpServers"]["codebase-kg"]["headersHelper"])))
+    return found
+
+
+def test_every_command_sources_one_launcher_that_runs_in_sh_and_powershell() -> None:
+    """The one command string is read by sh on macOS, Linux and Git Bash, and by PowerShell on
+    Windows without Git Bash. `. "<file>"` sources the file in sh and runs it in PowerShell; the
+    placeholder is quoted, which both shells need for a path with a space. No `&&`, `||` or `$PY`:
+    PowerShell 5.1 has no `&&`, and the interpreter is chosen inside the launcher. The tail hands
+    the script's exit code to PowerShell."""
+    commands = _launch_commands()
+    assert len(commands) == 32
+    for source, command in commands:
+        assert command.startswith(LAUNCH_PREFIX) and command.endswith(LAUNCH_TAIL), (source, command)
+        name = command[len(LAUNCH_PREFIX):-len(LAUNCH_TAIL)] + ".cmd"
+        assert "/" not in name and (RUN / name).is_file(), (source, command)
+        assert not any(t in command for t in ("&&", "||", "$PY")) and command.count(";") == 1, command
+
+
+def test_the_launchers_are_one_template_with_the_script_swapped() -> None:
+    template = (RUN / "kg_search_gate.cmd").read_bytes().decode("utf-8")
+    scripts = {
+        "kg_search_gate": "hooks", "kg_push_gate": "hooks", "kg_post_edit_check": "hooks",
+        "kg_session_end": "hooks", "kg_server_start": "hooks", "kg_session_start": "hooks",
+        "kg_headers": "mcp/launch",
+    }
+    assert sorted(p.stem for p in RUN.glob("*.cmd")) == sorted(scripts)
+    back = chr(92)
+    for stem, folder in scripts.items():
+        text = (RUN / f"{stem}.cmd").read_bytes().decode("utf-8")
+        assert chr(13) not in text, f"{stem}: sh cannot read a CR"
+        assert (ROOT / folder / f"{stem}.py").is_file()
+        want = template.replace("hooks/kg_search_gate.py", f"{folder}/{stem}.py")
+        want = want.replace(f"hooks{back}kg_search_gate.py", f"{folder}/{stem}.py".replace("/", back))
+        assert text == want, stem
+    assert template.startswith(':<<"::KG_CMD"' + chr(10))
+    code = [ln.lower() for ln in template.splitlines() if not ln.startswith("rem ")]
+    assert not any("goto" in ln or "call :" in ln for ln in code)
+
+
+def test_the_launchers_are_stored_with_lf_endings() -> None:
+    attrs = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert attrs.index("*.cmd text eol=crlf") < attrs.index("mcp/launch/run/*.cmd text eol=lf")
+
+
+def _plugin_with(tmp_path: Path, stem: str, stubs: dict[str, str] | None = None,
+                 folder: str = "plug in"):
+    """A copy of the plugin's launcher in a folder whose name has a space, a hook script that
+    records each run and prints the payload it read, and optional stub interpreters first on PATH."""
+    import os
+    import shutil
+
+    root = tmp_path / folder
+    (root / "mcp" / "launch" / "run").mkdir(parents=True)
+    (root / "hooks").mkdir()
+    shutil.copy(RUN / f"{stem}.cmd", root / "mcp" / "launch" / "run" / f"{stem}.cmd")
+    runs = tmp_path / "runs"
+    script = (
+        "import sys\n"
+        f"open({str(runs)!r}, 'a').write('x')\n"
+        "print('got:' + sys.stdin.read().strip())\n"
+        "sys.exit(3)\n"
+    )
+    (root / "hooks" / f"{stem}.py").write_bytes(script.encode())
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, body in (stubs or {}).items():
+        (bin_dir / name).write_bytes(body.encode())
+        (bin_dir / name).chmod(0o755)
+    env = {**os.environ, "CLAUDE_PLUGIN_ROOT": root.as_posix(),
+           "PATH": f"{bin_dir.as_posix()}{os.pathsep}{os.environ.get('PATH', '')}"}
+    return runs, env
+
+
+def _interpreter_stubs() -> dict[str, str]:
+    py = Path(sys.executable).as_posix()
+    # `py -3` drops its first word; the Microsoft Store python3 stub exits 9 when run.
+    return {
+        "py": f'#!/bin/sh\n[ "$1" = -3 ] && shift\nexec "{py}" "$@"\n',
+        "python3": "#!/bin/sh\necho 'Python was not found' >&2\nexit 9\n",
+        "python": f'#!/bin/sh\nexec "{py}" "$@"\n',
+    }
+
+
+@pytest.mark.parametrize("shell", ["sh", "bash", "dash"])
+def test_a_failing_hook_script_runs_once_and_reads_the_payload_in_sh(tmp_path: Path, shell: str) -> None:
+    """The launcher picks one interpreter and runs the script once: a script that exits non-zero
+    must not be retried under the next interpreter, and a python3 that does not start is skipped."""
+    import shutil
+    import subprocess
+
+    exe = shutil.which(shell)
+    if exe is None:
+        pytest.skip(f"no {shell}")
+    runs, env = _plugin_with(tmp_path, "kg_session_end", _interpreter_stubs())
+    command = LAUNCH_PREFIX + "kg_session_end" + LAUNCH_TAIL
+    done = subprocess.run([exe, "-c", command], input=b'{"k": 1}', env=env, capture_output=True,
+                          timeout=30, check=False)
+    assert done.returncode == 3, done.stderr
+    assert done.stdout.decode().strip() == 'got:{"k": 1}'
+    assert runs.read_text(encoding="utf-8") == "x"
+
+
+def test_the_launcher_says_so_when_no_interpreter_starts_in_sh(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    sh = shutil.which("sh")
+    if sh is None:
+        pytest.skip("no POSIX shell")
+    fail = "#!/bin/sh\nexit 9\n"
+    runs, env = _plugin_with(tmp_path, "kg_session_end", {"py": fail, "python3": fail, "python": fail})
+    done = subprocess.run([sh, "-c", LAUNCH_PREFIX + "kg_session_end" + LAUNCH_TAIL], env=env, capture_output=True,
+                          timeout=30, check=False)
+    assert done.returncode == 127 and b"no working Python" in done.stderr
+    assert not runs.exists()
+
+
+POWERSHELLS = ["powershell", "pwsh"]
+
+
+def _powershell(shell: str, command: str, env: dict[str, str], payload: bytes = b""):
+    """Run `command` the way Claude Code does on Windows without Git Bash."""
+    import shutil
+    import subprocess
+
+    exe = shutil.which(shell)
+    if sys.platform != "win32" or exe is None:
+        pytest.skip(f"{shell} on Windows only")
+    return subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", command], input=payload,
+                          env=env, capture_output=True, timeout=60, check=False)
+
+
+def _powershell_command(stem: str = "kg_session_end") -> str:
+    """Claude Code rewrites the placeholder to `${env:CLAUDE_PLUGIN_ROOT}` for PowerShell."""
+    return LAUNCH_PREFIX.replace("${CLAUDE_PLUGIN_ROOT}", "${env:CLAUDE_PLUGIN_ROOT}") + stem + LAUNCH_TAIL
+
+
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize("folder", ["plug in", "plug in (x86) & co", "plugin"])
+def test_the_hook_command_runs_once_in_powershell_and_returns_the_exit_code(
+    tmp_path: Path, shell: str, folder: str
+) -> None:
+    """PowerShell is the shell on Windows without Git Bash. The script reads the payload from
+    stdin, runs once, and its exit code reaches the caller, as it does through sh."""
+    runs, env = _plugin_with(tmp_path, "kg_session_end", folder=folder)
+    done = _powershell(shell, _powershell_command(), env, b'{"k": 2}')
+    assert done.stdout.decode().strip() == 'got:{"k": 2}', done.stderr
+    assert done.returncode == 3
+    assert runs.read_text(encoding="utf-8") == "x"
+
+
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_the_launcher_finds_the_script_in_powershell_without_the_variable(
+    tmp_path: Path, shell: str
+) -> None:
+    """The batch half locates the script from its own folder, so a caller that expands the
+    placeholder in the command text but exports no variable still works."""
+    _, env = _plugin_with(tmp_path, "kg_session_end")
+    root = env.pop("CLAUDE_PLUGIN_ROOT")
+    command = _powershell_command().replace("${env:CLAUDE_PLUGIN_ROOT}", root)
+    done = _powershell(shell, command, env, b'{"k": 3}')
+    assert done.stdout.decode().strip() == 'got:{"k": 3}', done.stderr
+    assert done.returncode == 3
+
+
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_the_launcher_says_so_when_no_interpreter_starts_in_powershell(
+    tmp_path: Path, shell: str
+) -> None:
+    import os
+    import shutil
+
+    exe = shutil.which(shell)
+    runs, env = _plugin_with(tmp_path, "kg_session_end")
+    # cmd.exe stays reachable; py, python3 and python do not.
+    env["PATH"] = os.path.join(os.environ.get("SystemRoot", "C:/Windows"), "System32")
+    done = _powershell(exe or shell, _powershell_command(), env)
+    assert done.returncode == 127 and b"no working Python" in done.stderr
+    assert not runs.exists()
+
+
+@pytest.mark.parametrize("shell", ["sh", "bash", "dash"])
+def test_the_launcher_finds_the_script_in_sh_without_the_variable(tmp_path: Path, shell: str) -> None:
+    """Without the variable, bash finds the plugin from the launcher's own path; a plain sh uses
+    the working folder, which is the plugin folder when Claude Code runs the headers helper."""
+    import shutil
+    import subprocess
+
+    exe = shutil.which(shell)
+    if exe is None:
+        pytest.skip(f"no {shell}")
+    _, env = _plugin_with(tmp_path, "kg_session_end", _interpreter_stubs())
+    root = env.pop("CLAUDE_PLUGIN_ROOT")
+    command = (LAUNCH_PREFIX + "kg_session_end" + LAUNCH_TAIL).replace("${CLAUDE_PLUGIN_ROOT}", root)
+    done = subprocess.run([exe, "-c", command], input=b'{"k": 4}', env=env, cwd=root,
+                          capture_output=True, timeout=30, check=False)
+    assert done.returncode == 3, done.stderr
+    assert done.stdout.decode().strip() == 'got:{"k": 4}'
+
+
+def test_the_async_credit_hook_says_why_it_is_async() -> None:
+    import json
+
+    config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
+    (group,) = [g for g in config["hooks"]["PreToolUse"] if g["matcher"].startswith("mcp__")]
+    assert all(h.get("async") is True for h in group["hooks"])
+    assert "`async: true` on purpose" in config["description"]
+
+
+# --- gate state is replaced, not rewritten in place -----------------------------
+def test_write_state_replaces_the_file_through_a_temp_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    import os
+
+    path = tmp_path / "state" / "s.json"
+    assert c.write_state(path, {"credit": 3}) is True
+    assert json.loads(path.read_text(encoding="utf-8")) == {"credit": 3}
+
+    seen: list[tuple[str, str]] = []
+    real = os.replace
+    monkeypatch.setattr(os, "replace", lambda a, b: (seen.append((str(a), str(b))), real(a, b))[1])
+    assert c.write_state(path, {"credit": 2}) is True
+    (src, dst), = seen
+    assert dst == str(path) and src != dst and Path(src).parent == path.parent
+    assert [p.name for p in path.parent.iterdir()] == ["s.json"]
+
+
+def test_a_failed_replace_leaves_the_old_state_whole_and_no_temp_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    import os
+
+    path = tmp_path / "s.json"
+    c.write_state(path, {"credit": 3})
+
+    def refuse(src: object, dst: object) -> None:
+        raise OSError("refused")
+
+    monkeypatch.setattr(os, "replace", refuse)
+    assert c.write_state(path, {"credit": 0}) is False
+    assert json.loads(path.read_text(encoding="utf-8")) == {"credit": 3}
+    assert [p.name for p in tmp_path.iterdir()] == ["s.json"]
+
+
+def test_session_start_leaves_out_compact_on_purpose() -> None:
+    """A compact does not stop the server or drop the session registration, so running the
+    SessionStart hooks again would repeat work and could repeat the notice (hooks/README.md)."""
+    import json
+
+    config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
+    assert {g["matcher"] for g in config["hooks"]["SessionStart"]} == {"startup|resume|clear"}
+    assert "`compact` is left out on purpose" in (HOOKS / "README.md").read_text(encoding="utf-8")

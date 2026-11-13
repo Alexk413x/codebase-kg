@@ -5,7 +5,7 @@ The Claude Code and Codex manifests, hooks, and HTTP setup remain unchanged.
 
 ## Load the plugin
 
-Install Python 3.10 or later. For plugin loading, `python` must resolve to that
+Install Python 3.9 or later. For plugin loading, `python` must resolve to that
 interpreter on `PATH`, including on Windows. The MCP and hook commands execute
 Python directly. They do not execute a `.cmd` file or depend on a POSIX shell.
 

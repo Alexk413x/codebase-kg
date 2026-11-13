@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -20,6 +21,13 @@ from codebase_kg.store import CodeGraph
 from codebase_kg.writer import build
 
 FIX = Path(__file__).resolve().parent / "fixtures"
+
+# fastmcp, the dev dependency behind these modules, needs Python 3.10+ (pyproject.toml), so on a
+# 3.9 interpreter they are not collected. Nothing else in the suite imports it.
+collect_ignore = [] if importlib.util.find_spec("fastmcp") else [
+    "test_catalog.py", "test_http_battery.py", "test_http_server.py",
+    "test_pool.py", "test_server.py", "test_shared_server.py", "test_sessions.py",
+]
 
 # Every server a test starts inherits this, so none takes the real HTTP port 47821.
 os.environ["CODEBASE_KG_PORT"] = "0"

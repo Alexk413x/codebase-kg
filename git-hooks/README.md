@@ -159,7 +159,10 @@ machine:
 uvx --quiet --from "git+https://github.com/Alexk413x/codebase-kg.git@codebase-kg--v<version>#subdirectory=mcp" codebase-kg-export
 ```
 
-`<version>` is the plugin version that `/codebase-kg:setup` stamped into `install.sh`.
+`<version>` is the plugin version that `/codebase-kg:setup` stamped into `install.sh`. In a wired
+clone, the plugin's SessionStart hook later moves this pin to the installed plugin's release once
+that tag is published (`SKIP_KG` skips it); the committed `install.sh` keeps its own pin until
+`/codebase-kg:setup` is run again.
 
 `--quiet` is load-bearing: without it uv prints resolution lines into the body of every diff. The tag
 is load-bearing too — this command runs on every diff of the graph and must not change under the repo

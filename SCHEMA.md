@@ -339,7 +339,9 @@ They weaken nothing in this document:
 
 - **Atomic.** The mutation runs against a private copy of the file inside one transaction, and the
   copy replaces the original only at the end. A rejected edit leaves the committed graph
-  byte-identical — not rolled back, *never opened for writing*.
+  byte-identical — not rolled back, *never opened for writing*. An accepted edit is written through
+  the same build as `export` → `build`, so it leaves the bytes a rebuild of the same content gives
+  (a v3 graph stays v3 until a reference is written).
 - **Validated, not merely constrained.** `kg_validate` runs against the copy, and the write is
   refused if it introduced a finding the graph did not already have. The test is *no new findings*,
   never *clean* — a graph mid-refactor carries findings, and demanding zero would lock the tools out
@@ -368,7 +370,9 @@ needed**.
 A `.claude/codebase-kg.local.md` is an **optional, per-developer override** — by the `.local`
 convention it is gitignored, never committed. Use it only when one clone differs. It carries the
 YAML front-matter keys `graph_path` and `root`, plus the hook settings (`post_edit_nudge`,
-`nudge_every`, `search_gate`, `gate_shell_search`, `gate_credit`). The older key name `kg_path` is
+`nudge_every`, `search_gate`, `gate_shell_search`, `gate_credit`, `exclude_ext`). `exclude_ext` is
+the list of file extensions that never count as source when the graph declares no `covers`; setting
+it replaces the default list (`templates/codebase-kg.local.md.example` shows it). The older key name `kg_path` is
 still read. Nothing reads `codebase`, `counterpart` or `language` from this file: set those in the
 graph's `meta` table.
 

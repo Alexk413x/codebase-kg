@@ -396,6 +396,17 @@ def test_a_missing_or_wrong_token_is_403_not_401(front: dict[str, Any]) -> None:
         assert reply.status == 403 and set(reply.body) == {"error"}
 
 
+def test_a_refused_post_is_answered_after_its_body_is_read(front: dict[str, Any]) -> None:
+    """A close with the body unread resets the connection on Windows: the client sees an abort, not the 403."""
+    pad = {"pad": "x" * 200_000}
+    for _ in range(40):
+        reply = _req(front, "tools/list", pad, headers={"Authorization": "Bearer nope"})
+        assert reply.status == 403 and set(reply.body) == {"error"}
+    for _ in range(10):
+        assert _req(front, "tools/list", pad, path="/nowhere").status == 404
+        assert _req(front, "tools/list", pad, headers={"Accept": "text/html"}).status == 406
+
+
 def test_health_needs_no_token(front: dict[str, Any]) -> None:
     reply = _post(front, method="GET", path="/health", headers={"Authorization": None})
     assert reply.status == 200

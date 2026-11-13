@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import os
 import shutil
 import sqlite3
 import tempfile
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import tools, writer
+from . import tools, upgrade, writer
+from .schema import SCHEMA_VERSION
 from .store import CodeGraph
 
 
@@ -135,6 +138,45 @@ def _explain(exc: sqlite3.IntegrityError) -> str:
     return text
 
 
+STALE_EDIT_AGE = 600.0  # seconds; a write is killed at the 60 s call timeout, so older is abandoned
+
+
+def _sweep_abandoned_copies(target: Path) -> None:
+    """Delete the `.<name>.*.edit` and `.tmp` copies of `target` that no write is still using.
+
+    A write that outlives the pool's call timeout has its worker killed before the
+    `finally` below can remove its copy.
+    """
+    now = time.time()
+    # `.edit` is the working copy; `.tmp` is the canonical rebuild `writer.build` makes.
+    for suffix in ("edit", "tmp"):
+        for leftover in target.parent.glob(f".{glob.escape(target.name)}.*.{suffix}"):
+            try:
+                if now - leftover.stat().st_mtime > STALE_EDIT_AGE:
+                    leftover.unlink()
+            except OSError:
+                pass
+
+
+def _land_canonical(edited: Path, target: Path) -> None:
+    """Write the edited content to `target` through the writer's own build.
+
+    The edit mutated a copy in place, which leaves SQLite's page layout and row
+    order as the edit happened to produce them. Reading the content back and
+    handing it to `writer.build` is what `export -> build` does, so the file that
+    lands is byte-identical to a rebuild of the same content (writer.py, top).
+    Baselines (`sources`) are passed through and no source tree is given, so no
+    digest is recomputed. A v3 graph is rebuilt as v3: only a written reference
+    moves it to v4, and that already happened on the copy.
+    """
+    try:
+        version, meta, nodes, sources = upgrade.read_any_version(edited)
+        # build() replaces `target` atomically from its own temp file.
+        writer.build(target, meta, nodes, sources=sources, keep_v3=version < SCHEMA_VERSION)
+    except (writer.BuildError, upgrade.UpgradeError) as exc:
+        raise EditError(str(exc)) from exc
+
+
 def apply(path: str | Path, mutate: Mutate) -> dict[str, Any]:
     """Run one mutation against a copy of the graph, validate it, then swap it in.
 
@@ -147,6 +189,7 @@ def apply(path: str | Path, mutate: Mutate) -> dict[str, Any]:
             f"no code graph at {target}. Create one with /codebase-kg:build before editing."
         )
 
+    _sweep_abandoned_copies(target)
     cache = tools.SourceCache()
     before = _validation(target, cache)
 
@@ -201,10 +244,8 @@ def apply(path: str | Path, mutate: Mutate) -> dict[str, Any]:
                 f"{target} changed while the edit was running, so it was not written. "
                 "Run the edit again."
             )
-        try:
-            writer.replace_file(tmp, target)
-        except writer.BuildError as exc:
-            raise EditError(str(exc)) from exc
+        _land_canonical(tmp, target)
+        tmp.unlink(missing_ok=True)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

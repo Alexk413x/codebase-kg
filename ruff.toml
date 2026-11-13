@@ -1,5 +1,5 @@
 required-version = ">=0.16.10,<0.17"
-# The hooks, launchers and git-hooks run on Python 3.9 even though mcp/ requires 3.10.
+# Python 3.9 is the floor for the hooks, launchers, git-hooks and mcp/ (pyproject.toml, pyright).
 target-version = "py39"
 
 [lint]

@@ -72,14 +72,13 @@ Limit = Annotated[
         ge=1,
         le=_tools.MAX_LIMIT,
         description=(
-            "Most items to return. The result's `total` counts every match and "
-            "`truncated` says whether more remain."
+            "Page size."
         ),
     ),
 ]
 Offset = Annotated[
     int,
-    Field(ge=0, description="Items to skip, for the next page: the previous result's `next_offset`."),
+    Field(ge=0, description="The previous result's `next_offset`."),
 ]
 
 # Only the resolved *path* is remembered between calls — never an open handle.
@@ -137,53 +136,41 @@ def catalog() -> dict[str, Any]:
 # fastmcp wraps a `= None` parameter in a second anyOf and its description ends up nested inside it.
 @mcp.tool(annotations=_QUERY)
 def kg_search(
-    query: Annotated[
-        str, Field(description='Free-form text, e.g. "feed ranking" or "bookmark persistence".')
-    ],
+    query: Annotated[str, Field(description='Free text, e.g. "feed ranking".')],
     kind: Annotated[
         str | None,
-        Field(default=None, description='Optional case-insensitive substring of the node\'s `kind`, e.g. "ViewModel".'),
+        Field(default=None, description="Case-insensitive substring of the node's `kind`."),
     ],
 ) -> dict[str, Any]:
-    """Full-text search the code graph for nodes matching a phrase. Use when you
-    have a concept but no node id — this is the usual entry point. Ranked, up to
-    10 results, each with its `path#Symbol` anchors so you can go straight to the
-    code. CamelCase identifiers are matched in split form, so "video playback"
-    finds `VideoPlaybackService`."""
+    """Full-text search for nodes by concept when you have no node id; the usual
+    entry point. Up to 10 ranked results with `path#Symbol` anchors. CamelCase
+    names match in split form."""
     return _read("kg_search", {"query": query, "kind": kind})
 
 
 @mcp.tool(annotations=_QUERY)
 def kg_node(
-    id: Annotated[
-        str, Field(description="Exact node id, as returned by `kg_search` or another tool.")
-    ],
+    id: Annotated[str, Field(description="Node id.")],
 ) -> dict[str, Any]:
-    """Fetch one full node by id — anchors (`path#Symbol`), description, edges,
-    parity, counterpart, external links and references, plus inbound edges. The
-    primary lookup once you know the id. Returns `found: false` with
-    `did_you_mean` suggestions when the id is unknown.
-
-    Not for finding a node by concept; use `kg_search`. It does not return the
-    neighbours' details or any source text; use `kg_neighborhood` for the nodes
-    around it."""
+    """Fetch one node by id, with anchors, description, edges, inbound edges,
+    links and references. An unknown id returns `found: false` and `did_you_mean`.
+    No source text or neighbour details (use `kg_neighborhood`)."""
     return _read("kg_node", {"id": id})
 
 
 @mcp.tool(annotations=_QUERY)
 def kg_neighborhood(
-    id: Annotated[str, Field(description="Exact id of the node at the center.")],
+    id: Annotated[str, Field(description="Center node id.")],
     depth: Annotated[
         int,
-        Field(description="Hops to expand, 1 to 3; other values are clamped. Depth 3 can reach most of a graph."),
+        Field(description="Hops, 1 to 3 (others clamped). Depth 3 can reach most of a graph."),
     ] = 1,
     limit: Limit = _tools.DEFAULT_LIMIT,
     offset: Offset = 0,
 ) -> dict[str, Any]:
-    """Return a node with its graph neighborhood — outbound edges, inbound edges
-    (who depends on it), and counterpart — expanded `depth` hops. Use to
-    understand what surrounds a node before changing it. Neighbors come nearest
-    first and are paged by `limit`; a truncated result says how to narrow."""
+    """A node with its outbound edges, inbound edges (who depends on it) and
+    counterpart, expanded `depth` hops. Use to see what surrounds a node before
+    changing it. Nearest first, paged by `limit`."""
     return _read("kg_neighborhood", {"id": id, "depth": depth, "limit": limit, "offset": offset})
 
 
@@ -191,18 +178,14 @@ def kg_neighborhood(
 def kg_find_by_kind(
     kind: Annotated[
         str,
-        Field(description='Case-insensitive substring of the node\'s `kind`, e.g. "viewmodel". An empty string matches every node.'),
+        Field(description="Case-insensitive substring of `kind`. Empty matches every node."),
     ],
     limit: Limit = _tools.DEFAULT_LIMIT,
     offset: Offset = 0,
 ) -> dict[str, Any]:
-    """List every node whose free-text `kind` matches (case-insensitive
-    substring) — e.g. all `ViewModel`s, `Service`s, `Room @Entity`s. Use for a
-    category question such as "every migration".
-
-    Not for a concept or a name; use `kg_search`, because `kind` is free text
-    and one category can be spelled several ways. Returns id, kind, description
-    and anchors per node, not edges; call `kg_node` for those."""
+    """List every node whose free-text `kind` matches, for a category question such
+    as "every migration". For a concept or name use `kg_search`: one category can
+    be spelled several ways. Returns id, kind, description and anchors, not edges."""
     return _read("kg_find_by_kind", {"kind": kind, "limit": limit, "offset": offset})
 
 
@@ -210,14 +193,13 @@ def kg_find_by_kind(
 def kg_find_by_path(
     path: Annotated[
         str,
-        Field(description="A repo-relative path, or a bare filename matched as a path suffix, e.g. `FeedRanker.kt`."),
+        Field(description="Repo-relative path, or a bare filename matched as a suffix, e.g. `FeedRanker.kt`."),
     ],
     limit: Limit = _tools.DEFAULT_LIMIT,
     offset: Offset = 0,
 ) -> dict[str, Any]:
-    """Reverse lookup: given a source file, which node(s) own it, and what do
-    they connect to. Use when you have a file open and want its place in the map.
-    Accepts a repo-relative path or a bare filename (matched as a suffix)."""
+    """Which node(s) own a source file, and what they connect to. Use when you
+    have a file and want its place in the map."""
     return _read("kg_find_by_path", {"path": path, "limit": limit, "offset": offset})
 
 
@@ -225,14 +207,12 @@ def kg_find_by_path(
 def kg_find_by_link(
     target: Annotated[
         str,
-        Field(description="A full `<db-file>#<node-id>` target, or a bare peer node id."),
+        Field(description="A `<db-file>#<node-id>` target, or a bare peer node id."),
     ],
 ) -> dict[str, Any]:
-    """Reverse lookup across graphs: which code node(s) link to a node in another
-    committed graph in this repo — typically a screen in `baselines/baseline.db`.
-
-    Use when you have a screen and want the code behind it. Accepts a full
-    `<db-file>#<node-id>` target or a bare peer node id."""
+    """Which code node(s) link to a node in another committed graph in this repo,
+    typically a screen in `baselines/baseline.db`. Use when you have a screen
+    and want the code behind it."""
     return _read("kg_find_by_link", {"target": target})
 
 
@@ -240,19 +220,18 @@ def kg_find_by_link(
 def kg_find_by_reference(
     query: Annotated[
         str | None,
-        Field(default=None, description="Case-insensitive substring of the reference url or title, e.g. `developer.android.com/reference/android/view`. Omit to list every reference."),
+        Field(default=None, description="Case-insensitive substring of url or title. Omit to list all."),
     ],
     kind: Annotated[
         str | None,
-        Field(default=None, description="Exact tag filter: `platform-api`, `spec`, `rfc` or `issue`."),
+        Field(default=None, description="Exact tag: `platform-api`, `spec`, `rfc` or `issue`."),
     ],
     limit: Limit = _tools.DEFAULT_LIMIT,
     offset: Offset = 0,
 ) -> dict[str, Any]:
     """Which node(s) depend on a piece of external documentation. Use when an SDK
-    or spec moves and you need every place the code relies on it.
-
-    Each hit carries the `path` / `symbol` it narrows to, when it has one."""
+    or spec changes and you need every place the code relies on it. Each hit has
+    the `path` / `symbol` it narrows to, if any."""
     return _read("kg_find_by_reference", {"query": query, "kind": kind, "limit": limit, "offset": offset})
 
 
@@ -261,24 +240,16 @@ class LinkSpec(TypedDict, total=False):
     target: Required[
         Annotated[str, Field(description="`<peer-db>#<node>`, relative to `knowledge/`.")]
     ]
-    kind: Annotated[
-        str, Field(description="What the link means from this side, e.g. `presented-by`.")
-    ]
+    kind: str
 
 
 @with_config(ConfigDict(extra="forbid"))
 class ReferenceSpec(TypedDict, total=False):
-    url: Required[
-        Annotated[str, Field(description="The documentation page, e.g. `https://...`.")]
-    ]
-    kind: Annotated[str, Field(description="`platform-api`, `spec`, `rfc` or `issue`.")]
-    title: Annotated[str, Field(description="A human label, e.g. `TouchDelegate`.")]
-    path: Annotated[
-        str, Field(description="Optional. Must equal the path of one of this node's anchors.")
-    ]
-    symbol: Annotated[
-        str, Field(description="Optional. With `path`, must equal one of this node's anchors.")
-    ]
+    url: Required[str]
+    kind: str
+    title: str
+    path: Annotated[str, Field(description="Must equal an anchor's path.")]
+    symbol: Annotated[str, Field(description="With `path`; must match an anchor.")]
 
 
 # Every field skips validation and unknown keys pass through: `edits.upsert_node`
@@ -290,59 +261,34 @@ class NodePatch(TypedDict, total=False):
     id: Required[
         Annotated[
             SkipValidation[str],
-            Field(description="Node id. A node that does not exist yet also needs `kind`."),
+            Field(description="A new node also needs `kind`."),
         ]
     ]
-    kind: Annotated[
-        SkipValidation[str],
-        Field(description="Free text, e.g. 'ViewModel', 'Service', 'module'."),
-    ]
-    description: Annotated[
-        SkipValidation[str],
-        Field(description="What the node does. Refused if it fails the description checks, e.g. a ticket ref."),
-    ]
-    section: Annotated[
-        SkipValidation[str], Field(description="The section the node is listed under.")
-    ]
+    kind: SkipValidation[str]
+    description: SkipValidation[str]
+    section: SkipValidation[str]
     parity: Annotated[
         SkipValidation[str | None],
-        Field(description="`matched`, `divergent` or `<codebase>-only`. `null` clears it."),
+        Field(description="`matched`, `divergent` or `<codebase>-only`."),
     ]
     counterpart: Annotated[
         SkipValidation[str | None],
-        Field(description="`<peer-graph-relative-path>#<peer-node-id>`. `null` clears it."),
+        Field(description="`<peer-graph-path>#<peer-node-id>`."),
     ]
-    divergence: Annotated[
-        SkipValidation[str | None],
-        Field(description="One line, only with parity `divergent`. `null` clears it."),
-    ]
+    divergence: SkipValidation[str | None]
     anchors: Annotated[
         SkipValidation[list[str]],
-        Field(description='`["path/to/File.kt#Symbol", ...]` — symbols, never line numbers. Replaces the whole list.'),
+        Field(description='`["path/File.kt#Symbol"]`: symbols, never line numbers.'),
     ]
-    edges: Annotated[
-        SkipValidation[list[str]],
-        Field(description="Outbound node ids. Both endpoints must exist after this call. Replaces the whole list."),
-    ]
-    external_links: Annotated[
-        SkipValidation[list[LinkSpec]],
-        Field(description="Links to nodes in other committed graphs. Replaces the whole list."),
-    ]
-    references: Annotated[
-        SkipValidation[list[ReferenceSpec]],
-        Field(description="Where the facts this node depends on are documented. Replaces the whole list."),
-    ]
+    edges: SkipValidation[list[str]]
+    external_links: SkipValidation[list[LinkSpec]]
+    references: SkipValidation[list[ReferenceSpec]]
     rebaseline: Annotated[
         SkipValidation[bool],
         Field(
             description=(
-                "`true` records that you checked this node against its source now. It "
-                "re-hashes every file the node anchors, so those files leave "
-                "`changed_since_built` and the pre-push stale-file list. The baseline belongs to "
-                "the file, not the node: it clears every node anchored to that file, the "
-                "same as `build --rebaseline`. Set it only after you have checked every "
-                "node that anchors those files. Without it, a recorded baseline never "
-                "changes, so a description edit alone cannot hide drift."
+                "`true` re-hashes the node's anchored files for every node that anchors "
+                "them. Set it only after checking all of those nodes."
             )
         ),
     ]
@@ -350,142 +296,105 @@ class NodePatch(TypedDict, total=False):
 
 @mcp.tool(annotations={**_WRITE, "destructiveHint": False, "idempotentHint": True}, output_schema=_OBJECT)
 def kg_upsert_node(
-    nodes: Annotated[
-        list[NodePatch],
-        Field(description="One object per node. Only the keys present change."),
-    ],
+    nodes: Annotated[list[NodePatch], Field(description="One object per node.")],
 ) -> dict[str, Any] | ToolResult:
-    """Atomic: if any node in the batch is rejected, nothing is written and the
-    file is byte-identical, and the result is an error with `ok: false`,
-    `written: false` and the reason.
-
-    Create or update node(s) in place — the targeted alternative to
-    export/edit/build. Use for a handful of nodes: a wrong description, an anchor
-    that moved, a missing edge. For bulk work (a parity sweep, a restructuring,
-    anything you want to review as a diff first) still use the plugin's
-    `mcp/launch/kg_cli.py export` → edit the JSON → `kg_cli.py build`.
-
-    **Only the keys you supply change** — omit a field and it keeps its value,
-    pass `null` to clear `parity`/`counterpart`/`divergence`. `anchors`, `edges`,
-    `external_links` and `references` replace the whole list when present, so read
-    the node first if you mean to append. Baselines follow the anchors as a
-    build's do: a file this node anchors that has no baseline gets one, and a
-    file no node anchors any more loses its own.
-
-    Returns every row and field it changed, before and after, including each
-    `source` row (file baseline) it created, re-hashed or dropped.
-    """
+    """Atomic: if any node is rejected nothing is written (`ok: false`,
+    `written: false`). Creates or updates nodes for targeted fixes (bulk work:
+    `kg_cli.py export`, edit, `build`). Only supplied keys change; `null` clears parity,
+    counterpart and divergence. `anchors`, `edges`, `external_links` and
+    `references` replace the whole list, so read the node first to append.
+    Returns each row changed, before and after."""
     return _write(_edits.upsert_node, nodes)
 
 
 @mcp.tool(annotations=_DESTRUCTIVE, output_schema=_OBJECT)
 def kg_delete_node(
-    ids: Annotated[list[str], Field(description="Ids of the nodes to delete.")],
+    ids: Annotated[list[str], Field(description="Node ids.")],
     dry_run: Annotated[
-        bool, Field(description="True previews what would go and writes nothing. Pass false to apply.")
+        bool, Field(description="True previews and writes nothing; pass false to apply.")
     ] = True,
     cascade_inbound: Annotated[
         bool,
-        Field(description="Also remove edges from other nodes that point at these, in the same atomic call. Without it such edges block the delete."),
+        Field(description="Also remove other nodes' edges into these; otherwise they block the delete."),
     ] = False,
 ) -> dict[str, Any] | ToolResult:
-    """Delete node(s). **Previews by default** — call with `dry_run=false` to apply.
-
-    A node does not leave alone: its anchors, its outbound edges and its external
-    links cascade away with it, and so does the baseline of any file no remaining
-    node anchors. Edges pointing *at* it do not — `ON DELETE
-    RESTRICT` blocks the delete instead, so a relationship is never dropped by
-    accident. Pass `cascade_inbound=true` to remove those edges as part of the
-    same atomic call, having seen them in the dry run.
-
-    The preview lists exactly what would go. Nothing is written unless
-    `dry_run=false`, and even then the delete is rejected whole if it would break
-    the graph."""
+    """Delete nodes; previews unless `dry_run=false`. A node's anchors, outbound
+    edges and external links go with it. Edges from other nodes into it block the
+    delete unless `cascade_inbound=true`. Rejected whole if it would break the graph."""
     return _write(_edits.delete_node, ids, dry_run=dry_run, cascade_inbound=cascade_inbound)
 
 
 @mcp.tool(annotations=_WRITE, output_schema=_OBJECT)
 def kg_add_link(
-    node_id: Annotated[str, Field(description="Id of the code node the link starts from.")],
+    node_id: Annotated[str, Field(description="Code node id.")],
     target: Annotated[
         str,
-        Field(description="`<db-file>#<node-id>`, relative to `knowledge/` and never absolute (an absolute path breaks on the next clone)."),
+        Field(description="`<db-file>#<node-id>`, relative to `knowledge/`, never absolute."),
     ],
     kind: Annotated[
         str,
-        Field(description="What the link means from this side: `implements`, `presented-by`, `tests`, `documents`. Empty means unspecified."),
+        Field(description="E.g. `implements`, `presented-by`, `tests`, `documents`. Empty means unspecified."),
     ] = "",
 ) -> dict[str, Any] | ToolResult:
-    """Point a code node at a node in another committed graph in this repo —
-    typically a screen in `baselines/baseline.db`. The inverse of `kg_find_by_link`.
-    An empty `kind` is honest for a link nobody has characterised.
-
-    Refused if the peer graph is present and does not contain that node, so a
-    typo'd target cannot be committed."""
+    """Point a code node at a node in another committed graph in this repo,
+    typically a screen in `baselines/baseline.db`. Inverse of `kg_find_by_link`.
+    Refused if the peer graph is present and lacks that node."""
     return _write(_edits.add_link, node_id, target, kind)
 
 
 @mcp.tool(annotations=_DESTRUCTIVE, output_schema=_OBJECT)
 def kg_remove_link(
-    node_id: Annotated[str, Field(description="Id of the code node that holds the link.")],
+    node_id: Annotated[str, Field(description="Code node id.")],
     target: Annotated[
-        str, Field(description="The link's `<db-file>#<node-id>` target, as `kg_node` lists it.")
+        str, Field(description="As `kg_node` lists it.")
     ],
 ) -> dict[str, Any] | ToolResult:
-    """Remove one cross-graph link from a node. The node, its anchors and its
-    edges are untouched — this drops the pointer only. Refused when the node has
-    no link to `target`.
-
-    Not for a documentation reference (use `kg_remove_reference`) or an edge
-    between code nodes (use `kg_upsert_node` with the new `edges` list). Returns
-    the change, not the node; call `kg_node` to see the links that remain."""
+    """Remove one cross-graph link from a node; the node, anchors and edges stay.
+    Refused when the node has no link to `target`. Not for a documentation
+    reference (`kg_remove_reference`) or an edge between code nodes
+    (`kg_upsert_node` with the new `edges`). Returns the change, not the node."""
     return _write(_edits.remove_link, node_id, target)
 
 
 @mcp.tool(annotations=_WRITE, output_schema=_OBJECT)
 def kg_add_reference(
-    node_id: Annotated[str, Field(description="Id of the code node that depends on the documented fact.")],
-    url: Annotated[str, Field(description="The documentation page's URL.")],
+    node_id: Annotated[str, Field(description="Code node id.")],
+    url: Annotated[str, Field(description="Documentation URL.")],
     kind: Annotated[
-        str, Field(default="", description="A short tag: `platform-api`, `spec`, `rfc`, `issue`.")
+        str, Field(default="", description="`platform-api`, `spec`, `rfc` or `issue`.")
     ],
-    title: Annotated[str, Field(default="", description="A human label for the page.")],
+    title: Annotated[str, Field(default="", description="Label.")],
     path: Annotated[
         str | None,
-        Field(default=None, description="Optional. Narrows the reference to one file; must equal the path of one of the node's anchors."),
+        Field(default=None, description="Must equal the path of one of the node's anchors."),
     ],
     symbol: Annotated[
         str | None,
-        Field(default=None, description="Optional. With `path`, narrows to one function; `path` + `symbol` must equal one of the node's anchors."),
+        Field(default=None, description="With `path`; together they must equal one of the node's anchors."),
     ],
 ) -> dict[str, Any] | ToolResult:
-    """Record where a fact a code node depends on is documented — a platform API
-    page, a spec, an RFC, an issue. The inverse of `kg_find_by_reference`.
-
-    A `path` / `symbol` narrowing that matches none of the node's own anchors is
-    refused — read the node first.
-
-    Not for a link to a node in another graph; that is `kg_add_link`."""
+    """Record where a fact a code node depends on is documented: an API page, spec,
+    RFC or issue. Inverse of `kg_find_by_reference`. A `path` / `symbol` that
+    matches none of the node's anchors is refused, so read the node first. Not for
+    a link to a node in another graph (`kg_add_link`)."""
     return _write(_edits.add_reference, node_id, url, kind, title, path, symbol)
 
 
 @mcp.tool(annotations=_DESTRUCTIVE, output_schema=_OBJECT)
 def kg_remove_reference(
-    node_id: Annotated[str, Field(description="Id of the code node that holds the reference.")],
-    url: Annotated[str, Field(description="The reference's URL, exactly as `kg_node` lists it.")],
+    node_id: Annotated[str, Field(description="Code node id.")],
+    url: Annotated[str, Field(description="As `kg_node` lists it.")],
     path: Annotated[
         str | None,
-        Field(default=None, description="Optional. The narrowing's path; with it, only the reference with exactly this `path` and `symbol` goes."),
+        Field(default=None, description="Removes only the reference with exactly this `path` and `symbol`."),
     ],
     symbol: Annotated[
         str | None,
-        Field(default=None, description="Optional. The narrowing's symbol; with it, only the reference with exactly this `path` and `symbol` goes."),
+        Field(default=None, description="See `path`."),
     ],
 ) -> dict[str, Any] | ToolResult:
-    """Remove a node's reference(s) to `url`. With `path` / `symbol`, removes only
-    the reference with that exact narrowing; without, every reference to the url.
-    Refused when nothing matches.
-
-    Not for a link to a node in another graph; that is `kg_remove_link`. Returns
-    the change, not the node; call `kg_node` to see the references that remain."""
+    """Remove a node's references to `url`: all of them, or with `path` / `symbol`
+    only the one with that exact narrowing. Refused when nothing matches. Not for
+    a link to a node in another graph (`kg_remove_link`). Returns the change, not
+    the node."""
     return _write(_edits.remove_reference, node_id, url, path, symbol)

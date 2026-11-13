@@ -1,4 +1,10 @@
 #!/bin/sh
 shim="$(dirname "$0")/../src/codebase_kg/shim.py"
-if command -v python3 >/dev/null 2>&1; then exec python3 "$shim" "$@"; fi
-exec python "$shim" "$@"
+# Each candidate must run: on Windows (Git Bash), python3 can be a Microsoft
+# Store stub that exists on PATH and fails when called, so the py launcher is
+# tried first. Same probe as git-hooks/pre-push.
+for candidate in "py -3" python3 python; do
+  if $candidate -c "" </dev/null >/dev/null 2>&1; then exec $candidate "$shim" "$@"; fi
+done
+echo "kg-shim: no working Python interpreter (tried py -3, python3, python)" >&2
+exit 127

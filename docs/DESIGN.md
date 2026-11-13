@@ -38,7 +38,11 @@ These are locked — change them only with a deliberate reason.
     Setting it for someone would route around that protection and make vendored scripts live in a
     fresh clone without anyone choosing to run them. The plugin therefore ships `install.sh` as a
     committed, per-clone command a person runs, and the `SessionStart` hook only names it. A plugin
-    the user installed may suggest; it may not decide.
+    the user installed may suggest; it may not decide. The one write the hook makes to a clone's
+    git config changes the release an already installed `diff.codegraph.textconv` pins, once that
+    tag is published; it never sets `core.hooksPath` or a driver that is absent. Run with `--codex`,
+    it also moves the codebase-kg paths in Codex's `config.toml` to the installed plugin; `SKIP_KG`
+    skips both.
 
 ## Resolved open questions
 

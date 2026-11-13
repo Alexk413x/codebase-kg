@@ -587,23 +587,63 @@ def _try_connect(build: str, hello: dict[str, Any]) -> Connected | None:
         return None
 
 
+def _lock_abandoned(lock: Path) -> bool:
+    """True when the lock is old, or its holder is a process that no longer exists."""
+    if time.time() - lock.stat().st_mtime > max(CONNECT_BUDGET, SPAWN_BUDGET) * 2:
+        return True
+    holder = lock.read_text(encoding="utf-8").strip()
+    return holder.isdigit() and not pid_alive(int(holder))
+
+
+_REAP_STALE = 10.0  # a reaper that left its marker behind this long ago has died
+
+
+def _clear_abandoned(lock: Path) -> bool:
+    """Remove `lock` if it is still abandoned, one process at a time.
+
+    Two processes that both judged the lock abandoned must not both remove it: the
+    second would delete the first's fresh lock, and both would then hold it. So the
+    removal runs under a second exclusive-create marker, and the lock is judged
+    again inside it. Returns False when another process is clearing it.
+    """
+    marker = lock.with_name(lock.name + ".reap")
+    try:
+        fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        try:
+            if time.time() - marker.stat().st_mtime > _REAP_STALE:
+                marker.unlink()
+        except OSError:
+            pass
+        return False
+    except OSError:
+        return False
+    os.close(fd)
+    try:
+        if _lock_abandoned(lock):
+            lock.unlink()
+        return True
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+    finally:
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+
+
 def take_lock(build: str) -> bool:
     lock = lock_path(build)
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         try:
-            abandoned = time.time() - lock.stat().st_mtime > max(CONNECT_BUDGET, SPAWN_BUDGET) * 2
-            if not abandoned:
-                holder = lock.read_text(encoding="utf-8").strip()
-                abandoned = holder.isdigit() and not pid_alive(int(holder))
+            abandoned = _lock_abandoned(lock)
         except (OSError, ValueError):
             return False
-        if abandoned:
-            try:
-                lock.unlink()
-            except OSError:
-                return False
+        if abandoned and _clear_abandoned(lock):
             return take_lock(build)
         return False
     with os.fdopen(fd, "w") as f:
@@ -612,8 +652,12 @@ def take_lock(build: str) -> bool:
 
 
 def release_lock(build: str) -> None:
+    """Remove the spawn lock, but only if this process still holds it: a lock cleared
+    as abandoned and taken by another process is not ours to delete."""
+    lock = lock_path(build)
     try:
-        lock_path(build).unlink()
+        if lock.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            lock.unlink()
     except OSError:
         pass
 
@@ -677,7 +721,13 @@ def spawn_server_outside_job(build: str) -> None:
     Codex runs an HTTP headers helper in a job object that refuses breakaway and
     kills every descendant when the helper exits, so `spawn_server` leaves no server behind there.
     """
-    env = {k: v for k, v in os.environ.items() if k.startswith("CODEBASE_KG_") and k != "CODEBASE_KG_PATH"}
+    # The WMI child inherits nothing from this process, so forward every setting the
+    # server reads: the CODEBASE_KG_* overrides and the plugin's CLAUDE_PLUGIN_OPTION_* settings
+    # (`server_port`, `max_workers`).
+    env = {
+        k: v for k, v in os.environ.items()
+        if k.startswith(("CODEBASE_KG_", "CLAUDE_PLUGIN_OPTION_")) and k != "CODEBASE_KG_PATH"
+    }
     code = (
         f"import os,sys;sys.stderr=open({str(log_path(build))!r},'a',encoding='utf-8',buffering=1);"
         f"os.environ.update({env!r});{_SERVER_ENTRY}"

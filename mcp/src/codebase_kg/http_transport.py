@@ -73,6 +73,11 @@ NOT_ONE_MESSAGE = "Body must be a single JSON-RPC request or notification object
 MAX_CLIENTS = 1024
 MAX_BODY = 8 * 1024 * 1024
 KEEPALIVE_TIMEOUT = 60.0
+# A refusal reads up to this much of the request body before it closes, and waits
+# this long for it. Closing with the body unread resets the connection on
+# Windows, and the client sees an aborted connection, not the status.
+DRAIN_MAX = 1024 * 1024
+DRAIN_TIMEOUT = 2.0
 HANDOVER_TIMEOUT = 5.0
 LISTED = {"ttlMs": 0, "cacheScope": "private"}
 
@@ -196,8 +201,28 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         pass
 
+    def handle_one_request(self) -> None:
+        self._body_taken = False
+        super().handle_one_request()
+
+    def _drain(self) -> None:
+        """Read and drop the unread request body, so the close that follows does not reset the connection."""
+        self._body_taken = True
+        try:
+            left = min(int(self.headers.get("content-length") or 0), DRAIN_MAX)
+            self.connection.settimeout(DRAIN_TIMEOUT)
+            while left > 0:
+                chunk = self.rfile.read(min(left, 65536))
+                if not chunk:
+                    break
+                left -= len(chunk)
+        except (OSError, ValueError):
+            pass
+
     def _send(self, status: int, body: bytes = b"", content_type: str | None = "application/json",
               headers: dict[str, str] | None = None) -> None:
+        if self.close_connection and not self._body_taken:
+            self._drain()
         self.send_response_only(status)
         if content_type and body:
             self.send_header("Content-Type", content_type)
@@ -267,6 +292,7 @@ class Handler(BaseHTTPRequestHandler):
         length = self.headers.get("content-length")
         if chunked and length is not None:
             raise BodyError(400)
+        self._body_taken = True
         if chunked:
             return self._chunks()
         try:

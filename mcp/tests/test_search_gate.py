@@ -520,7 +520,7 @@ def test_it_degrades_to_a_warning_when_state_cannot_be_written(
     def boom(*_: object, **__: object) -> None:
         raise OSError("read-only")
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    monkeypatch.setattr(tempfile, "mkstemp", boom)
     result = run(monkeypatch, capsys, repo, "Grep", {"pattern": "x"})
     assert decision(result) is None
     assert "kg_search" in result["systemMessage"]  # type: ignore[index]
@@ -940,3 +940,12 @@ def test_two_handlers_for_one_shell_call_decide_once(
         outputs.append(capsys.readouterr().out.strip())
     assert decision(json.loads(outputs[0])) == "deny"
     assert outputs[1] == ""
+
+
+def test_a_graph_query_in_a_repo_with_no_graph_leaves_no_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert run(monkeypatch, capsys, bare, "mcp__codebase-kg__kg_search", {"q": "feed"}) is None
+    assert not gate._state_path(bare, "s1").exists()

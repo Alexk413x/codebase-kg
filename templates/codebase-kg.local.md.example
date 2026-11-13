@@ -39,6 +39,12 @@ gate_shell_search: true
 # repeat of a search that was just denied — the escape hatch for code the graph has not mapped yet.
 # No value here can strand an agent.
 gate_credit: 3
+
+# File extensions that never count as source, for a graph that declares no `covers` patterns (a
+# graph with `covers` decides by those patterns instead, and ignores this). Setting it REPLACES
+# the default list, so repeat the entries you want to keep. Default:
+#   [.md, .markdown, .txt, .json, .lock, .yaml, .yml, .toml, .cfg, .ini, .gitignore, .gitattributes, .pro]
+# exclude_ext: [.md, .txt, .json, .lock, .yaml, .yml, .toml, .svg]
 ---
 
 # codebase-kg — local config

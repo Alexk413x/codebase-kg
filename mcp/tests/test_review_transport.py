@@ -141,6 +141,40 @@ def test_a_lock_with_no_pid_yet_is_kept(cache: Path) -> None:
     assert not shim.take_lock(BUILD)
 
 
+def test_a_second_process_does_not_clear_a_lock_the_first_just_took(
+    cache: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both judged the dead holder's lock abandoned; the first cleared it and took it.
+    The second must see the fresh lock and leave it, not delete it and take it too."""
+    lock = shim.lock_path(BUILD)
+    lock.write_text(str(_dead_pid()), encoding="utf-8")
+    other = str(os.getppid())
+    real = shim.pid_alive
+    judged: list[int] = []
+
+    def alive(pid: int) -> bool:
+        if not judged:
+            judged.append(pid)
+            lock.write_text(other, encoding="utf-8")  # the first process takes over
+            return False
+        return real(pid)
+
+    monkeypatch.setattr(shim, "pid_alive", alive)
+    assert not shim.take_lock(BUILD)
+    assert lock.read_text(encoding="utf-8") == other
+    assert not lock.with_name(lock.name + ".reap").exists()
+
+
+def test_a_lock_another_process_holds_is_not_released_by_this_one(cache: Path) -> None:
+    lock = shim.lock_path(BUILD)
+    lock.write_text(str(os.getppid()), encoding="utf-8")
+    shim.release_lock(BUILD)
+    assert lock.exists()
+    lock.write_text(str(os.getpid()), encoding="utf-8")
+    shim.release_lock(BUILD)
+    assert not lock.exists()
+
+
 # --- 34: an unusable roots answer ----------------------------------------------
 @pytest.mark.parametrize("roots", [
     [],

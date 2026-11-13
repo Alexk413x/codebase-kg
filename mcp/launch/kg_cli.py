@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.9"
 # dependencies = []
 # ///
 """Run a codebase-kg CLI from any repo: kg_cli.py build|export|migrate|upgrade|query|server|codex-config [args].
