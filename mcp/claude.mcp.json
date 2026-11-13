@@ -3,7 +3,7 @@
     "codebase-kg": {
       "type": "http",
       "url": "http://127.0.0.1:${user_config.server_port}/mcp",
-      "headersHelper": ". \"${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_headers.cmd\"; exit $LASTEXITCODE"
+      "headersHelper": "call=\"${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_headers.cmd\"; . \"${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_headers.cmd\"; exit $LASTEXITCODE"
     }
   }
 }

@@ -34,7 +34,6 @@ from codebase_kg.writer import build
 SRC = Path(__file__).resolve().parent.parent / "src"
 SHIM = SRC / "codebase_kg" / "shim.py"
 BUILD = shim.server_build()
-LAUNCHER = '. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/'
 TIMEOUT = 30.0
 
 def _sha(p: Path) -> str:
@@ -518,7 +517,8 @@ def test_claude_mcp_json_declares_the_http_server_with_the_headers_helper():
     entry = json.loads((root / "mcp" / "claude.mcp.json").read_text(encoding="utf-8"))["mcpServers"]["codebase-kg"]
     assert entry["type"] == "http"
     assert entry["url"] == "http://127.0.0.1:${user_config.server_port}/mcp"
-    assert entry["headersHelper"] == f'{LAUNCHER}kg_headers.cmd"; exit $LASTEXITCODE'
+    launcher = '"${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_headers.cmd"'
+    assert entry["headersHelper"] == f'call={launcher}; . {launcher}; exit $LASTEXITCODE'
     assert (root / "mcp" / "launch" / "kg_headers.py").is_file()
     manifest = json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert manifest["userConfig"]["server_port"]["type"] == "number"

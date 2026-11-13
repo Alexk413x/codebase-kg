@@ -36,8 +36,26 @@ when there is no `pwsh`). One command string has to work in all of them, so each
 opens a here-document in `sh` that hides the batch lines, and is a label to `cmd.exe`, which runs the
 batch lines when PowerShell starts the `.cmd`. Each half probes `py -3`, then `python3`, then `python`
 by running it with `-c ""`, so the Microsoft Store `python3` stub is skipped, and then runs the script
-once: a script that exits non-zero is not retried under another interpreter. The headers helper in
-`mcp/claude.mcp.json` uses the same launcher for `kg_headers.py`.
+once: a script that exits non-zero is not retried under another interpreter.
+
+The headers helper in `mcp/claude.mcp.json` uses the same launcher for `kg_headers.py`, through a
+different command. Claude Code starts the helper with Node's `shell: true`, which is `cmd.exe` on
+Windows and `/bin/sh` elsewhere, never Git Bash. `cmd.exe` cannot run `. "<file>"`, so the helper is
+
+```
+call="${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_headers.cmd"; . "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_headers.cmd"; exit $LASTEXITCODE
+```
+
+Claude Code replaces the placeholder with the plugin folder before it starts the shell. `cmd.exe`
+treats `=` and `;` as word separators, so it reads the first statement as `call "<file>"` with the
+rest of the line as arguments, which the launcher ignores. `sh` reads `call="<file>"` as a variable
+assignment, which prints nothing, and then sources the launcher. PowerShell, if a user makes it the
+shell, reports `call=...` as an unknown command on stderr and runs the second statement. In every
+shell the launcher runs once, prints one JSON object, and exits 0. `cmd.exe` `call` doubles a `^`
+in the path, so a plugin folder whose path holds `^` or `%` does not work there.
+`test_hook_config.py` runs the configured string through `cmd.exe` as Node starts it
+(`cmd.exe /d /s /c "<command>"`), and through `sh`, `bash`, `dash`, Windows PowerShell 5.1 and
+PowerShell 7.
 
 PowerShell is a full path, not a fallback: it is on every Windows machine, and Git Bash is not.
 
