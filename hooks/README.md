@@ -49,7 +49,8 @@ call="${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_headers.cmd"; . "${CLAUDE_PLUGIN_R
 Claude Code replaces the placeholder with the plugin folder before it starts the shell. `cmd.exe`
 treats `=` and `;` as word separators, so it reads the first statement as `call "<file>"` with the
 rest of the line as arguments, which the launcher ignores. `sh` reads `call="<file>"` as a variable
-assignment, which prints nothing, and then sources the launcher. PowerShell, if a user makes it the
+assignment, which prints nothing, and then sources the launcher, which finds the plugin folder from
+`$call` when `CLAUDE_PLUGIN_ROOT` is not set. PowerShell, if a user makes it the
 shell, reports `call=...` as an unknown command on stderr and runs the second statement. In every
 shell the launcher runs once, prints one JSON object, and exits 0. `cmd.exe` `call` doubles a `^`
 in the path, so a plugin folder whose path holds `^` or `%` does not work there.
@@ -65,8 +66,13 @@ PowerShell is a full path, not a fallback: it is on every Windows machine, and G
   `call exit /b %%errorlevel%%`; a bare `exit /b` there returned 0 whatever the script returned.
 - **Finding the script.** The batch half builds the script path from its own folder (`%~dp0`), so
   it needs no environment variable. The `sh` half uses `CLAUDE_PLUGIN_ROOT`, then the launcher's
-  own path when the shell is bash, then the working folder, which is the plugin folder when Claude
-  Code runs the headers helper.
+  own path when the shell is bash, then the folder above `$call`, which the headers helper command
+  sets. When none of them is set it prints `cannot find the plugin folder` and exits 127. It never
+  uses the working folder, because a hook runs in the project.
+- **No interpreter from the working folder.** `cmd.exe` looks for a command in the working folder
+  before `PATH`, so a `py.bat` in a project would run in place of the real `py`. The batch half sets
+  `NoDefaultCurrentDirectoryInExePath=1` before it starts any interpreter, which turns that lookup
+  off. `mcp/launch/kg-shim.cmd` does the same.
 - **No script policy.** The launcher is a `.cmd` file, so the PowerShell execution policy, which
   blocks `.ps1` files on a default Windows install, does not apply.
 - **Tested** in Windows PowerShell 5.1 and PowerShell 7 (`test_hook_config.py`): a payload on

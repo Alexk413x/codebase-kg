@@ -539,6 +539,7 @@ def test_the_platform_shim_launchers_stay_for_stdio_clients():
     assert (launch / ".." / "src" / "codebase_kg" / "shim.py").resolve().is_file()
     assert posix.startswith("#!/bin/sh") and "\r\n" not in posix
     assert "py -3" in windows and "\r\n" in windows
+    assert windows.index("set NoDefaultCurrentDirectoryInExePath=1") < windows.index("where py")
 
 
 def _launcher_run(tmp_path: Path, stubs: dict[str, str], *args: str) -> subprocess.CompletedProcess[bytes]:

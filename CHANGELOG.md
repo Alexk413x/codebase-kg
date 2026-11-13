@@ -2,6 +2,26 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.16.2] — 2026-11-13 — Launchers never run an interpreter or script from the project folder
+
+### Security
+
+- On Windows, a project could run its own code through codebase-kg. `cmd.exe` looks in the working
+  folder before `PATH`, and the hook launchers, the headers helper and `mcp/launch/kg-shim.cmd` all
+  start `py`, `python3` or `python` through `cmd.exe`. A hook runs in the project, so a `py.bat`
+  committed to a repo ran in place of the real `py`. It affected the hooks under PowerShell (Windows
+  without Git Bash), the headers helper, and stdio clients that launch `kg-shim.cmd` in the project.
+  Each batch launcher now sets `NoDefaultCurrentDirectoryInExePath=1` before it starts an
+  interpreter, which turns that lookup off.
+- The `sh` half of each launcher no longer falls back to the working folder to find the plugin. In
+  a shell other than bash with no `CLAUDE_PLUGIN_ROOT`, such as `dash` on Linux, it ran
+  `./hooks/<script>.py` from the project. It now finds the plugin folder from `CLAUDE_PLUGIN_ROOT`,
+  the launcher's own path in bash, or `$call`, which the headers helper command sets. Without any of
+  them it prints `cannot find the plugin folder` and exits 127.
+- New tests run every launcher in a project folder that holds a planted `py.bat`, `python3.bat`,
+  `python.bat` and plugin scripts, through `cmd.exe`, Windows PowerShell, PowerShell 7, `sh`, `bash`
+  and `dash`, and check that none of them runs.
+
 ## [0.16.1] — 2026-11-13 — The MCP server connects on Windows again
 
 ### Fixed

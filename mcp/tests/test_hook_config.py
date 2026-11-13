@@ -433,7 +433,7 @@ def test_the_launcher_says_so_when_no_interpreter_starts_in_sh(tmp_path: Path) -
 POWERSHELLS = ["powershell", "pwsh"]
 
 
-def _powershell(shell: str, command: str, env: dict[str, str], payload: bytes = b""):
+def _powershell(shell: str, command: str, env: dict[str, str], payload: bytes = b"", cwd: Path | None = None):
     """Run `command` the way Claude Code does on Windows without Git Bash."""
     import shutil
     import subprocess
@@ -442,7 +442,7 @@ def _powershell(shell: str, command: str, env: dict[str, str], payload: bytes = 
     if sys.platform != "win32" or exe is None:
         pytest.skip(f"{shell} on Windows only")
     return subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", command], input=payload,
-                          env=env, capture_output=True, timeout=60, check=False)
+                          env=env, cwd=cwd, capture_output=True, timeout=60, check=False)
 
 
 def _powershell_command(stem: str = "kg_session_end") -> str:
@@ -494,10 +494,36 @@ def test_the_launcher_says_so_when_no_interpreter_starts_in_powershell(
     assert not runs.exists()
 
 
+def _planted_project(tmp_path: Path) -> Path:
+    """A project folder holding look-alike interpreters and plugin scripts. Each one that runs
+    creates `ran` in the folder and prints `planted`."""
+    project = tmp_path / "project"
+    for rel in ("hooks/kg_session_end.py", "mcp/launch/kg_headers.py"):
+        (project / rel).parent.mkdir(parents=True, exist_ok=True)
+        (project / rel).write_bytes(f"open({str(project / 'ran')!r}, 'w')\nprint('planted')\n".encode())
+    for name in ("py", "python3", "python"):
+        (project / f"{name}.bat").write_bytes(b'@echo planted>"%~dp0ran"\r\n@echo planted\r\n')
+        (project / name).write_bytes(b'#!/bin/sh\necho planted > "$(dirname "$0")/ran"\necho planted\n')
+        (project / name).chmod(0o755)
+    return project
+
+
+def _without_cwd_guard(env: dict[str, str]) -> dict[str, str]:
+    """`env` without NoDefaultCurrentDirectoryInExePath, which Claude Code's own shell may already
+    set. Windows reports environment names in upper case."""
+    return {k: v for k, v in env.items() if k.upper() != "NODEFAULTCURRENTDIRECTORYINEXEPATH"}
+
+
+def test_the_launchers_turn_off_the_working_folder_lookup_before_any_interpreter() -> None:
+    text = (RUN / "kg_search_gate.cmd").read_bytes().decode("utf-8")
+    assert text.index("set NoDefaultCurrentDirectoryInExePath=1\n") < text.index("py -3")
+    assert "kg_root=." not in text
+
+
 @pytest.mark.parametrize("shell", ["sh", "bash", "dash"])
-def test_the_launcher_finds_the_script_in_sh_without_the_variable(tmp_path: Path, shell: str) -> None:
-    """Without the variable, bash finds the plugin from the launcher's own path; a plain sh uses
-    the working folder, which is the plugin folder when Claude Code runs the headers helper."""
+def test_the_launcher_never_runs_a_script_from_the_working_folder_in_sh(tmp_path: Path, shell: str) -> None:
+    """Without the variable, bash finds the plugin from the launcher's own path. A shell that cannot
+    (dash) stops with exit 127 instead of using the working folder, which is the project for a hook."""
     import shutil
     import subprocess
 
@@ -507,10 +533,30 @@ def test_the_launcher_finds_the_script_in_sh_without_the_variable(tmp_path: Path
     _, env = _plugin_with(tmp_path, "kg_session_end", _interpreter_stubs())
     root = env.pop("CLAUDE_PLUGIN_ROOT")
     command = (LAUNCH_PREFIX + "kg_session_end" + LAUNCH_TAIL).replace("${CLAUDE_PLUGIN_ROOT}", root)
-    done = subprocess.run([exe, "-c", command], input=b'{"k": 4}', env=env, cwd=root,
+    project = _planted_project(tmp_path)
+    done = subprocess.run([exe, "-c", command], input=b'{"k": 4}', env=env, cwd=project,
                           capture_output=True, timeout=30, check=False)
-    assert done.returncode == 3, done.stderr
-    assert done.stdout.decode().strip() == 'got:{"k": 4}'
+    assert not (project / "ran").exists() and b"planted" not in done.stdout
+    if done.returncode == 127:
+        assert b"cannot find the plugin folder" in done.stderr
+    else:
+        assert done.returncode == 3, done.stderr
+        assert done.stdout.decode().strip() == 'got:{"k": 4}'
+    if shell == "bash":
+        assert done.returncode == 3
+
+
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_the_hook_command_ignores_interpreters_in_the_working_folder_in_powershell(
+    tmp_path: Path, shell: str
+) -> None:
+    runs, env = _plugin_with(tmp_path, "kg_session_end")
+    project = _planted_project(tmp_path)
+    done = _powershell(shell, _powershell_command(), _without_cwd_guard(env), b'{"k": 5}', cwd=project)
+    assert not (project / "ran").exists()
+    assert done.stdout.decode().strip() == 'got:{"k": 5}', done.stderr
+    assert done.returncode == 3
+    assert runs.read_text(encoding="utf-8") == "x"
 
 
 # --- the headers helper -------------------------------------------------------
@@ -534,7 +580,7 @@ def test_the_headers_helper_runs_the_launcher_in_cmd_and_sources_it_in_sh() -> N
     assert _headers_helper() == f"call={HEADERS_LAUNCHER}; . {HEADERS_LAUNCHER}; exit $LASTEXITCODE"
 
 
-def _run_helper(shell: str, root: Path, env: dict[str, str]):
+def _run_helper(shell: str, root: Path, env: dict[str, str], cwd: Path | None = None):
     """Run the configured headers helper with the placeholder already replaced, as Claude Code does."""
     import os
     import shutil
@@ -556,7 +602,7 @@ def _run_helper(shell: str, root: Path, env: dict[str, str]):
         command = _headers_helper().replace(
             "${CLAUDE_PLUGIN_ROOT}", str(root) if windows_only else root.as_posix())
         args = [exe, "-NoProfile", "-NonInteractive", "-Command", command] if windows_only else [exe, "-c", command]
-    return subprocess.run(args, env=env, cwd=root, capture_output=True, timeout=60, check=False)
+    return subprocess.run(args, env=env, cwd=cwd or root, capture_output=True, timeout=60, check=False)
 
 
 def _helper_plugin(tmp_path: Path, folder: str) -> tuple[Path, Path, dict[str, str]]:
@@ -592,6 +638,23 @@ def test_the_headers_helper_prints_one_json_object_once_in_each_shell(
     assert runs.read_text(encoding="utf-8") == "x"
     if shell not in ("powershell", "pwsh"):
         assert done.stderr == b""
+
+
+@pytest.mark.parametrize("shell", HELPER_SHELLS)
+def test_the_headers_helper_ignores_interpreters_and_scripts_in_the_working_folder(
+    tmp_path: Path, shell: str
+) -> None:
+    """`sh` finds the plugin from `$call`, which the helper command sets, and `cmd.exe` does not
+    look in the working folder for an interpreter."""
+    import json
+
+    root, runs, env = _helper_plugin(tmp_path, "plug in")
+    project = _planted_project(tmp_path)
+    done = _run_helper(shell, root, _without_cwd_guard(env), cwd=project)
+    assert not (project / "ran").exists()
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == {"X-Codebase-KG-Client": "c"}
+    assert runs.read_text(encoding="utf-8") == "x"
 
 
 def test_the_headers_helper_says_so_in_cmd_when_no_interpreter_starts(tmp_path: Path) -> None:
