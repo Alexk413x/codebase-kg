@@ -1,9 +1,9 @@
 [project]
 name = "codebase-kg"
-version = "0.15.4"
+version = "0.16.0"
 description = "Local MCP server over a per-repo committed code_graph.db — a SQLite map of a codebase (nodes, symbol anchors, edges) exposed to agents as deterministic typed queries with full-text search."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 authors = [{ name = "Alexk413x", email = "alexk413x@gmail.com" }]
 license = { text = "LicenseRef-No-Resale-1.0" }
 # The server, the hooks and the CLIs import only the standard library.
@@ -21,7 +21,7 @@ codebase-kg-build = "codebase_kg.build:main"
 codebase-kg-migrate = "codebase_kg.migrate:main"
 
 [build-system]
-requires = ["hatchling>=1.29.0"]
+requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -30,7 +30,8 @@ packages = ["src/codebase_kg"]
 [dependency-groups]
 dev = [
     # The tool definitions in server.py, the catalog generator, the tests and the benchmarks.
-    "fastmcp>=4.0.3,<5",
+    # fastmcp needs Python 3.10+; on 3.9 the server tests that import it are skipped.
+    "fastmcp>=4.0.3,<5; python_full_version >= '3.10'",
     "pytest>=8,<10",
     "pyright>=1.1.400",
 ]
@@ -46,5 +47,5 @@ include = ["src", "tests", "scripts"]
 extraPaths = ["../git-hooks", "../hooks"]
 venvPath = "."
 venv = ".venv"
-pythonVersion = "3.10"
+pythonVersion = "3.9"
 typeCheckingMode = "standard"
