@@ -949,3 +949,70 @@ def test_a_graph_query_in_a_repo_with_no_graph_leaves_no_state(
     bare.mkdir()
     assert run(monkeypatch, capsys, bare, "mcp__codebase-kg__kg_search", {"q": "feed"}) is None
     assert not gate._state_path(bare, "s1").exists()
+
+
+def test_a_glob_pattern_rooted_outside_the_repo_is_free(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An absolute or `~` Glob pattern with no `path` was read as unscoped,
+    so a search of the plugin cache was gated as a search of this repo."""
+    outside = (tmp_path / "cache").as_posix()
+    for pattern in (f"{outside}/**/*.py", "~/.some-plugin-cache/**/*.py"):
+        assert run(monkeypatch, capsys, repo, "Glob", {"pattern": pattern}) is None
+    inside = f"{repo.as_posix()}/app/src/**/*.kt"
+    assert decision(run(monkeypatch, capsys, repo, "Glob", {"pattern": inside})) == "deny"
+
+
+def test_select_string_named_parameters_are_read_by_name(scoped: Path) -> None:
+    """`-Path x -Pattern y` read `x` as the pattern and `y` as a path in the repo."""
+    other = scoped.parent / "other"
+    assert gate.shell_search_is_gated(
+        f"Select-String -Path {other / '*.py'} -Pattern thing", scoped
+    ) is False
+    assert gate.shell_search_is_gated(
+        f"Select-String -Path {scoped / 'src' / 'known.py'} -Pattern thing", scoped
+    ) is False
+    assert gate.shell_search_is_gated("Select-String -Pattern thing -Path src/*", scoped) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "Set-Location {other}; Get-ChildItem -Recurse -Filter *.py",
+        "pushd {other} && grep -rn thing .",
+        'cd "$PLUGIN_DIR/src" && grep -rn thing .',
+        "cd && grep -rn thing .",
+    ],
+)
+def test_a_cd_the_hook_cannot_place_moves_the_search_out(command: str, scoped: Path) -> None:
+    other = scoped.parent / "other"
+    assert gate.shell_search_is_gated(command.format(other=other), scoped) is False
+
+
+def test_a_denied_compound_command_says_nothing_in_it_ran(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The hook refuses the whole call, so an append before the search did not
+    run either. The denial has to say so, or the agent cannot tell."""
+    commands = [
+        "echo '- decision' >> notes/14-key-decisions.md && grep -rn FeedRanker .",
+        "cat >> notes/14-key-decisions.md <<'EOF'\n- decision\nEOF\ngrep -rn Ranker app",
+    ]
+    for session, command in enumerate(commands):
+        result = run(monkeypatch, capsys, repo, "Bash", {"command": command}, session=str(session))
+        assert decision(result) == "deny"
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]  # type: ignore[index]
+        notice = reason.split("\n\n")[0]
+        assert notice.startswith("codebase-kg: nothing in this command ran.")
+        assert "14-key-decisions.md" in notice
+        assert "grep -rn" not in notice
+
+
+def test_a_denied_plain_search_carries_no_nothing_ran_notice(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result = run(monkeypatch, capsys, repo, "Bash", {"command": "cd app && grep -rn x . | head -5"})
+    assert decision(result) == "deny"
+    reason = result["hookSpecificOutput"]["permissionDecisionReason"]  # type: ignore[index]
+    assert "nothing in this command ran" not in reason
