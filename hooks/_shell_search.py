@@ -92,6 +92,15 @@ _FIND_TERMS = {"-name", "-iname", "-path", "-ipath", "-regex", "-iregex"}
 _GCI_PATH_FLAGS = {"-path", "-literalpath", "-lp"}
 _GCI_NAME_FLAGS = {"-filter", "-include"}
 _GCI_VALUE_FLAGS = {"-exclude", "-depth", "-attributes"}
+# `Select-String` names its parameters, so `-Path x -Pattern y` must not read
+# `x` as the pattern and `y` as a path inside the repo.
+_SLS_WORDS = {"sls", "select-string"}
+_SLS_PATH_FLAGS = {"-path", "-literalpath", "-lp", "-pspath"}
+_SLS_PATTERN_FLAGS = {"-pattern"}
+_SLS_NAME_FLAGS = {"-include"}
+_SLS_VALUE_FLAGS = {"-exclude", "-encoding", "-context", "-culture", "-inputobject"}
+# Commands that move the working directory of the clauses after them.
+_CD_WORDS = {"cd", "chdir", "pushd", "set-location", "sl", "push-location"}
 
 # Files no code graph anchors: assets, build and project settings, logs. A
 # search that can only find these is one `kg_search` cannot answer, so gating it
@@ -208,18 +217,31 @@ def _tokens(clause: str) -> list[str]:
     return out
 
 
-def _after_cd(toks: list[str], cwd: Path) -> Path:
+def _cd_target(toks: list[str]) -> str | None:
+    args = [t for t in toks[1:] if not (t.startswith("-") and not isinstance(t, _Quoted))]
+    return args[0] if args else None
+
+
+def _after_cd(toks: list[str], cwd: Path | None) -> Path | None:
     """Where the next clause runs: a `cd` moves later clauses, never earlier ones.
 
     The hook is told the SESSION's directory, which is not where a command that
     starts `cd elsewhere && ...` looks. Without this the gate denied searches of
     unrelated repos using this repo's graph — an answer the graph could not have
-    given.
+    given. None means a `cd` to a place only a real shell can resolve, such as
+    `cd "$HOME/x"`: relative paths after it name nothing this hook can place.
     """
-    if len(toks) < 2 or toks[0] != "cd":
+    if not toks or toks[0].lower() not in _CD_WORDS:
         return cwd
-    candidate = as_local_path(toks[1]).expanduser()
+    raw = _cd_target(toks)
+    if raw is None:
+        return None  # a bare `cd` goes home, which is never this checkout
+    if _is_unexpanded(raw):
+        return None
+    candidate = as_local_path(raw).expanduser()
     if not candidate.is_absolute():
+        if cwd is None:
+            return None
         candidate = cwd / candidate
     try:
         return candidate.resolve()
@@ -318,6 +340,8 @@ class _ClauseScan:
             return
         elif self.word in _GCI_WORDS:
             self._powershell_arg(tok)
+        elif self.word in _SLS_WORDS:
+            self._sls_arg(tok)
         elif self.word in _PATH_FIRST:
             self._find_arg(tok)
         else:
@@ -326,6 +350,14 @@ class _ClauseScan:
     def _take_value(self, tok: str) -> None:
         pending = self.pending
         self.pending = None
+        if self.word in _SLS_WORDS:
+            if pending in _SLS_PATH_FLAGS:
+                self.operands.append(tok)
+            elif pending in _SLS_PATTERN_FLAGS:
+                self.terms.append(tok)
+            elif pending in _SLS_NAME_FLAGS:
+                self.names.append(_unquote(tok))
+            return
         if self.word in _GCI_WORDS:
             if pending in _GCI_PATH_FLAGS:
                 self.operands.append(tok)
@@ -358,6 +390,16 @@ class _ClauseScan:
             self.terms.append(tok)
         else:
             self.operands.append(tok)
+
+    def _sls_arg(self, tok: str) -> None:
+        low = tok.lower()
+        if low.startswith("-") and not isinstance(tok, _Quoted):
+            if low in _SLS_PATTERN_FLAGS:
+                self.pattern_flagged = True
+            if low in _SLS_PATH_FLAGS | _SLS_PATTERN_FLAGS | _SLS_NAME_FLAGS | _SLS_VALUE_FLAGS:
+                self.pending = low
+            return
+        self.operands.append(tok)
 
     def _find_arg(self, tok: str) -> None:
         # `find <path> -name x` puts its predicates after the paths, so
@@ -400,7 +442,7 @@ class _ClauseScan:
         if name in _PATTERN_FLAGS:
             self.terms.append(value)
 
-    def targets(self, cwd: Path) -> list[Path]:
+    def targets(self, cwd: Path | None) -> list[Path]:
         operands = self.operands
         if self.word in _PATTERN_FIRST and operands and not self.pattern_flagged:
             self.terms.append(operands[0])
@@ -417,7 +459,10 @@ class _ClauseScan:
             # out-of-repo search into a bogus path this project's gate then
             # claimed as its own.
             p = as_local_path(raw).expanduser()
-            targets.append(p if p.is_absolute() else cwd / p)
+            if p.is_absolute():
+                targets.append(p)
+            elif cwd is not None:
+                targets.append(cwd / p)
         return targets
 
 
@@ -432,7 +477,7 @@ def _search_word(toks: list[str]) -> tuple[str, list[str]]:
 def parse_shell_search(command: str, proj: Path) -> ShellSearch | None:
     """What a shell command searches, or None if it is not a search at all."""
     command = strip_heredocs(command)
-    cwd = proj
+    cwd: Path | None = proj
     out = ShellSearch()
     for clause, piped in _split_clauses(command):
         toks = _tokens(clause)
@@ -562,6 +607,24 @@ def shell_search_is_gated(
     # Every in-repo target already names a file → located. A directory, or a
     # path that does not exist, means the tree is still being hunted.
     return not all(t.is_file() for t in inside)
+
+
+def other_clauses(command: str) -> list[str]:
+    """The clauses of a shell command that are not searches, `cd`s, or pipe readers.
+
+    A hook can only allow or deny a whole call, so a denied `echo x >> f && grep y .`
+    also refuses the append. These are the parts the denial must name.
+    """
+    out: list[str] = []
+    for clause, piped in _split_clauses(strip_heredocs(command)):
+        toks = _tokens(clause)
+        if piped or not toks:
+            continue
+        word, _ = _search_word(toks)
+        if word in _SEARCH_WORDS or word in _CD_WORDS:
+            continue
+        out.append(clause)
+    return out
 
 
 def is_shell_search(command: str) -> bool:

@@ -124,8 +124,14 @@ Three ways through, each inferred from what the agent actually did:
   `NON_SOURCE_EXT` in `kg_search_gate.py` plus the repo's `exclude_ext`.
 - **Reads shell commands the way the shell does.** A flag's value (`-A 20`, `--include x`) is not a
   path, and an unexpanded `$VAR` or `$(…)` is no evidence either way, so neither can turn a grep of one
-  known file into a "still hunting" denial. A heredoc body is data, not a command. The parser lives in
-  `_shell_search.py`.
+  known file into a "still hunting" denial. A heredoc body is data, not a command. A `cd`,
+  `pushd` or `Set-Location` moves the clauses after it, and one to a place only the shell can
+  resolve (`cd "$DIR"`, a bare `cd`) takes their relative paths out of scope. `Select-String` reads
+  `-Path` and `-Pattern` by name. A `Glob` with no `path` and an absolute or `~` pattern is scoped to
+  the pattern's fixed prefix. The parser lives in `_shell_search.py`.
+- **Says when nothing ran.** A hook can only refuse a whole shell call. When a denied command holds
+  other parts, such as `cat >> notes.md <<EOF … EOF && grep -rn x .`, the denial opens with
+  `nothing in this command ran` and names those parts, so the agent reruns them on their own.
 - **Fails open.** A malformed payload or an unreadable graph lets the search through. An unwritable
   state file degrades the deny to a **warn**, because the escape hatch lives in that file: a denial
   that cannot be recorded is one a repeat could not be recognised against.

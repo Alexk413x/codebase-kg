@@ -58,6 +58,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _config import (
     as_int,
+    as_local_path,
     emit_deny,
     find_graph,
     graph_meta,
@@ -88,6 +89,7 @@ from _shell_search import (
     in_non_source_bundle,
     is_shell_search,
     only_non_source,
+    other_clauses,
     parse_shell_search,
     shell_search_is_gated,
 )
@@ -257,8 +259,44 @@ def gate_mode(cfg: dict[str, object]) -> str:
     return mode if mode in {"block", "warn", "off"} else "block"
 
 
+_GLOB_CHARS = set("*?[]{}")
+
+
+def glob_pattern_root(pattern: str) -> Path | None:
+    """The directory an absolute or `~` Glob pattern starts in, or None.
+
+    `Glob` accepts `~/.claude/plugins/cache/**/*.py` with no `path`, and an
+    unscoped search reads as a search of the whole repo — so a pattern aimed at
+    the plugin cache was gated as if it searched this checkout.
+    """
+    raw = pattern.strip()
+    if not raw:
+        return None
+    path = as_local_path(raw.replace("\\", "/")).expanduser()
+    if not path.is_absolute():
+        return None
+    fixed: list[str] = []
+    for part in path.parts:
+        if _GLOB_CHARS & set(part):
+            break
+        fixed.append(part)
+    return Path(*fixed) if fixed else None
+
+
+def search_scope(tool: str, tool_input: dict[str, object]) -> str:
+    raw = tool_input.get("path") or ""
+    if isinstance(raw, str) and raw.strip():
+        return raw
+    if tool == "Glob":
+        start = glob_pattern_root(str(tool_input.get("pattern") or ""))
+        if start is not None:
+            return str(start)
+    return ""
+
+
 def searches_mapped_code(
-    tool_input: dict[str, object], proj: Path, root: str, covers: Iterable[str] = ()
+    tool_input: dict[str, object], proj: Path, root: str, covers: Iterable[str] = (),
+    tool: str = "Grep",
 ) -> bool:
     """Is this search aimed at the code the graph describes?
 
@@ -267,10 +305,10 @@ def searches_mapped_code(
     cost a round trip. An unscoped search is assumed to be aimed at the code,
     which is the case worth gating.
     """
-    raw = tool_input.get("path") or ""
-    if not isinstance(raw, str) or not raw.strip():
+    raw = search_scope(tool, tool_input)
+    if not raw:
         return True  # unscoped → the whole repo → mapped code is in range
-    candidate = Path(raw).expanduser()
+    candidate = as_local_path(raw).expanduser()
     if not candidate.is_absolute():
         candidate = proj / candidate
     return reaches_mapped_code(candidate, proj, root, covers)
@@ -290,7 +328,7 @@ def searches_an_anchored_path(
     raw = tool_input.get("path") or ""
     if not isinstance(raw, str) or not raw.strip():
         return False
-    candidate = Path(raw).expanduser()
+    candidate = as_local_path(raw).expanduser()
     if not candidate.is_absolute():
         candidate = proj / candidate
     try:
@@ -393,7 +431,7 @@ def _search_is_gated(
     tool: str, tool_input: dict[str, object], proj: Path, cfg: dict[str, object],
     root: str, graph: Path, covers: Iterable[str] = (),
 ) -> bool:
-    if not searches_mapped_code(tool_input, proj, root, covers):
+    if not searches_mapped_code(tool_input, proj, root, covers, tool):
         return False
 
     # A search that can only match assets or project settings is one the
@@ -461,6 +499,31 @@ def _note_server_down(proj: Path, session: str, state: dict[str, object]) -> Non
         _advise(_server_down_message(), notify_user=True)
 
 
+NOTHING_RAN = (
+    "codebase-kg: nothing in this command ran. A hook can only refuse a whole {tool} "
+    "call, so these parts were refused with the search: {parts}. Run them on their own, "
+    "or repeat the whole command: a repeat passes the gate.\n\n"
+)
+_PART_LIMIT = 3
+_PART_WIDTH = 80
+
+
+def _nothing_ran_notice(tool: str, tool_input: dict[str, object]) -> str:
+    command = tool_input.get("command")
+    if tool not in _SHELL_TOOLS or not isinstance(command, str):
+        return ""
+    parts = other_clauses(command)
+    if not parts:
+        return ""
+    shown = [
+        "`" + (p if len(p) <= _PART_WIDTH else p[: _PART_WIDTH - 3] + "...") + "`"
+        for p in parts[:_PART_LIMIT]
+    ]
+    if len(parts) > _PART_LIMIT:
+        shown.append(f"and {len(parts) - _PART_LIMIT} more")
+    return NOTHING_RAN.format(tool=tool, parts=", ".join(shown))
+
+
 def _deny(
     data: dict[str, object], proj: Path, session: str, state: dict[str, object],
     keys: list[str], cfg: dict[str, object], graph: Path,
@@ -479,7 +542,8 @@ def _deny(
         # the hook cannot see its tool list, so it informs instead of denying.
         _advise(message)
     else:
-        emit_deny(message)
+        tool = str(data.get("tool_name") or "")
+        emit_deny(_nothing_ran_notice(tool, _tool_input(data)) + message)
 
 
 def _run(data: dict[str, object]) -> None:

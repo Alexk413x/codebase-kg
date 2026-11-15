@@ -2,6 +2,24 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.16.3] — 2026-11-14 — The search gate leaves out-of-repo searches alone and says when nothing ran
+
+### Fixed
+
+- The search gate denied searches aimed outside the repo, such as the plugin cache under
+  `~/.claude/plugins/cache`, although its rules say those are free. Three forms reached it:
+  - A `Glob` with no `path` and an absolute or `~` pattern read as unscoped, so the gate treated it
+    as a search of the whole repo. The gate now scopes it to the pattern's fixed prefix.
+  - `Select-String -Path <dir> -Pattern x` read the path as the pattern and `x` as a path inside the
+    repo. The gate now reads `-Path`, `-LiteralPath`, `-Pattern` and `-Include` by name.
+  - `Set-Location`, `pushd` and `Push-Location` did not move the clauses after them the way `cd`
+    does. A `cd` to a place only the shell can resolve, such as `cd "$DIR"` or a bare `cd`, joined the
+    literal text under the repo. Relative paths after such a `cd` are now out of scope.
+- A denied shell command that also wrote a file gave no sign that the write did not run. A hook can
+  only refuse a whole call, so `cat >> notes.md <<'EOF' … EOF` followed by a grep lost the append, and
+  the denial read like any other. When a denied command holds parts other than searches, `cd`s and
+  pipe readers, the denial opens with `nothing in this command ran` and names up to three of them.
+
 ## [0.16.2] — 2026-11-13 — Launchers never run an interpreter or script from the project folder
 
 ### Security
