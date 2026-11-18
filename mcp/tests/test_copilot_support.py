@@ -244,3 +244,22 @@ def test_probe_authenticates_the_stdio_listener(tmp_path: Path, monkeypatch: pyt
     finally:
         _finish(proc)
         _kill_daemon(cache)
+
+
+def test_a_copilot_session_in_a_subfolder_still_finds_the_graph(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+):
+    """The adapter clears CLAUDE_PROJECT_DIR, so the project came from `cwd`
+    alone and a session started in `src` found no graph."""
+    result = run("pre", payload(repo / "src", "rg", {"pattern": "Something"}), capsys)
+    assert result["permissionDecision"] == "deny"
+
+
+def test_a_copilot_paths_list_follows_the_named_file_rule(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+):
+    (repo / "src" / "Other.py").write_text("x = 1\n", encoding="utf-8")
+    files = {"pattern": "Known", "paths": ["src/Known.py", "src/Other.py"]}
+    assert run("pre", payload(repo, "grep", files), capsys) == {}
+    mixed = {"pattern": "Other", "paths": ["src/Known.py", "src"]}
+    assert run("pre", payload(repo, "grep", mixed), capsys)["permissionDecision"] == "deny"

@@ -304,11 +304,11 @@ A map nobody opens is worth nothing. Left alone, an agent reaches for `Grep` and
 it already has — slower, and blind to the components a search string does not appear in.
 
 The **search gate** (`hooks/kg_search_gate.py`, a `PreToolUse` hook) fixes that. In any repo that has
-a `knowledge/code_graph.db`, a `Grep`, `Glob`, or shell `grep`/`rg`/`find -name` aimed at mapped code
+a `knowledge/code_graph.db`, a `Grep`, `Glob`, or shell `grep`/`rg`/`git grep`/`find -name` aimed at mapped code
 is denied with the instruction to query the graph first. The gate reads the graph's
 `covers` patterns to decide what counts as mapped code. A codebase-kg query clears the next
-`gate_credit` searches (default 3); when that credit runs out, the gate denies again. A search scoped
-to a file the graph anchors is never gated. Inside a subagent, the gate adds the instruction to the
+`gate_credit` searches (default 3); when that credit runs out, the gate denies again. A search that
+names its files is never gated, and neither is a search of a folder the graph maps no code in. Inside a subagent, the gate adds the instruction to the
 subagent's context instead of denying.
 
 No search is ever permanently blocked: if the graph does not cover what you need, run the same

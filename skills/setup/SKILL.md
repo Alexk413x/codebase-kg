@@ -269,7 +269,7 @@ Also confirm, in this repo:
 
 Then tell the user what is now live:
 
-- **Search gate** (from the plugin, no install): a `Grep`/`Glob` or shell `grep`/`rg`/`find -name`
+- **Search gate** (from the plugin, no install): a `Grep`/`Glob` or shell `grep`/`rg`/`git grep`/`find -name`
   aimed at mapped code is denied with the instruction to query the graph first. A codebase-kg query
   clears the next `gate_credit` searches (default 3), and a repeat of a denied search always passes.
 - **Post-edit nudge** (from the plugin, no install): advisory, points at `/codebase-kg:refresh`.

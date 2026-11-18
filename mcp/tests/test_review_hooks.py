@@ -500,13 +500,13 @@ def test_the_search_gate_reads_covers_from_the_graph(tmp_path: Path) -> None:
     graph = cfg_mod.find_graph(repo.resolve(), dict(cfg_mod.DEFAULTS))
     assert graph is not None
     assert cfg_mod.parse_patterns(cfg_mod.graph_meta(graph, "covers")) == ["app/src/**/*.kt"]
-    gated = search_gate._graph_if_gated(
+    checked = search_gate._check(
         "Grep",
         {"pattern": "C", "path": "app/src/main/build"},
         repo.resolve(),
         dict(cfg_mod.DEFAULTS),
     )
-    assert gated == graph
+    assert checked is not None and checked[0] == graph
 
 
 def test_post_edit_hook_nudges_for_a_covered_file_in_a_build_dir(

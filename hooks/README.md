@@ -6,7 +6,7 @@ no `knowledge/code_graph.db`. The server start and the session end run in every 
 
 | File | Role |
 |---|---|
-| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob`, on `Bash` and `PowerShell` calls that an `if` rule names as a search (`Bash(grep *)`, `PowerShell(Select-String *)`, one rule per search word), and on the codebase-kg MCP tools → `kg_search_gate.py` (`async: true`, on purpose: the hook only credits the query, so the query never waits for it); `Bash(git *)` calls → `kg_push_gate.py`; PostToolUse on `Edit\|Write` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_server_start.py`, then `kg_session_start.py`; SessionEnd → `kg_session_end.py`. Every hook command is `. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/<script>.cmd"`; see "How a hook starts" below. |
+| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob`, on `Bash` and `PowerShell` calls that an `if` rule names as a search (`Bash(grep *)`, `PowerShell(Select-String *)`, one rule per search word, plus `Bash(git *)` for `git grep` and `git ls-files | xargs grep`), and on the codebase-kg MCP tools → `kg_search_gate.py` (`async: true`, on purpose: the hook only credits the query, so the query never waits for it); `Bash(git *)` calls → `kg_push_gate.py` as well; PostToolUse on `Edit\|Write` → `kg_post_edit_check.py`; SessionStart on `startup\|resume\|clear` → `kg_server_start.py`, then `kg_session_start.py`; SessionEnd → `kg_session_end.py`. Every hook command is `. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/<script>.cmd"`; see "How a hook starts" below. |
 | `codex-hooks.json` | The same hooks for Codex, named by `hooks` in `.codex-plugin/plugin.json`: the search gate and push gate on `Bash`, the credit hook on codebase-kg MCP calls, the nudge on `apply_patch`, and the session notice. It has no `if`, `Grep`, `Glob` or `PowerShell` entry, because Codex ignores `if` and reports shell commands as `Bash`, so each script decides for itself whether a command is a search or a push. It has no server start hook: the `--start` option of `mcp/launch/kg_headers.py`, which the Codex config table runs as its headers helper, or the stdio shim starts the server. `commandWindows` runs `py -3` and names the script through `$env:PLUGIN_ROOT`, because Codex runs it in PowerShell, where `${CLAUDE_PLUGIN_ROOT}` is empty; `command` runs `python3`. |
 | `copilot-hooks.json` | The hooks for GitHub Copilot CLI, named by `hooks` in `.github/plugin/plugin.json`: `preToolUse` and `postToolUse` run `kg_copilot.py` with `python`. |
 | `kg_copilot.py` | The Copilot CLI adapter. Turns Copilot's hook payloads into the shape the shared search gate, push gate and nudge read, so those scripts stay unchanged. |
@@ -105,11 +105,14 @@ Three ways through, each inferred from what the agent actually did:
 | Way through | What it means |
 |---|---|
 | **A query buys credit** | A codebase-kg MCP call clears the next `gate_credit` searches. The allowance is for what the answer did NOT name — a partial answer leaves a remainder only searching will find. The files it did name are located searches, which cost nothing. |
-| **A located search** | A search scoped to a file the graph already anchors is never gated and spends no credit. The agent has evidently found it; gating that buys nothing. A *directory* is still gated — that is where you look when you do not yet know the file. |
+| **A located search** | A search that names its files is never gated and spends no credit, whether or not the graph anchors them and whether or not they exist yet (`cp a b && grep x b`). The agent has evidently found the file; gating that buys nothing. A *directory* is still gated when the graph anchors code beneath it — that is where you look when you do not yet know the file. |
 | **Repeat to insist** | A search for the same thing as one already denied is allowed for the rest of the session: the same call, or the same pattern (a grep pattern, a `find -name` value, a Glob pattern) however the command around it is reworded. The last 16 denials are remembered, so searches denied in parallel do not evict each other. This is the escape hatch for code the graph has not mapped yet, and it is what makes the gate unable to strand anyone. |
 
 - **No-ops** when the repo has no graph, when `SKIP_KG` is set, when `search_gate` is `off`, and when
-  the search is scoped outside the graph's `root` or into an ignored dir (`node_modules`, `build`, …).
+  the search is scoped outside the graph's `root`, outside a declared `covers` or inside `exempt`, into
+  a directory the graph anchors nothing beneath (docs, scratch folders), or into an ignored dir
+  (`node_modules`, `build`, …). Relative paths in a shell command resolve from the shell's own
+  directory, then follow `cd`, `pushd` and `Set-Location`. A denial names the folder and the rule.
   An ignored dir stays in scope when a `covers` pattern of the graph can match a file beneath it, at
   any depth: `build`, `out`, `target`, `dist` and `vendor` do not hide a path that `covers` names. A
   pattern that opens with a wildcard, such as `**/*.py`, does not bring in `node_modules`, `.venv` or
@@ -124,15 +127,15 @@ Three ways through, each inferred from what the agent actually did:
   `NON_SOURCE_EXT` in `kg_search_gate.py` plus the repo's `exclude_ext`.
 - **Reads shell commands the way the shell does.** A flag's value (`-A 20`, `--include x`) is not a
   path, and an unexpanded `$VAR` or `$(…)` is no evidence either way, so neither can turn a grep of one
-  known file into a "still hunting" denial. A heredoc body is data, not a command. A `cd`,
-  `pushd` or `Set-Location` moves the clauses after it, and one to a place only the shell can
-  resolve (`cd "$DIR"`, a bare `cd`) takes their relative paths out of scope. `Select-String` reads
-  `-Path` and `-Pattern` by name. A `Glob` with no `path` and an absolute or `~` pattern is scoped to
-  the pattern's fixed prefix. The parser lives in `_shell_search.py`.
+  known file into a directory search. A heredoc body is data, not a command. A `cd` to a place only
+  the shell can resolve (`cd "$DIR"`, a bare `cd`) takes the relative paths after it out of scope.
+  `Select-String` reads `-Path` and `-Pattern` by name. A `Glob` with no `path` and an absolute or `~`
+  pattern is scoped to the pattern's fixed prefix. The parser lives in `_shell_search.py`.
 - **Says when nothing ran.** A hook can only refuse a whole shell call. When a denied command holds
   other parts, such as `cat >> notes.md <<EOF … EOF && grep -rn x .`, the denial opens with
   `nothing in this command ran` and names those parts, so the agent reruns them on their own.
-- **Fails open.** A malformed payload or an unreadable graph lets the search through. An unwritable
+- **Fails open.** A malformed payload or a parser error lets the search through. A graph file it cannot
+  read keeps the gate on: it reads as the whole repo, not as a folder with no code. An unwritable
   state file degrades the deny to a **warn**, because the escape hatch lives in that file: a denial
   that cannot be recorded is one a repeat could not be recognised against.
 - A query sets credit to `gate_credit` and never lowers credit already held, so a query that errors

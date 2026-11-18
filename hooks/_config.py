@@ -54,7 +54,25 @@ _IGNORE_LOWER = {d.lower() for d in IGNORE_DIRS}
 
 
 def project_dir(cwd: str | None) -> Path:
-    return Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd or ".").resolve()
+    """CLAUDE_PROJECT_DIR, else the nearest folder at or above `cwd` that holds a
+    graph or a codebase-kg config, stopping at the repo root.
+
+    Codex and Copilot set no CLAUDE_PROJECT_DIR, so a session started in a
+    subfolder found no graph there and every hook stood down. Stopping at the
+    nearest `.git` keeps a monorepo subproject with its own graph its own project.
+    """
+    env = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env:
+        return Path(env).resolve()
+    start = Path(cwd or ".").resolve()
+    for folder in (start, *start.parents):
+        if (folder / str(DEFAULTS["graph_path"])).is_file() or (
+            folder / ".claude" / "codebase-kg.local.md"
+        ).is_file():
+            return folder
+        if (folder / ".git").exists():
+            return folder
+    return start
 
 
 def norm_path(p: Path) -> str:
@@ -471,30 +489,70 @@ def load_declared_coverage(graph_file: Path, cfg: dict[str, object]) -> None:
             cfg[key] = parse_patterns(graph_meta(graph_file, key))
 
 
-def reaches_mapped_code(
-    candidate: Path, proj: Path, root: str, covers: Iterable[str] = ()
-) -> bool:
+def root_relative(candidate: Path, proj: Path, root: str) -> str | None:
+    """`candidate` as a posix path relative to the graph's `root`, the form anchors
+    are stored in. "" for `root` itself or any parent of it that still holds it.
+    None when it lies outside the project or beside `root`."""
     try:
         rel = candidate.resolve().relative_to(proj)
     except (ValueError, OSError):
-        return False  # outside the project entirely
+        return None
     scope = rel.as_posix().strip("/")
     if scope == ".":
         scope = ""
-    # Either the search sits inside root, or it is a parent directory that
-    # still contains root. Both reach mapped code.
-    if root and scope and not (
-        (scope + "/").startswith(root + "/") or (root + "/").startswith(scope + "/")
-    ):
+    if not root or not scope:
+        return scope
+    if (scope + "/").startswith(root + "/"):
+        return scope[len(root) + 1:]
+    if (root + "/").startswith(scope + "/"):
+        return ""
+    return None
+
+
+def reaches_mapped_code(
+    candidate: Path, proj: Path, root: str, covers: Iterable[str] = (),
+    exempt: Iterable[str] = (),
+) -> bool:
+    key = root_relative(candidate, proj, root)
+    if key is None:
         return False
     patterns = list(covers)
     if not patterns:
-        return not {p.lower() for p in rel.parts} & _IGNORE_LOWER
-    key = scope
-    if root:
-        key = scope[len(root) + 1 :] if (scope + "/").startswith(root + "/") else ""
-    if not {p.lower() for p in key.split("/")} & _IGNORE_LOWER:
+        try:
+            parts = candidate.resolve().relative_to(proj).parts
+        except (ValueError, OSError):
+            return False
+        return not {p.lower() for p in parts} & _IGNORE_LOWER
+    if candidate.is_dir():
+        return dir_may_hold(key, patterns, _IGNORE_LOWER)
+    # A file, or a path that does not exist yet: it is mapped when `covers`
+    # names it, or when it could still be a directory `covers` reaches into.
+    if matches_any(key, compile_patterns(patterns)):
+        return not matches_any(key, compile_patterns(list(exempt)))
+    return not candidate.exists() and dir_may_hold(key, patterns, _IGNORE_LOWER)
+
+
+def anchors_under(graph_file: Path, rel_dir: str) -> bool:
+    """Does any node anchor a path beneath `rel_dir` (relative to `root`)?
+
+    A range on the `anchor_path` index rather than `LIKE`, which SQLite cannot
+    serve from an index here: `0` is the character after `/`, so the range is
+    exactly the paths that start with `rel_dir/`.
+    """
+    rel_dir = rel_dir.strip("/")
+    sql, params = "SELECT 1 FROM anchor LIMIT 1", ()
+    if rel_dir:
+        sql = "SELECT 1 FROM anchor WHERE path >= ? AND path < ? LIMIT 1"
+        params = (rel_dir + "/", rel_dir + "0")
+    # Unlike `_rows`, a graph it cannot read answers True: "no anchors here"
+    # exempts the search, and an unreadable graph is not evidence of that.
+    try:
+        conn = sqlite3.connect(f"{graph_file.as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
         return True
-    if candidate.is_file():
-        return matches_any(key, compile_patterns(patterns))
-    return dir_may_hold(key, patterns, _IGNORE_LOWER)
+    try:
+        return bool(conn.execute(sql, params).fetchone())
+    except sqlite3.DatabaseError:
+        return True
+    finally:
+        conn.close()
