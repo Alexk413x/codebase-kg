@@ -29,13 +29,13 @@ nudge_every: 5
 # without denying; `off` disables it. SKIP_KG=1 in the environment silences it for one shell.
 search_gate: block
 
-# Also treat a shell `grep`/`rg`/`find -name` as a search. Set false to gate only the search tools.
+# Also treat a shell `grep`/`rg`/`git grep`/`find -name` as a search. Set false to gate only the search tools.
 gate_shell_search: true
 
 # How many searches one codebase-kg query clears. The allowance is for what the answer did NOT
 # name: the files it named are located searches, which are free and never counted.
 #
-# Two things never spend it: a search already scoped to a file the graph anchors, and an immediate
+# Two things never spend it: a search that names its files, and an immediate
 # repeat of a search that was just denied — the escape hatch for code the graph has not mapped yet.
 # No value here can strand an agent.
 gate_credit: 3

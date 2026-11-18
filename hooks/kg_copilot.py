@@ -75,7 +75,6 @@ def normalize(data: dict[str, Any]) -> dict[str, Any]:
         paths = args["paths"]
         if isinstance(paths, str):
             args["path"] = paths
-        # Multiple paths must not accidentally exempt the rest of the search.
     return {
         **data, "tool_name": TOOLS.get(tool, tool), "tool_input": args,
         "session_id": data.get("sessionId") or data.get("session_id") or "-",

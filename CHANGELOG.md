@@ -2,6 +2,50 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.17.0] — 2026-11-18 — The search gate stops blocking files it cannot help with, and catches `git grep`
+
+### Changed
+
+- A search that names its files is never gated, for `Grep` and for a shell command alike. That
+  holds whether or not the graph anchors the file, and whether or not the file exists yet:
+  `cp a.md b.md && grep x b.md` reaches the hook before `b.md` does. `Grep` used to let through only
+  an anchored file, while a shell `grep` let through any existing file.
+- A directory search is gated only when it falls inside the graph's `covers`, outside `exempt`, and
+  the graph anchors at least one file beneath it. Searches of `docs/`, a root `README.md`, scratch
+  folders and gitignored output pass without a repeat. With `covers` declared, a path outside every
+  pattern no longer counts as mapped code just because it sits outside the ignored directories.
+- Relative paths in a shell command resolve from the shell's own directory, the `cwd` the hook
+  receives, and no longer from the project root. The Bash tool keeps a `cd` from an earlier call,
+  so `grep x final.md` run from `.claude/scratch/review` read as a grep of `<repo>/final.md` and was
+  denied. The parser also follows a `cd` inside a subshell, such as `(cd src && grep -rn x .)`.
+- A denial starts with the folder it refused and the reason, for example
+  `codebase-kg: denied a search of vscode/src: a directory the graph maps code under, searched
+  before any graph query.` After a query, a denial says the searches that query cleared are used up.
+
+### Added
+
+- The gate covers searches that used to slip past it: `git grep` (with `-C`, revisions and `--`
+  pathspecs), `git ls-files | xargs grep`, and `rg x`, `grep -r x`, `ag`, `ack`, `fd` and
+  `find -name` with no path operand, which search the working directory. A glob operand such as
+  `src/*.ts` counts as a search of `src`. `hooks.json` starts the search gate for `Bash(git *)` and
+  `PowerShell(git *)` beside the push gate. `git grep x -- path/file.kt` still names its file and
+  passes, and `git grep x -- '*.md'` can only match files no graph anchors.
+- Codex and Copilot CLI sessions started in a subfolder find the graph. Neither sets
+  `CLAUDE_PROJECT_DIR` (the Copilot adapter clears it), so every hook took the session folder as the
+  project, found no graph there and stood down. Without that variable the hooks walk up from the
+  session folder to the nearest folder that holds a graph or `.claude/codebase-kg.local.md`, and stop
+  at the nearest `.git`, so a monorepo subproject with its own graph keeps it.
+- The gate reads a shell call's `workdir`, which Codex can pass per command, as the folder it runs
+  in.
+- A Copilot CLI `grep` with a `paths` list follows the named-file rule for each entry: a list of
+  files passes, and a list that holds a mapped folder is gated.
+- `kg_cli.py gate explain` prints the verdict for one search and the rule behind it, without
+  reading or writing session state. Pass the shell command, or `--tool Grep` or `--tool Glob` with
+  the pattern and `--path`. `--cwd` sets the shell's directory; the project is the nearest folder
+  above it that holds `.git`, unless `CLAUDE_PROJECT_DIR` or `--project` names one.
+- `kg_cli.py gate explain` reports a search aimed where only the shell can resolve, such as
+  `cd "$DIR" && grep -rn x .`, as `unplaced`, not as a read of stdin.
+
 ## [0.16.3] — 2026-11-14 — The search gate leaves out-of-repo searches alone and says when nothing ran
 
 ### Fixed

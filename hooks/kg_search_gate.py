@@ -21,9 +21,9 @@ what the agent DID, which is the better design anyway — a self-declared
                          searches (default 3, settable per repo). The allowance
                          is for what the answer did NOT name — a partial answer
                          leaves a remainder only searching will find.
-  a located search       a search scoped to a path the graph already anchors is
-                         never gated. The agent has evidently found the file;
-                         gating it would only cost a round trip.
+  a located search       a search that names its files is never gated, anchored
+                         or not, existing yet or not. The agent has evidently
+                         found the file; gating it would only cost a round trip.
   repeat to insist       a search for the same thing as one already denied —
                          the same call, or the same pattern however the
                          command around it is reworded — is allowed, for the
@@ -36,7 +36,9 @@ worse than no gate, so the retry always passes — the cost of insisting is one
 round trip, not an argument with a hook.
 
 It no-ops when the repo has no graph, when `SKIP_KG` is set, and when the
-search is scoped outside the graph's `root`.
+search is scoped outside the code the graph maps: beside `root`, outside a
+declared `covers` or inside `exempt`, or in a directory the graph anchors
+nothing beneath (scratch folders, docs, a gitignored build output).
 
 State (per project + session) lives in the OS temp dir — nothing is written into
 the user's repo.
@@ -62,13 +64,11 @@ from _config import (
     emit_deny,
     find_graph,
     graph_meta,
-    is_anchored,
     load_config,
     norm_path,
     norm_root,
     parse_patterns,
     project_dir,
-    reaches_mapped_code,
     read_state,
     run_hook,
     skip_kg,
@@ -79,31 +79,23 @@ from _config import (
 )
 from _shell_search import (
     _SEARCH_WORDS,
-    NON_SOURCE_BUNDLES,
-    NON_SOURCE_EXT,
-    SearchClause,
-    ShellSearch,
-    _split_clauses,
-    _tokens,
-    clause_is_exempt,
+    REASONS,
+    Verdict,
     in_non_source_bundle,
     is_shell_search,
     only_non_source,
     other_clauses,
     parse_shell_search,
     shell_search_is_gated,
+    shell_search_verdict,
+    targets_verdict,
 )
 from _shim_loader import load_shim
 
 __all__ = [
-    "NON_SOURCE_BUNDLES",
-    "NON_SOURCE_EXT",
     "_SEARCH_WORDS",
-    "SearchClause",
-    "ShellSearch",
-    "_split_clauses",
-    "_tokens",
-    "clause_is_exempt",
+    "Verdict",
+    "shell_search_is_gated",
     "strip_heredocs",
 ]
 
@@ -118,8 +110,8 @@ _KG_TOOL = re.compile(r"^mcp__.*codebase[-_]?kg.*__", re.IGNORECASE)
 _STATE_TTL = 7 * 24 * 3600  # prune abandoned session files after a week
 
 GATE_MESSAGE = (
-    "codebase-kg: this repo has a committed code graph ({graph}). Query it before "
-    "searching source.\n\n"
+    "codebase-kg: denied a search of {target}: {reason}. This repo has a committed "
+    "code graph ({graph}). Query it before searching source.\n\n"
     "1. kg_search from the codebase-kg server (its tool name contains codebase-kg) for "
     "what you are looking for — it finds the components, not just the string. Then "
     "codebase-kg's kg_node / kg_neighborhood for anchors and relationships. The kg_search "
@@ -128,9 +120,10 @@ GATE_MESSAGE = (
     "authoritative for WHERE code lives; the source is authoritative for what it "
     "does now.\n"
     "The query skill (/codebase-kg:query) is this workflow in full.\n\n"
-    "A graph query clears the next {credit} search(es). A search scoped to a file "
-    "the graph already anchors is never gated, and neither is one that can only "
-    "match assets or project settings. And if the graph does not cover what you "
+    "A graph query clears the next {credit} search(es). A search that names its "
+    "files is never gated, and neither is one of a folder the graph maps no code in, "
+    "or one that can only match assets or project settings. And if the graph does "
+    "not cover what you "
     "need, search for the same pattern again — a repeat is always allowed, "
     "however you rephrase the command."
 )
@@ -283,63 +276,40 @@ def glob_pattern_root(pattern: str) -> Path | None:
     return Path(*fixed) if fixed else None
 
 
-def search_scope(tool: str, tool_input: dict[str, object]) -> str:
-    raw = tool_input.get("path") or ""
+def _resolve(raw: str, cwd: Path) -> Path:
+    candidate = as_local_path(raw).expanduser()
+    return candidate if candidate.is_absolute() else cwd / candidate
+
+
+def search_tool_verdict(
+    tool: str, tool_input: dict[str, object], proj: Path, cfg: dict[str, object],
+    root: str = "", covers: Iterable[str] = (), exempt: Iterable[str] = (),
+    graph: Path | None = None, cwd: Path | None = None,
+) -> Verdict:
+    """The scope rule for Grep/Glob, which name their target in `path`, or in a
+    `paths` list (Copilot CLI's grep).
+
+    No path searches the session's directory, which is the repo or a folder of it.
+    """
+    cwd = cwd or proj
+    names = [str(tool_input.get("pattern" if tool == "Glob" else "glob") or "")]
+    if only_non_source([n for n in names if n], cfg):
+        return Verdict(False, "non-source-names")
+    raw = tool_input.get("path")
+    listed = tool_input.get("paths")
     if isinstance(raw, str) and raw.strip():
-        return raw
-    if tool == "Glob":
+        targets = [_resolve(raw, cwd)]
+    elif isinstance(listed, list) and listed:
+        targets = [_resolve(p, cwd) for p in listed if isinstance(p, str) and p.strip()]
+    elif tool == "Glob":
         start = glob_pattern_root(str(tool_input.get("pattern") or ""))
-        if start is not None:
-            return str(start)
-    return ""
-
-
-def searches_mapped_code(
-    tool_input: dict[str, object], proj: Path, root: str, covers: Iterable[str] = (),
-    tool: str = "Grep",
-) -> bool:
-    """Is this search aimed at the code the graph describes?
-
-    A search explicitly scoped somewhere else — docs, node_modules, a peer
-    checkout — is not something the graph can answer, so gating it would only
-    cost a round trip. An unscoped search is assumed to be aimed at the code,
-    which is the case worth gating.
-    """
-    raw = search_scope(tool, tool_input)
-    if not raw:
-        return True  # unscoped → the whole repo → mapped code is in range
-    candidate = as_local_path(raw).expanduser()
-    if not candidate.is_absolute():
-        candidate = proj / candidate
-    return reaches_mapped_code(candidate, proj, root, covers)
-
-
-def searches_an_anchored_path(
-    tool_input: dict[str, object], proj: Path, root: str, graph: Path
-) -> bool:
-    """Is this search pointed at a file the graph already anchors?
-
-    An agent that names one file has already answered the question the gate
-    asks — it knows where the code is. Gating that buys nothing and costs a
-    round trip. Only an exact anchored file counts: a directory is where an
-    agent looks when it does NOT yet know which file, which is the case the
-    gate exists for.
-    """
-    raw = tool_input.get("path") or ""
-    if not isinstance(raw, str) or not raw.strip():
-        return False
-    candidate = as_local_path(raw).expanduser()
-    if not candidate.is_absolute():
-        candidate = proj / candidate
-    try:
-        rel = candidate.resolve().relative_to(proj).as_posix()
-    except (ValueError, OSError):
-        return False
-    # Anchors are stored relative to the graph's `root` (SCHEMA.md §3) while a
-    # search names a repo-relative path, so one side has to be translated.
-    if root and rel.startswith(root + "/"):
-        rel = rel[len(root) + 1:]
-    return is_anchored(graph, rel)
+        targets = [start] if start is not None else []
+    else:
+        targets = []
+    targets = targets or [cwd]
+    if all(in_non_source_bundle(t) for t in targets):
+        return Verdict(False, "non-source-names")
+    return targets_verdict(targets, proj, root, covers, exempt, graph)
 
 
 SERVER_DOWN_MESSAGE = (
@@ -419,59 +389,62 @@ def _grant_credit(proj: Path, session: str, cfg: dict[str, object]) -> None:
     _write_state(proj, session, state)
 
 
-def _shell_is_gated(
-    tool_input: dict[str, object], proj: Path, cfg: dict[str, object], root: str,
-    covers: Iterable[str] = (),
-) -> bool:
-    command = tool_input.get("command")
-    return isinstance(command, str) and shell_search_is_gated(command, proj, cfg, root, covers)
+def _session_cwd(data: dict[str, object], proj: Path) -> Path:
+    """Where the call runs: Codex's per-call `workdir`, else the session `cwd`."""
+    tool_input = _tool_input(data)
+    base = data.get("cwd")
+    base_dir = Path(base) if isinstance(base, str) and base.strip() else proj
+    for raw in (tool_input.get("workdir"), base):
+        if isinstance(raw, str) and raw.strip():
+            cwd = as_local_path(raw).expanduser()
+            cwd = cwd if cwd.is_absolute() else base_dir / cwd
+            if cwd.is_dir():
+                return cwd.resolve()
+    return proj
 
 
-def _search_is_gated(
+_GATE_REASONS = {
+    **REASONS,
+    "gate-off": "the gate is off (search_gate or SKIP_KG)",
+    "no-graph": "this repo has no code graph",
+}
+
+
+def evaluate(
     tool: str, tool_input: dict[str, object], proj: Path, cfg: dict[str, object],
-    root: str, graph: Path, covers: Iterable[str] = (),
-) -> bool:
-    if not searches_mapped_code(tool_input, proj, root, covers, tool):
-        return False
-
-    # A search that can only match assets or project settings is one the
-    # graph has nothing to say about.
-    names = [str(tool_input.get("pattern" if tool == "Glob" else "glob") or "")]
-    if only_non_source([n for n in names if n], cfg):
-        return False
-    raw_path = tool_input.get("path")
-    if isinstance(raw_path, str) and raw_path and in_non_source_bundle(Path(raw_path)):
-        return False
-
-    # The agent named a file the graph anchors — it already knows where the
-    # code is, so there is nothing left to send it to the graph for.
-    return not searches_an_anchored_path(tool_input, proj, root, graph)
-
-
-def _graph_if_gated(
-    tool: str, tool_input: dict[str, object], proj: Path, cfg: dict[str, object]
-) -> Path | None:
-    """The graph to consult, or None when this call is not subject to the gate."""
+    cwd: Path | None = None,
+) -> tuple[Path | None, Verdict]:
+    """The graph and the scope verdict for one call, before credit or a repeat."""
     if not _is_search_call(tool, tool_input, cfg):
-        return None
+        return None, Verdict(False, "not-a-search")
 
     if gate_mode(cfg) == "off" or skip_kg():
-        return None
+        return None, Verdict(False, "gate-off")
 
     graph = find_graph(proj, cfg)
     if graph is None:
-        return None  # no graph in this repo → nothing to consult
+        return None, Verdict(False, "no-graph")
 
     root = norm_root(str(cfg.get("root") or graph_meta(graph, "root") or ""))
     covers = parse_patterns(graph_meta(graph, "covers"))
-    # A shell command answers from its own text the three questions
-    # `tool_input["path"]` answers for Grep/Glob: which repo, reading what, and
-    # does it already name the file.
+    exempt = parse_patterns(graph_meta(graph, "exempt"))
     if tool in _SHELL_TOOLS:
-        gated = _shell_is_gated(tool_input, proj, cfg, root, covers)
+        command = tool_input.get("command")
+        if not isinstance(command, str):
+            return graph, Verdict(False, "not-a-search")
+        verdict = shell_search_verdict(command, proj, cfg, root, covers, exempt, graph, cwd)
     else:
-        gated = _search_is_gated(tool, tool_input, proj, cfg, root, graph, covers)
-    return graph if gated else None
+        verdict = search_tool_verdict(tool, tool_input, proj, cfg, root, covers, exempt, graph, cwd)
+    return graph, verdict
+
+
+def _check(
+    tool: str, tool_input: dict[str, object], proj: Path, cfg: dict[str, object],
+    cwd: Path | None = None,
+) -> tuple[Path, Verdict] | None:
+    """The graph and the verdict, or None when this call is not subject to the gate."""
+    graph, verdict = evaluate(tool, tool_input, proj, cfg, cwd)
+    return (graph, verdict) if graph is not None and verdict.gated else None
 
 
 def _is_duplicate_handler(tool: str, data: dict[str, object]) -> bool:
@@ -524,9 +497,20 @@ def _nothing_ran_notice(tool: str, tool_input: dict[str, object]) -> str:
     return NOTHING_RAN.format(tool=tool, parts=", ".join(shown))
 
 
+def _deny_reason(verdict: Verdict, state: dict[str, object], cfg: dict[str, object]) -> str:
+    """A query this session leaves a `credit` key behind, so a denial after one
+    names the spent credit, not a missing query."""
+    if verdict.rule == "directory" and "credit" in state:
+        return (
+            "a directory the graph maps code under, and the "
+            f"{gate_credit(cfg)} search(es) the last graph query cleared are used up"
+        )
+    return REASONS[verdict.rule]
+
+
 def _deny(
     data: dict[str, object], proj: Path, session: str, state: dict[str, object],
-    keys: list[str], cfg: dict[str, object], graph: Path,
+    keys: list[str], cfg: dict[str, object], graph: Path, verdict: Verdict,
 ) -> None:
     # Record the denial before emitting, not after: a failure between the two
     # would lose the escape hatch and let the same search be refused twice.
@@ -534,7 +518,10 @@ def _deny(
     # other's record, so neither retry was recognised.
     state["denied"] = ([k for k in _denied_list(state) if k not in keys] + keys)[-_DENIED_MEMORY:]
     recorded = _write_state(proj, session, state)
-    message = GATE_MESSAGE.format(graph=graph.name, credit=gate_credit(cfg))
+    message = GATE_MESSAGE.format(
+        graph=graph.name, credit=gate_credit(cfg),
+        target=verdict.target or "the repo", reason=_deny_reason(verdict, state, cfg),
+    )
     if gate_mode(cfg) == "warn" or not recorded:
         _advise(message, notify_user=True)
     elif data.get("agent_id"):
@@ -572,9 +559,10 @@ def _gate(data: dict[str, object]) -> None:
             _grant_credit(proj, session, cfg)
         return
 
-    graph = _graph_if_gated(tool, tool_input, proj, cfg)
-    if graph is None or _is_duplicate_handler(tool, data):
+    checked = _check(tool, tool_input, proj, cfg, _session_cwd(data, proj))
+    if checked is None or _is_duplicate_handler(tool, data):
         return
+    graph, verdict = checked
 
     state = _read_state(proj, session)
     keys = _search_keys(tool, tool_input, proj)
@@ -599,10 +587,55 @@ def _gate(data: dict[str, object]) -> None:
         _note_server_down(proj, session, state)
         return
 
-    _deny(data, proj, session, state, keys, cfg, graph)
+    _deny(data, proj, session, state, keys, cfg, graph, verdict)
+
+
+def explain(argv: list[str]) -> int:
+    """`kg_cli.py gate explain`: print the scope verdict for one search, and the
+    rule behind it, without reading or writing session state."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="kg_cli.py gate explain",
+        description="Show whether the search gate would deny a search, and which rule decides.",
+    )
+    parser.add_argument("query", help="the shell command, or the Grep/Glob pattern")
+    parser.add_argument("--tool", default="Bash", choices=sorted(_SHELL_TOOLS | _SEARCH_TOOLS))
+    parser.add_argument("--path", help="Grep/Glob: the path argument")
+    parser.add_argument("--glob", help="Grep: the glob filter")
+    parser.add_argument("--cwd", help="the shell's directory (default: the current one)")
+    parser.add_argument("--project", help="the project root (default: CLAUDE_PROJECT_DIR, else --cwd)")
+    args = parser.parse_args(argv)
+
+    cwd = Path(args.cwd or os.getcwd()).resolve()
+    if args.project:
+        proj = Path(args.project).resolve()
+    elif os.environ.get("CLAUDE_PROJECT_DIR"):
+        proj = project_dir(None)
+    else:
+        proj = next((d for d in (cwd, *cwd.parents) if (d / ".git").exists()), cwd)
+    if args.tool in _SHELL_TOOLS:
+        tool_input: dict[str, object] = {"command": args.query}
+    else:
+        tool_input = {"pattern": args.query}
+        if args.path:
+            tool_input["path"] = args.path
+        if args.glob:
+            tool_input["glob"] = args.glob
+    graph, verdict = evaluate(args.tool, tool_input, proj, load_config(proj), cwd)
+    where = f"{verdict.target}: " if verdict.target else ""
+    print(f"{'deny' if verdict.gated else 'allow'}  [{verdict.rule}]  {where}{_GATE_REASONS[verdict.rule]}")
+    print(f"project: {proj}")
+    if graph is not None:
+        print(f"graph:   {graph}")
+    if verdict.gated:
+        print("A graph query this session, or a repeat of a denied search, lets it through.")
+    return 0
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "explain":
+        sys.exit(explain(sys.argv[2:]))
     run_hook(_run)
 
 

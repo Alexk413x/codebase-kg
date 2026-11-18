@@ -11,8 +11,16 @@ import re
 import shlex
 from collections.abc import Iterable
 from pathlib import Path
+from typing import NamedTuple
 
-from _config import DEFAULTS, as_local_path, reaches_mapped_code, strip_heredocs
+from _config import (
+    DEFAULTS,
+    anchors_under,
+    as_local_path,
+    reaches_mapped_code,
+    root_relative,
+    strip_heredocs,
+)
 
 # Shell commands that are a codebase search by another name. Deliberately narrow:
 # a false positive here denies an unrelated command, which is worse than missing
@@ -21,16 +29,16 @@ from _config import DEFAULTS, as_local_path, reaches_mapped_code, strip_heredocs
 _SHELL_SEARCH = re.compile(
     r"(?:^\s*|[|;&]\s*)(?:sudo\s+)?(?:grep|egrep|fgrep|rg|ripgrep|ag|ack|fd|sls|select-string)\b"
     r"|(?:^\s*|[|;&]\s*)(?:sudo\s+)?find\b[^|;&\n]*\s-(?:i?name|i?path|i?regex)\b"
-    r"|(?:^\s*|[|;&]\s*)(?:get-childitem|gci)\b[^|;&\n]*\s-r(?:ecurse)?\b",
+    r"|(?:^\s*|[|;&]\s*)(?:get-childitem|gci)\b[^|;&\n]*\s-r(?:ecurse)?\b"
+    r"|(?:^\s*|[|;&]\s*)(?:sudo\s+)?git\b(?:\s+-[Cc]\s+\S+|\s+-\S+)*\s+grep\b"
+    r"|\|\s*xargs\b[^|;&\n]*\s(?:grep|egrep|fgrep|rg|ripgrep|ag|ack)\b",
     re.IGNORECASE | re.MULTILINE,
 )
 
 # Shell redirection operators, e.g. `2>/dev/null`, `>>out.log`, `<in.txt`,
-# `&>/dev/null`. None of these name a search path even though they pass the
-# naive "doesn't start with a flag" check — a leftover like `2>/dev/null` read
-# as a target broke the "already named a file" exemption, since that
-# nonexistent path made `all(t.is_file())` false and re-triggered the gate on
-# an otherwise located search.
+# `&>/dev/null`. None of these names a search path, though each passes the
+# "doesn't start with a flag" check: read as a target, `>out.log` would take part
+# in the verdict.
 _REDIRECT_OP = re.compile(r"^(?:[0-9]*(?:>>|>|<)|&>>?)")
 
 # Commands whose FIRST non-flag operand is the pattern, not a path.
@@ -44,10 +52,9 @@ _GCI_WORDS = {"get-childitem", "gci"}
 _SEARCH_WORDS = _PATTERN_FIRST | _PATH_FIRST
 
 # Flags that take their value as the NEXT token, per tool: (short letters, long
-# names). Without this, the `20` in `grep -A 20 x file` read as a path operand
-# that did not exist, and a missing path reads as "still hunting" — so a grep of
-# one known file was denied. Agents pass -A/-B/-C constantly, which made this the
-# commonest false denial. The PowerShell tools are absent on purpose: their
+# names). Without this, the `20` in `grep -A 20 x src` reads as the pattern and
+# `x` as a path, so both the search's terms and its targets come out wrong.
+# Agents pass -A/-B/-C constantly. The PowerShell tools are absent on purpose: their
 # `-Pattern x -Path y` shape already parses correctly as flag-skip + operands.
 _GREP_FLAGS = ("ABCmefdD", {
     "--after-context", "--before-context", "--context", "--max-count", "--regexp",
@@ -78,6 +85,16 @@ _VALUE_FLAGS: dict[str, tuple[str, set[str]]] = {
     }),
 }
 _VALUE_FLAGS["ripgrep"] = _VALUE_FLAGS["rg"]
+# `git grep`, which is not one of the shell words: it starts behind `git`.
+_GIT_GREP = "git-grep"
+_VALUE_FLAGS[_GIT_GREP] = ("ABCmefO", {
+    "--after-context", "--before-context", "--context", "--max-count", "--regexp",
+    "--file", "--max-depth", "--threads", "--open-files-in-pager",
+})
+# `git` options before the subcommand that take the next token as their value.
+_GIT_VALUE_OPTS = {"-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+# `xargs` options that take the next token as their value.
+_XARGS_VALUE_OPTS = {"-n", "-I", "-P", "-L", "-s", "-d", "-E", "-a"}
 # Flags whose value IS the pattern — with one of these present, the first
 # operand is a path, not the pattern.
 _PATTERN_FLAGS = {"-e", "--regexp", "-f", "--file"}
@@ -256,6 +273,8 @@ class SearchClause:
     def __init__(self, word: str) -> None:
         self.word = word
         self.targets: list[Path] = []
+        # True when an operand names a place only the shell can resolve.
+        self.unplaced = False
         # File-name filters (`--include`, `-g`, `find -name`). Empty means the
         # clause can reach any file.
         self.names: list[str] = []
@@ -308,9 +327,8 @@ def _unquote(value: str) -> str:
 def _is_unexpanded(raw: str) -> bool:
     """A variable or command substitution, which only a real shell can resolve.
 
-    Read literally, `$S/test.log` is a path that does not exist, and a missing
-    path reads as "still hunting". What it names is unknowable here, so it is no
-    evidence either way.
+    Read literally, `$S/test.log` is a path that does not exist. What it names
+    is unknowable here, so it is no evidence either way.
     """
     return "$" in raw or "`" in raw
 
@@ -330,6 +348,9 @@ class _ClauseScan:
         self.pending: str | None = None  # a flag whose value is the next token
         self.skip_next = False
         self.positional = 0
+        self.recursive = False
+        self.stdin_redirected = False
+        self.dashdash_at: int | None = None  # operands from here on follow `--`
 
     def feed(self, tok: str) -> None:
         if self.skip_next:
@@ -374,6 +395,8 @@ class _ClauseScan:
         redirect = None if isinstance(tok, _Quoted) else _REDIRECT_OP.match(tok)
         if not redirect:
             return False
+        if tok.lstrip("0123456789").startswith("<"):
+            self.stdin_redirected = True
         if redirect.end() == len(tok):
             self.skip_next = True  # bare operator; the NEXT token is its target
         return True  # a redirection operand is never a search path
@@ -403,10 +426,8 @@ class _ClauseScan:
 
     def _find_arg(self, tok: str) -> None:
         # `find <path> -name x` puts its predicates after the paths, so
-        # the first flag ends the path list. Collecting past it counted
-        # `-name`'s own value as a path that does not exist, and a
-        # missing path reads as "still hunting" — the exact false
-        # positive this function exists to remove.
+        # the first flag ends the path list. Collecting past it reads
+        # `-name`'s own value as a path.
         if self.in_predicates or tok.startswith("-") or tok in {"(", "!", "\\("}:
             self.in_predicates = True
             if tok.lower() in {"-o", "-or"}:
@@ -419,12 +440,18 @@ class _ClauseScan:
     def _grep_arg(self, tok: str) -> None:
         if tok == "--" and not self.options_done:
             self.options_done = True
+            self.dashdash_at = len(self.operands)
         elif tok.startswith("-") and not self.options_done:
             self._grep_flag(tok)
         else:
             self.operands.append(tok)
 
     def _grep_flag(self, tok: str) -> None:
+        if tok in {"--recursive", "--dereference-recursive"} or (
+            not tok.startswith("--") and re.match(r"^-[A-Za-z]*[rR]", tok)
+            and self.word in {"grep", "egrep", "fgrep"}
+        ):
+            self.recursive = True
         flag = _value_flag(self.word, tok)
         if flag is None:
             if self.word in {"rg", "ripgrep"} and tok == "--files":
@@ -444,15 +471,30 @@ class _ClauseScan:
 
     def targets(self, cwd: Path | None) -> list[Path]:
         operands = self.operands
-        if self.word in _PATTERN_FIRST and operands and not self.pattern_flagged:
+        dashdash = len(operands) if self.dashdash_at is None else self.dashdash_at
+        pattern_first = self.word in _PATTERN_FIRST or self.word == _GIT_GREP
+        if pattern_first and operands and not self.pattern_flagged:
             self.terms.append(operands[0])
             operands = operands[1:]  # the first operand is the pattern
-        if self.word in _GCI_WORDS and not operands:
+            dashdash = max(dashdash - 1, 0)
+        if self.word == _GIT_GREP:
+            # Before `--`, an operand may be a revision rather than a path; only
+            # one that exists is read as a path.
+            operands = [
+                o for i, o in enumerate(operands)
+                if i >= dashdash or _is_unexpanded(o) or _exists(o, cwd)
+            ]
+            # Pathspecs that are all globs, `-- '*.md'`, filter by file name.
+            if operands and all(any(c in o for c in "*?[") for o in operands):
+                self.names.extend(_unquote(o) for o in operands)
+        if not operands and self._searches_cwd_by_default():
             operands = ["."]
         targets: list[Path] = []
         for raw in operands:
             if _is_unexpanded(raw):
+                self.clause.unplaced = True
                 continue
+            raw = _glob_free_prefix(raw)
             # `~`/`~user` only means home when a real shell expands it — but a
             # search naming one is always aimed outside a project checkout, and
             # reading it literally instead joined it under `cwd`, turning an
@@ -463,7 +505,89 @@ class _ClauseScan:
                 targets.append(p)
             elif cwd is not None:
                 targets.append(cwd / p)
+            else:
+                self.clause.unplaced = True
         return targets
+
+    def _searches_cwd_by_default(self) -> bool:
+        """With no path operand, these walk the working directory rather than
+        read stdin. `grep` does so only when recursive."""
+        if self.stdin_redirected:
+            return False
+        if self.word in {"grep", "egrep", "fgrep"}:
+            return self.recursive
+        return self.word not in {"sls", "select-string"}
+
+
+def _glob_free_prefix(raw: str) -> str:
+    """`src/*.ts` → `src`: the shell expands a glob after the hook has run, so the
+    search is aimed at the directory the glob sits in."""
+    if not any(c in raw for c in "*?["):
+        return raw
+    parts = raw.replace("\\", "/").split("/")
+    for i, part in enumerate(parts):
+        if any(c in part for c in "*?["):
+            return "/".join(parts[:i]) or "."
+    return raw
+
+
+def _exists(raw: str, cwd: Path | None) -> bool:
+    p = as_local_path(raw).expanduser()
+    if not p.is_absolute():
+        if cwd is None:
+            return False
+        p = cwd / p
+    return p.exists()
+
+
+def _git_subcommand(
+    toks: list[str], cwd: Path | None
+) -> tuple[str, list[str], Path | None]:
+    """`git -C dir grep x` → ("grep", [the tokens from `grep` on], dir)."""
+    i = 1
+    while i < len(toks):
+        tok = toks[i]
+        if tok == "-C" and i + 1 < len(toks):
+            target = as_local_path(toks[i + 1]).expanduser()
+            if target.is_absolute():
+                cwd = target
+            elif cwd is not None:
+                cwd = cwd / target
+            i += 2
+        elif tok in _GIT_VALUE_OPTS:
+            i += 2
+        elif tok.startswith("-"):
+            i += 1
+        else:
+            return tok.lower(), toks[i:], cwd
+    return "", [], cwd
+
+
+def _xargs_command(toks: list[str]) -> list[str]:
+    """The command `xargs` runs, from its first word on."""
+    i = 1
+    while i < len(toks):
+        tok = toks[i]
+        if tok in _XARGS_VALUE_OPTS:
+            i += 2
+        elif tok.startswith("-"):
+            i += 1
+        else:
+            return toks[i:]
+    return []
+
+
+def _listed_paths(toks: list[str], cwd: Path | None) -> list[Path]:
+    """The paths a `git ls-files` lists: its pathspecs, or the whole tree."""
+    specs = [t for t in toks[1:] if not t.startswith("-")] or ["."]
+    out = []
+    for raw in specs:
+        p = as_local_path(_glob_free_prefix(raw)).expanduser()
+        if p.is_absolute():
+            out.append(p)
+        elif cwd is not None:
+            out.append(cwd / p)
+    return out
 
 
 def _search_word(toks: list[str]) -> tuple[str, list[str]]:
@@ -474,18 +598,47 @@ def _search_word(toks: list[str]) -> tuple[str, list[str]]:
     return word, toks
 
 
-def parse_shell_search(command: str, proj: Path) -> ShellSearch | None:
-    """What a shell command searches, or None if it is not a search at all."""
+def parse_shell_search(
+    command: str, proj: Path, cwd: Path | None = None
+) -> ShellSearch | None:
+    """What a shell command searches, or None if it is not a search at all.
+
+    `cwd` is where the shell starts, which is the session's directory and not
+    necessarily the project root: the Bash tool keeps a `cd` from an earlier call.
+    """
     command = strip_heredocs(command)
-    cwd: Path | None = proj
+    cwd = cwd or proj
     out = ShellSearch()
+    listed: list[Path] | None = None  # what the previous clause, a `git ls-files`, lists
     for clause, piped in _split_clauses(command):
-        toks = _tokens(clause)
+        files_from, listed = (listed if piped else None), None
+        # The parentheses of a subshell, `(cd x && grep y .)`, are not part of
+        # its first word or its last operand.
+        toks = _tokens(clause.lstrip("( ").rstrip(") "))
         if not toks:
             continue
         cwd = _after_cd(toks, cwd)
         word, toks = _search_word(toks)
-        if word not in _SEARCH_WORDS:
+        here = cwd
+        if word == "git":
+            sub, toks, here = _git_subcommand(toks, cwd)
+            if sub == "ls-files":
+                listed = _listed_paths(toks, here)
+                continue
+            if sub != "grep":
+                continue
+            word = _GIT_GREP
+        elif word == "xargs":
+            # `git ls-files | xargs grep x` searches every file git lists. Any
+            # other list on stdin names its files, which is a located search.
+            inner = _xargs_command(toks)
+            if files_from is None or not inner or _search_word(inner)[0] not in _SEARCH_WORDS:
+                continue
+            clause_out = SearchClause(_search_word(inner)[0])
+            clause_out.targets.extend(files_from)
+            out.clauses.append(clause_out)
+            continue
+        elif word not in _SEARCH_WORDS:
             continue
         if piped:
             continue  # reads the previous command's output, never the tree
@@ -494,7 +647,7 @@ def parse_shell_search(command: str, proj: Path) -> ShellSearch | None:
         scan = _ClauseScan(word, clause_out, out.terms)
         for tok in toks[1:]:
             scan.feed(tok)
-        clause_out.targets.extend(scan.targets(cwd))
+        clause_out.targets.extend(scan.targets(here))
     return out if out.clauses else None
 
 
@@ -563,50 +716,96 @@ def clause_is_exempt(clause: SearchClause, cfg: dict[str, object]) -> bool:
     return bool(clause.targets) and all(in_non_source_bundle(t) for t in clause.targets)
 
 
-def shell_search_is_gated(
-    command: str, proj: Path, cfg: dict[str, object] | None = None, root: str = "",
-    covers: Iterable[str] = (),
-) -> bool:
-    """Is this shell command a search of THIS repo with no file named yet?
+class Verdict(NamedTuple):
+    """The gate's answer for one search, and the rule that decided it."""
 
-    One rule, and it is the same one Grep/Glob already follow: gate a search
-    aimed at the mapped tree that has not already located its file. Everything
-    the gate used to deny wrongly falls out of it —
+    gated: bool
+    rule: str
+    target: str = ""
+
+
+REASONS = {
+    "directory": "a directory the graph maps code under, searched before any graph query",
+    "not-a-search": "not a search",
+    "stdin": "reads stdin or a pipe, not the tree",
+    "unplaced": "aimed at a place only the shell can resolve, such as `$DIR` or a `cd` to one",
+    "non-source-names": "can only match files no graph anchors",
+    "outside-mapped-code": "outside the code the graph maps",
+    "named-files": "names its files",
+    "no-anchors-below": "the graph anchors nothing there",
+}
+
+
+def _shown(path: Path, proj: Path) -> str:
+    try:
+        rel = path.resolve().relative_to(proj).as_posix()
+    except (ValueError, OSError):
+        return str(path)
+    return rel if rel not in {"", "."} else "the repo root"
+
+
+def targets_verdict(
+    targets: list[Path], proj: Path, root: str = "", covers: Iterable[str] = (),
+    exempt: Iterable[str] = (), graph: Path | None = None,
+) -> Verdict:
+    """The one scope rule both Grep/Glob and a shell search follow.
+
+    Gated only when some target is a directory that reaches mapped code and, when
+    the graph is known, holds at least one anchored file. A named file is a
+    located search whether or not the graph anchors it, and whether or not it
+    exists yet: `cp a b && grep x b` reaches the hook before `b` does.
+    """
+    covers, exempt = list(covers), list(exempt)
+    inside = [t for t in targets if reaches_mapped_code(t, proj, root, covers, exempt)]
+    if not inside:
+        return Verdict(False, "outside-mapped-code")
+    dirs = [t for t in inside if t.is_dir()]
+    if not dirs:
+        return Verdict(False, "named-files")
+    if graph is not None:
+        dirs = [d for d in dirs if anchors_under(graph, root_relative(d, proj, root) or "")]
+        if not dirs:
+            return Verdict(False, "no-anchors-below")
+    return Verdict(True, "directory", _shown(dirs[0], proj))
+
+
+def shell_search_verdict(
+    command: str, proj: Path, cfg: dict[str, object] | None = None, root: str = "",
+    covers: Iterable[str] = (), exempt: Iterable[str] = (), graph: Path | None = None,
+    cwd: Path | None = None,
+) -> Verdict:
+    """Is this shell command a search of THIS repo's mapped code with no file named yet?
+
+    The same rule Grep/Glob follow, read from a command string —
 
       * `cd other-repo && grep -r x .`  another repo, which this graph cannot
                                         answer for;
       * `cat f | grep x`                reads a pipe, never the tree;
-      * `grep x pyproject.toml`         names one file, so the question the gate
-                                        asks is already answered;
-      * `gh pr merge && ... && grep x f.json`
-                                        no clause aimed at the tree, so the
-                                        whole command stops being denied.
-
+      * `grep x pyproject.toml`         names one file;
+      * `cp a b && grep x b`            names one file, created by the `cp`;
       * `find . -name Info.plist`       can only find files no graph anchors;
       * `grep -A 5 x f.py`, `grep x $F` a flag's value or a shell variable is
-                                        not a missing path.
-
-    A directory operand still gates: that is where you look when you do not yet
-    know the file, which is the case this exists for.
+                                        not a directory;
+      * `rg x`, `grep -r x`             no operand: the working directory.
     """
-    parsed = parse_shell_search(command, proj)
+    parsed = parse_shell_search(command, proj, cwd)
     if parsed is None:
-        return False  # not a search at all
-    # A clause that can only find files the graph never holds contributes no
-    # targets: it is not a question the graph can answer.
-    targets = [
-        t for c in parsed.clauses if not clause_is_exempt(c, cfg or DEFAULTS) for t in c.targets
-    ]
+        return Verdict(False, "not-a-search")
+    clauses = [c for c in parsed.clauses if not clause_is_exempt(c, cfg or DEFAULTS)]
+    targets = [t for c in clauses for t in c.targets]
     if not targets:
-        return False  # no path operand: reading stdin, not the tree
-    # Outside this repo, outside the graph's `root`, or in an ignored dir: not
-    # ours to gate.
-    inside = [t for t in targets if reaches_mapped_code(t, proj, root, covers)]
-    if not inside:
-        return False
-    # Every in-repo target already names a file → located. A directory, or a
-    # path that does not exist, means the tree is still being hunted.
-    return not all(t.is_file() for t in inside)
+        if any(c.unplaced for c in clauses):
+            return Verdict(False, "unplaced")
+        return Verdict(False, "stdin" if clauses else "non-source-names")
+    return targets_verdict(targets, proj, root, covers, exempt, graph)
+
+
+def shell_search_is_gated(
+    command: str, proj: Path, cfg: dict[str, object] | None = None, root: str = "",
+    covers: Iterable[str] = (), exempt: Iterable[str] = (), graph: Path | None = None,
+    cwd: Path | None = None,
+) -> bool:
+    return shell_search_verdict(command, proj, cfg, root, covers, exempt, graph, cwd).gated
 
 
 def other_clauses(command: str) -> list[str]:

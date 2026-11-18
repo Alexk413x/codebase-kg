@@ -411,8 +411,11 @@ def test_powershell_backtick_continuation_and_ack(
 
 def test_hooks_json_routes_powershell_git_commands_to_the_push_gate() -> None:
     config = json.loads((Path(gate.__file__).parent / "hooks.json").read_text(encoding="utf-8"))
-    rules = {h.get("if"): h["command"] for m in config["hooks"]["PreToolUse"] for h in m["hooks"]}
-    assert rules["PowerShell(git *)"].endswith("/kg_push_gate.cmd\"; exit $LASTEXITCODE")
+    commands = [
+        h["command"] for m in config["hooks"]["PreToolUse"] for h in m["hooks"]
+        if h.get("if") == "PowerShell(git *)"
+    ]
+    assert any(c.endswith("/kg_push_gate.cmd\"; exit $LASTEXITCODE") for c in commands)
 
 
 # --- review fixes: comments, wrappers, dry runs ---------------------------------

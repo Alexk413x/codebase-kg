@@ -259,3 +259,22 @@ def test_a_codex_shell_command_that_is_not_a_search_passes(
     codex_repo: Path, capsys: pytest.CaptureFixture[str]
 ):
     assert _gate(_codex(codex_repo, "Bash", {"command": "git status --short"}), capsys) is None
+
+
+def test_a_codex_session_in_a_subfolder_still_finds_the_graph(
+    codex_repo: Path, capsys: pytest.CaptureFixture[str]
+):
+    """Codex sets no CLAUDE_PROJECT_DIR, so the project came from `cwd` alone: a
+    session started in `src/domain` found no graph there and the gate stood down."""
+    payload = _codex(codex_repo / "src" / "domain", "Bash", {"command": "grep -rn Ranker ."})
+    assert _decision(_gate(payload, capsys)) == "deny"
+
+
+def test_a_codex_workdir_is_where_the_command_runs(
+    codex_repo: Path, capsys: pytest.CaptureFixture[str]
+):
+    (codex_repo / "notes").mkdir()
+    elsewhere = _codex(codex_repo, "Bash", {"command": "grep -rn Ranker .", "workdir": "notes"})
+    assert _gate(elsewhere, capsys) is None
+    mapped = _codex(codex_repo, "Bash", {"command": "grep -rn Other .", "workdir": "src"})
+    assert _decision(_gate(mapped, capsys)) == "deny"

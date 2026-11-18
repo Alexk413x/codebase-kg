@@ -56,7 +56,8 @@ def test_project_dir_falls_back_to_cwd_then_dot(
 ) -> None:
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     assert c.project_dir(str(tmp_path)) == tmp_path.resolve()
-    assert c.project_dir(None) == Path.cwd()
+    monkeypatch.chdir(tmp_path)
+    assert c.project_dir(None) == tmp_path.resolve()
 
 
 # --- load_config -------------------------------------------------------------
@@ -281,8 +282,9 @@ def test_the_shell_if_rules_cover_every_search_word() -> None:
     import kg_search_gate as gate
 
     cmdlets = {"select-string", "sls", "get-childitem", "gci"}
-    assert _if_words("PowerShell") == gate._SEARCH_WORDS
-    assert _if_words("Bash") == (gate._SEARCH_WORDS - cmdlets) | {"sudo"}
+    # `git` for `git grep` and `git ls-files | xargs grep`.
+    assert _if_words("PowerShell") == gate._SEARCH_WORDS | {"git"}
+    assert _if_words("Bash") == (gate._SEARCH_WORDS - cmdlets) | {"sudo", "git"}
 
 
 def test_every_shell_handler_carries_an_if_rule() -> None:
@@ -323,7 +325,7 @@ def test_every_command_sources_one_launcher_that_runs_in_sh_and_powershell() -> 
     PowerShell 5.1 has no `&&`, and the interpreter is chosen inside the launcher. The tail hands
     the script's exit code to PowerShell."""
     commands = _launch_commands()
-    assert len(commands) == 31
+    assert len(commands) == 33
     for source, command in commands:
         assert command.startswith(LAUNCH_PREFIX) and command.endswith(LAUNCH_TAIL), (source, command)
         name = command[len(LAUNCH_PREFIX):-len(LAUNCH_TAIL)] + ".cmd"
@@ -759,3 +761,41 @@ def test_session_start_leaves_out_compact_on_purpose() -> None:
     config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
     assert {g["matcher"] for g in config["hooks"]["SessionStart"]} == {"startup|resume|clear"}
     assert "`compact` is left out on purpose" in (HOOKS / "README.md").read_text(encoding="utf-8")
+
+
+# --- project_dir without CLAUDE_PROJECT_DIR -------------------------------------
+def test_project_dir_walks_up_to_the_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    repo = tmp_path / "repo"
+    (repo / "knowledge").mkdir(parents=True)
+    (repo / "knowledge" / "code_graph.db").write_bytes(b"")
+    (repo / "src" / "deep").mkdir(parents=True)
+    assert c.project_dir(str(repo / "src" / "deep")) == repo.resolve()
+
+
+def test_project_dir_stops_at_the_repo_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A graph above the repo root belongs to another project."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    (tmp_path / "knowledge").mkdir()
+    (tmp_path / "knowledge" / "code_graph.db").write_bytes(b"")
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "src").mkdir()
+    assert c.project_dir(str(repo / "src")) == repo.resolve()
+
+
+def test_project_dir_keeps_a_monorepo_subproject_with_its_own_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    (tmp_path / ".git").mkdir()
+    app = tmp_path / "apps" / "web"
+    (app / "knowledge").mkdir(parents=True)
+    (app / "knowledge" / "code_graph.db").write_bytes(b"")
+    (app / "src").mkdir()
+    assert c.project_dir(str(app / "src")) == app.resolve()
+
+
+def test_claude_project_dir_still_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    assert c.project_dir(str(tmp_path / "anywhere")) == tmp_path.resolve()

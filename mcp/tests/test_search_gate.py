@@ -12,7 +12,7 @@ properties dominate, in this order:
    shell `grep`/`rg`/`find -name` too; an ordinary `git status` never.
 3. **It keeps asking.** Unlike the first version it does not stand down for the
    session after one nudge; a graph query buys `gate_credit` searches, and a
-   search already scoped to an anchored file is never gated at all.
+   search that names its files is never gated at all.
 
 State is per project + session in the OS temp dir, so every test redirects
 `tempfile.gettempdir` — otherwise tests would share a gate with each other and
@@ -82,12 +82,18 @@ def run(
     tool: str,
     tool_input: dict[str, Any] | None = None,
     session: str = "s1",
+    cwd: Path | None = None,
 ) -> dict[str, Any] | None:
-    """Drive the hook end-to-end and return its parsed stdout, or None if silent."""
+    """Drive the hook end-to-end and return its parsed stdout, or None if silent.
+
+    `cwd` is the shell's directory, which the Bash tool keeps across calls. The
+    host then names the project in CLAUDE_PROJECT_DIR, as Claude Code does."""
+    if cwd is not None:
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(proj))
     payload = {
         "tool_name": tool,
         "tool_input": tool_input or {},
-        "cwd": str(proj),
+        "cwd": str(cwd or proj),
         "session_id": session,
     }
     monkeypatch.setattr(sys, "stdin", _Stdin(json.dumps(payload)))
@@ -209,9 +215,9 @@ def test_the_allowance_is_the_setting(cfg: dict[str, Any], expected: int) -> Non
 def test_following_up_on_anchored_files_costs_no_credit_at_all(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The reason the count rarely runs out in practice: a search that names an
-    anchored file is never gated, so reading back what the graph handed over
-    spends nothing. Credit is only for searches that are still hunting."""
+    """The reason the count rarely runs out in practice: a search that names a
+    file is never gated, so reading back what the graph handed over spends
+    nothing. Credit is only for searches of a directory."""
     anchored = repo / "app" / "src" / "domain" / "FeedRanker.kt"
     anchored.write_text("class FeedRanker\n", encoding="utf-8")
     for _ in range(50):
@@ -339,14 +345,17 @@ def test_a_directory_inside_root_is_still_gated(
     )) == "deny"
 
 
-def test_an_unanchored_file_inside_root_is_still_gated(
+def test_an_unanchored_file_inside_root_is_not_gated(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Naming a file is a located search whether or not the graph anchors it.
+    The shell path already let any named file through, so Grep and Bash
+    disagreed about the same search."""
     other = repo / "app" / "src" / "domain" / "Unmapped.kt"
     other.write_text("class Unmapped\n", encoding="utf-8")
-    assert decision(run(
+    assert run(
         monkeypatch, capsys, repo, "Grep", {"pattern": "x", "path": str(other)}
-    )) == "deny"
+    ) is None
 
 
 @pytest.mark.parametrize(
@@ -1016,3 +1025,274 @@ def test_a_denied_plain_search_carries_no_nothing_ran_notice(
     assert decision(result) == "deny"
     reason = result["hookSpecificOutput"]["permissionDecisionReason"]  # type: ignore[index]
     assert "nothing in this command ran" not in reason
+
+
+# --- the shell's own directory, and what counts as located --------------------
+def test_a_relative_path_resolves_from_the_shells_directory(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The Bash tool keeps a `cd` from an earlier call. Resolving `final.md`
+    from the project root instead read it as `<repo>/final.md`, a missing file
+    that counted as mapped code, and denied a grep of a scratch note."""
+    scratch = repo / ".claude" / "scratch" / "review"
+    scratch.mkdir(parents=True)
+    (scratch / "draft.md").write_text("x\n", encoding="utf-8")
+    command = r"cp draft.md final.md && grep -n 'x\|y' final.md"
+    assert run(monkeypatch, capsys, repo, "Bash", {"command": command}, cwd=scratch) is None
+
+
+def test_a_tree_search_from_a_folder_of_mapped_code_is_still_gated(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result = run(
+        monkeypatch, capsys, repo, "Bash", {"command": "grep -rn x ."},
+        cwd=repo / "app" / "src",
+    )
+    assert decision(result) == "deny"
+
+
+def test_grep_with_no_path_searches_the_shells_directory(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    notes = repo / "notes"
+    notes.mkdir()
+    assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "x"}, cwd=notes) is None
+    assert decision(run(
+        monkeypatch, capsys, repo, "Grep", {"pattern": "y"}, cwd=repo / "app" / "src"
+    )) == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "pushd src && grep -rn thing .",
+    "Set-Location src; Select-String -Pattern thing -Path *.py",
+    "Set-Location -Path src; Get-ChildItem -Recurse -Filter *.py",
+    "(cd src && grep -rn thing .)",
+])
+def test_every_way_to_change_directory_is_followed(command: str, scoped: Path) -> None:
+    assert gate.shell_search_is_gated(command, scoped) is True
+    other = scoped.parent / "other"
+    assert gate.shell_search_is_gated(command.replace("src", str(other), 1), scoped) is False
+
+
+@pytest.mark.parametrize(("command", "cwd"), [
+    ("cp src/known.py src/copy.py && grep -n x src/copy.py", ""),
+    ("cp known.py copy.py && grep -n x copy.py", "src"),
+    ("grep -n x missing.md", ""),
+    ("grep -n x src/known.py src/also-missing.py", ""),
+])
+def test_a_search_that_names_files_is_never_gated(command: str, cwd: str, scoped: Path) -> None:
+    """A file the same command creates reaches the hook before it exists, and a
+    missing file is one grep fails on: neither is a hunt the graph could end."""
+    assert gate.shell_search_is_gated(command, scoped, cwd=scoped / cwd) is False
+
+
+@pytest.mark.parametrize(("command", "gated"), [
+    ("grep -n x src/*.py", True),
+    ("rg thing", True),
+    ("grep -r thing", True),
+    ("grep -rn --include='*.py' thing", True),
+    ("find -name '*.py'", True),
+    ("grep thing", False),
+    ("rg thing < notes.txt", False),
+])
+def test_a_glob_or_a_missing_operand_searches_a_directory(
+    command: str, gated: bool, scoped: Path
+) -> None:
+    """`src/*.py` expands after the hook has run, and `rg x` or `grep -r x`
+    with no operand walks the working directory: both search a folder. A plain
+    `grep x` with no file reads stdin."""
+    assert gate.shell_search_is_gated(command, scoped) is gated
+
+
+def test_a_grep_of_a_missing_file_is_not_gated(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = repo / "app" / "src" / "domain" / "NotYet.kt"
+    assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "x", "path": str(missing)}) is None
+
+
+# --- covers, exempt and anchors decide what is mapped -------------------------
+@pytest.fixture
+def covered(tmp_path: Path) -> Path:
+    """A graph that declares `covers`, with one anchored file and folders it maps nothing in."""
+    proj = tmp_path / "covered"
+    for sub in ("knowledge", "docs", "app/src/domain", "app/src/empty", "app/src/gen",
+                ".claude/scratch"):
+        (proj / sub).mkdir(parents=True)
+    (proj / "README.md").write_text("# x\n", encoding="utf-8")
+    (proj / "docs" / "design.md").write_text("# x\n", encoding="utf-8")
+    (proj / "app" / "src" / "domain" / "FeedRanker.kt").write_text("class F\n", encoding="utf-8")
+    build(
+        proj / "knowledge" / "code_graph.db",
+        Meta(codebase="test", root="", generated="2026-11-14",
+             covers=["app/src/**/*.kt"], exempt=["app/src/gen/**"]),
+        [Node(
+            id="feed_ranker", kind="Domain", description="Ranks the feed.",
+            anchors=[Anchor("app/src/domain/FeedRanker.kt", "F")],
+            edges=[], section="DOMAIN",
+        )],
+    )
+    return proj
+
+
+@pytest.mark.parametrize(("path", "gated"), [
+    ("docs", False),
+    ("docs/design.md", False),
+    ("README.md", False),
+    (".claude/scratch", False),
+    ("app/src/empty", False),
+    ("app/src/gen", False),
+    ("app/src", True),
+    ("app", True),
+    ("", True),
+])
+def test_only_folders_the_graph_maps_code_in_are_gated(
+    path: str, gated: bool, covered: Path,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    tool_input = {"pattern": "x", **({"path": path} if path else {})}
+    result = run(monkeypatch, capsys, covered, "Grep", tool_input)
+    assert (decision(result) == "deny") is gated
+
+
+@pytest.mark.parametrize(("command", "gated"), [
+    ("grep -rn x docs", False),
+    ("grep -rn x .claude/scratch", False),
+    ("grep -rn x app/src/empty", False),
+    ("grep -rn x app/src", True),
+    ("grep -rn x .", True),
+])
+def test_a_shell_search_follows_the_same_scope(command: str, gated: bool, covered: Path) -> None:
+    graph = covered / "knowledge" / "code_graph.db"
+    covers, exempt = ["app/src/**/*.kt"], ["app/src/gen/**"]
+    assert gate.shell_search_is_gated(
+        command, covered.resolve(), None, "", covers, exempt, graph
+    ) is gated
+
+
+def test_the_anchor_probe_uses_the_path_index(covered: Path) -> None:
+    import sqlite3
+
+    conn = sqlite3.connect(covered / "knowledge" / "code_graph.db")
+    plan = conn.execute(
+        "EXPLAIN QUERY PLAN SELECT 1 FROM anchor WHERE path >= ? AND path < ? LIMIT 1",
+        ("app/src/", "app/src0"),
+    ).fetchall()
+    conn.close()
+    assert "anchor_path" in str(plan)
+
+
+def test_the_anchor_probe_is_exact_about_the_prefix(covered: Path) -> None:
+    from _config import anchors_under
+
+    graph = covered / "knowledge" / "code_graph.db"
+    assert anchors_under(graph, "app/src")
+    assert anchors_under(graph, "app/src/domain")
+    assert not anchors_under(graph, "app/src/dom")
+    assert not anchors_under(graph, "app/src/empty")
+
+
+def test_the_denial_names_the_target_and_the_rule(
+    covered: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result = run(monkeypatch, capsys, covered, "Grep", {"pattern": "x", "path": "app/src"})
+    reason = result["hookSpecificOutput"]["permissionDecisionReason"]  # type: ignore[index]
+    assert reason.startswith("codebase-kg: denied a search of app/src: a directory the graph maps")
+
+
+# --- git grep and xargs --------------------------------------------------------
+@pytest.mark.parametrize(("command", "gated"), [
+    ("git grep -n thing", True),
+    ("git grep thing HEAD~1", True),
+    ("git grep thing -- src", True),
+    ("git grep -e thing src", True),
+    ("git -C src grep thing", True),
+    ("git grep thing -- src/known.py", False),
+    ("git grep thing HEAD -- src/known.py", False),
+    ("git grep thing -- '*.md'", False),
+    ("git ls-files | xargs grep thing", True),
+    ("git ls-files src | xargs -n1 grep thing", True),
+    ("find src -type f | xargs grep thing", True),
+    ("git diff --name-only | xargs grep thing", False),
+    ("cat list.txt | xargs grep thing", False),
+    ("git log --grep thing", False),
+    ("git status", False),
+])
+def test_git_grep_and_xargs_are_searches_too(command: str, gated: bool, scoped: Path) -> None:
+    """`git grep` searches the tracked tree and `git ls-files | xargs grep` every
+    file git lists; both slipped past a gate that only knew the shell words. A
+    list of files from anything else names its files, which is a located search."""
+    if gated:
+        assert gate.is_shell_search(command)
+    assert gate.shell_search_is_gated(command, scoped) is gated
+
+
+def test_a_git_grep_of_mapped_code_is_denied_end_to_end(
+    covered: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert decision(run(monkeypatch, capsys, covered, "Bash", {"command": "git grep -n x"})) == "deny"
+    assert run(monkeypatch, capsys, covered, "Bash", {"command": "git grep -n y -- docs"}) is None
+
+
+# --- gate explain --------------------------------------------------------------
+def test_explain_prints_the_verdict_and_the_rule(
+    covered: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert gate.explain(["--project", str(covered), "--cwd", str(covered), "grep -rn x app/src"]) == 0
+    assert capsys.readouterr().out.startswith("deny  [directory]  app/src: ")
+    gate.explain(["--project", str(covered), "--tool", "Grep", "--path", "docs", "x"])
+    assert capsys.readouterr().out.startswith("allow  [outside-mapped-code]")
+
+
+def test_explain_finds_the_project_above_the_shells_directory(
+    covered: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (covered / ".git").mkdir()
+    gate.explain(["--cwd", str(covered / ".claude" / "scratch"), "grep -n x notes.md"])
+    out = capsys.readouterr().out
+    assert out.startswith("allow  [outside-mapped-code]")
+    assert f"project: {covered.resolve()}" in out
+
+
+def test_explain_leaves_no_session_state(
+    covered: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gate.explain(["--project", str(covered), "grep -rn x ."])
+    assert not list(gate.state_dir(gate._STATE_DIR).glob("*.json"))
+
+
+def test_kg_cli_runs_gate_explain(covered: Path) -> None:
+    import subprocess
+
+    cli = HOOKS.parent / "mcp" / "launch" / "kg_cli.py"
+    result = subprocess.run(
+        [sys.executable, "-I", str(cli), "gate", "explain", "--project", str(covered),
+         "--cwd", str(covered), "rg x"],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("deny  [directory]  the repo root: ")
+    bare = subprocess.run(
+        [sys.executable, "-I", str(cli), "gate"], capture_output=True, text=True, check=False,
+    )
+    assert bare.returncode != 0 and "gate explain" in bare.stderr
+
+
+def test_a_denial_after_spent_credit_says_so(
+    covered: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """After a query, "searched before any graph query" read as if the query had
+    not counted."""
+    run(monkeypatch, capsys, covered, "mcp__codebase-kg__kg_search", {"q": "feed"})
+    for i in range(3):
+        assert run(monkeypatch, capsys, covered, "Grep", {"pattern": f"p{i}", "path": "app/src"}) is None
+    result = run(monkeypatch, capsys, covered, "Grep", {"pattern": "p9", "path": "app/src"})
+    reason = result["hookSpecificOutput"]["permissionDecisionReason"]  # type: ignore[index]
+    assert "the 3 search(es) the last graph query cleared are used up" in reason
+
+
+def test_explain_names_a_place_only_the_shell_can_resolve(
+    covered: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gate.explain(["--project", str(covered), "--cwd", str(covered), 'cd "$DIR" && grep -rn x .'])
+    assert capsys.readouterr().out.startswith("allow  [unplaced]")

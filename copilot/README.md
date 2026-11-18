@@ -81,6 +81,9 @@ search still passes. The adapter checks the authenticated stdio listener rather
 than assuming the optional HTTP port represents tool availability. If that
 listener is unavailable, the gate allows searches with a reconnect notice.
 This also permits searches when the shim uses its private fallback.
+The hooks take the project from the nearest folder at or above the session
+folder that holds the graph, so a session started in a subfolder is gated too.
+A `grep` whose `paths` name only files passes without a query.
 
 ## Support boundaries and distribution
 

@@ -40,10 +40,10 @@ exists.
 
 ## If a search gate sent you here
 
-In a repo that has a graph, the plugin denies a `Grep`/`Glob` (or shell `grep`/`rg`/`find -name`)
+In a repo that has a graph, the plugin denies a `Grep`/`Glob` (or shell `grep`/`rg`/`git grep`/`find -name`)
 aimed at mapped code until a codebase-kg query earns credit. One query clears the next few searches
-(`gate_credit`, default 3); when the credit runs out, the gate denies again. A search scoped to a
-file the graph anchors is never gated. The denial is this workflow's cue, not an obstacle. Run
+(`gate_credit`, default 3); when the credit runs out, the gate denies again. A search that names
+its files is never gated, and neither is one of a folder the graph maps no code in. The denial is this workflow's cue, not an obstacle. Run
 step 1, and:
 
 - **The graph answers it** → carry on from step 2. You are done faster than the grep would have been.
