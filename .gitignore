@@ -39,3 +39,6 @@ evals/results/
 
 # Agent worktrees
 .claude/worktrees/
+
+# Session scratch copies
+.claude/scratch/
