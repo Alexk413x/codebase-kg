@@ -2,6 +2,13 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.17.1] — 2026-11-21 — The manifest drops a key the plugin schema does not define
+
+### Removed
+
+- `privacyPolicyUrl` from `.claude-plugin/plugin.json`. The plugin schema has no such key, so a
+  marketplace sync stripped it and reported a warning. The README Privacy section stays.
+
 ## [0.17.0] — 2026-11-18 — The search gate stops blocking files it cannot help with, and catches `git grep`
 
 ### Changed
