@@ -83,7 +83,7 @@ the item saying what changed. Items under "Needs a decision" wait for an answer 
 - [x] Slimmer tool descriptions, starting with `kg_upsert_node`.
   Compact `tools` JSON, 13 tools: 17,102 to 11,857 bytes; `kg_upsert_node` 4,352 to 2,266 bytes.
 - [x] Plugin directory listing: add an icon and `privacyPolicyUrl` (Q7).
-  Half done: README "Privacy" section and `privacyPolicyUrl` in `.claude-plugin/plugin.json`. Icon added 2026-11-12: `.claude-plugin/icon.png`, 1024 px. The directory takes an icon once, so replace it before the first submission if you want a different one.
+  Half done: README "Privacy" section. 0.17.1 removes `privacyPolicyUrl` from `.claude-plugin/plugin.json`: the plugin schema has no such key and a marketplace sync strips it with a warning. Icon added 2026-11-12: `.claude-plugin/icon.png`, 1024 px. The directory takes an icon once, so replace it before the first submission if you want a different one.
 
 ## Found while verifying
 
