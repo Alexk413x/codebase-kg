@@ -42,3 +42,6 @@ evals/results/
 
 # Session scratch copies
 .claude/scratch/
+
+# Written by the release workflow into the release build only (shim.released).
+mcp/src/codebase_kg/RELEASE

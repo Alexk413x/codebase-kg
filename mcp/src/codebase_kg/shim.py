@@ -73,7 +73,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 def env_float(names: str | tuple[str, ...], default: float) -> float:
@@ -150,8 +150,84 @@ def server_build(package: Path = PACKAGE_DIR) -> str:
     return build_info(package)["build"]
 
 
+RELEASE_MARKER = "RELEASE"
+TAKEOVER_ENV = "CODEBASE_KG_TAKEOVER"
+
+
+def released(package: Path = PACKAGE_DIR) -> bool:
+    """True for a copy the release workflow built: only that workflow writes the marker file."""
+    return (package / RELEASE_MARKER).is_file()
+
+
+MOVES_A_ROOT = ("CLAUDE_CONFIG_DIR", "CODEX_HOME")
+
+
+def install_roots() -> list[tuple[Path, int]]:
+    """Where each client keeps the plugins it installed, and how many folders below it a plugin's root sits.
+
+    Claude Code and Codex: `<root>/<marketplace>/<plugin>/<version>`. Copilot CLI:
+    `<root>/<marketplace>/<plugin>`. Antigravity CLI, for every repository: `<root>/<plugin>`.
+    Antigravity's folder inside one repository (`.agents/plugins`) is not here: any copy can sit in a
+    repository, so such a copy counts only with the release marker.
+    """
+    try:
+        home: Path | None = Path.home()
+    except (RuntimeError, OSError):
+        home = None
+    claude, codex = os.environ.get("CLAUDE_CONFIG_DIR"), os.environ.get("CODEX_HOME")
+    roots: list[tuple[Path, int]] = []
+    if claude or home:
+        roots.append((Path(claude) if claude else cast(Path, home) / ".claude", 3))
+    if codex or home:
+        roots.append((Path(codex) if codex else cast(Path, home) / ".codex", 3))
+    roots = [(root / "plugins" / "cache", depth) for root, depth in roots]
+    if home:
+        roots += [(home / ".copilot" / "installed-plugins", 2), (home / ".gemini" / "config" / "plugins", 1)]
+    return roots
+
+
+def _both(path: Path) -> list[Path]:
+    """The path as written and with links followed: a cache can be a link, and so can a plugin in it."""
+    found = [Path(os.path.abspath(path))]
+    try:
+        found.append(path.resolve())
+    except OSError:
+        pass
+    return found
+
+
+def installed(package: Path | None = None) -> bool:
+    """True when a client installed this copy: its plugin folder sits in a client's install root, at
+    the depth that client puts a plugin. A marketplace install can hold the `main` tree, which has no
+    release marker, so the place decides too."""
+    packages = [package] if package is not None else [Path(os.path.abspath(__file__)).parent, PACKAGE_DIR]
+    for found in packages:
+        for plugin in _both(found.parents[2]):
+            for root, depth in install_roots():
+                for base in _both(root):
+                    try:
+                        below = Path(os.path.normcase(plugin)).relative_to(os.path.normcase(base))
+                    except ValueError:
+                        continue
+                    if len(below.parts) == depth:
+                        return True
+    return False
+
+
+def origin(package: Path = PACKAGE_DIR) -> str:
+    """Names the folder this copy runs from, so a server can tell its own edited copy from another copy."""
+    try:
+        where = package.resolve()
+    except OSError:
+        where = package
+    return hashlib.sha256(os.path.normcase(str(where)).encode()).hexdigest()[:12]
+
+
 def build_info(package: Path = PACKAGE_DIR) -> dict[str, Any]:
-    """The build, its package version, and the newest source mtime, which orders two builds."""
+    """The build, its package version, whether it is a release or installed, and the folder it runs from.
+
+    `built`, the newest source mtime, is reported for the log and decides nothing.
+    """
     digest = hashlib.sha256()
     built = 0.0
     for path in sorted(package.rglob("*.py")):
@@ -162,27 +238,34 @@ def build_info(package: Path = PACKAGE_DIR) -> dict[str, Any]:
         digest.update(f"{path}|{stat.st_size}|{stat.st_mtime_ns}\n".encode())
         built = max(built, stat.st_mtime)
     version = package_version()
-    return {"build": f"{version}+{digest.hexdigest()[:12]}", "version": version, "built": built}
+    return {"build": f"{version}+{digest.hexdigest()[:12]}", "version": version, "built": built,
+            "released": released(package), "installed": installed(None if package == PACKAGE_DIR else package),
+            "origin": origin(package)}
 
 
 def _version_key(version: object) -> tuple[int, ...]:
     return tuple(int(p) for p in re.findall(r"\d+", str(version))[:3])
 
 
-def outranks(mine: dict[str, Any], theirs: dict[str, Any]) -> bool:
-    """True when build `mine` should replace `theirs` on the HTTP port.
+def replaces(mine: dict[str, Any], theirs: dict[str, Any], takeover: bool | None = None) -> bool:
+    """True when build `mine` may take the HTTP port from `theirs`.
 
-    A higher package version wins; at the same version, the newer source wins.
-    The order is total, so two builds never take the port from each other in turn.
+    A release, or a copy a client installed, replaces a lower version. A copy replaces the
+    server that runs from its own folder once its files changed. `CODEBASE_KG_TAKEOVER=1` lets
+    a development copy replace any other build. Nothing else does: at one version the holder
+    stays, so two copies never take the port from each other in turn, and a development copy
+    serves nobody who did not ask for it. File times decide nothing.
     """
     if mine.get("build") == theirs.get("build"):
         return False
-    try:
-        their_built = float(theirs.get("built") or 0.0)
-    except (TypeError, ValueError):
-        their_built = 0.0
-    return (_version_key(mine.get("version")), float(mine.get("built") or 0.0)) > (
-        _version_key(theirs.get("version")), their_built)
+    if takeover is None:
+        takeover = os.environ.get(TAKEOVER_ENV, "").strip() == "1"
+    if takeover:
+        return True
+    if mine.get("origin") and mine.get("origin") == theirs.get("origin"):
+        return True
+    trusted = bool(mine.get("released") or mine.get("installed"))
+    return trusted and _version_key(mine.get("version")) > _version_key(theirs.get("version"))
 
 
 DEFAULT_HTTP_PORT = 47821
@@ -317,7 +400,7 @@ def verified_holder(port: int) -> tuple[dict[str, Any], dict[str, Any]] | None:
     kind, reply = health(port)
     if kind != OURS or not isinstance(reply.get("build"), str):
         return None
-    state = read_state(reply["build"])
+    state = read_state(reply["build"], port)
     if state is None or state.get("pid") != reply.get("pid") or state.get("http_port") != port:
         return None
     if not pid_alive(state["pid"]):
@@ -345,43 +428,77 @@ def request_shutdown(port: int, token: str) -> None:
 _BUILD = re.compile(r"[0-9A-Za-z][0-9A-Za-z.\-]{0,63}\+[0-9a-f]{12}")
 
 
-def _build_file(build: str, suffix: str) -> Path:
+def _build_file(build: str, suffix: str, port: int | None = None) -> Path:
     """`server-<build><suffix>` in the cache dir, for a build `server_build()` could have made.
 
     A build can arrive from an untrusted `/health` reply, so anything else, such as
     one with a path separator or `..`, raises ValueError instead of naming a file.
+    With `port`, the name also holds the HTTP port, unless it is the default one or 0
+    (the OS picks): builds before 0.18 look for the name without a port, and they share
+    the default port.
     """
     if not isinstance(build, str) or not _BUILD.fullmatch(build) or ".." in build:
         raise ValueError(f"not a codebase-kg build: {build!r}")
     base = cache_dir()
-    path = base / f"server-{build}{suffix}"
-    if path.resolve().parent != base.resolve():
+    tag = "" if port in (None, 0, DEFAULT_HTTP_PORT) else f"-p{int(port)}"
+    path = base / f"server-{build}{tag}{suffix}"
+    # Compared as written, not resolved: on Windows a folder resolves to another spelling once it
+    # exists, so two servers that started together in a new cache folder failed here.
+    if path.parent != base or path.name != f"server-{build}{tag}{suffix}":
         raise ValueError(f"not a codebase-kg build: {build!r}")
     return path
 
 
-def state_path(build: str) -> Path:
-    return _build_file(build, ".json")
+def state_path(build: str, port: int | None = None) -> Path:
+    """One state file per build and HTTP port, so one build can serve two ports at once."""
+    return _build_file(build, ".json", http_port() if port is None else port)
 
 
-def lock_path(build: str) -> Path:
-    return _build_file(build, ".lock")
+def lock_path(build: str, port: int | None = None) -> Path:
+    return _build_file(build, ".lock", http_port() if port is None else port)
 
 
 def log_path(build: str) -> Path:
     return _build_file(build, ".log")
 
 
-def read_state(build: str) -> dict[str, Any] | None:
+def read_state(build: str, port: int | None = None) -> dict[str, Any] | None:
+    """The state file of `build` on the port, else the one named without a port.
+
+    A build before 0.18 writes only the second name on any port. A caller that needs
+    the server of one port checks `http_port` in what it gets (`verified_holder`).
+    """
+    state = None
     try:
-        state = json.loads(state_path(build).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        paths = dict.fromkeys((state_path(build, port), _build_file(build, ".json")))
+    except ValueError:
         return None
+    for path in paths:
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+            break
+        except (OSError, ValueError):
+            continue
     if not isinstance(state, dict) or state.get("version") != build:
         return None
     if not all(isinstance(state.get(k), t) for k, t in (("port", int), ("pid", int), ("token", str))):
         return None
     return state
+
+
+def clear_dead_states() -> None:
+    """Remove the state files of servers that no longer run. A killed server leaves its own behind."""
+    try:
+        found = list(cache_dir().glob("server-*.json"))
+    except OSError:
+        return
+    for path in found:
+        try:
+            pid = json.loads(path.read_text(encoding="utf-8")).get("pid")
+            if isinstance(pid, int) and not pid_alive(pid):
+                path.unlink()
+        except (OSError, ValueError, AttributeError):
+            continue
 
 
 def pid_alive(pid: int) -> bool:
@@ -480,6 +597,12 @@ def agent_pid() -> int | None:
             return pid
         pid = parent
     return None
+
+
+def agent_name() -> str:
+    """The agent's pid as the `X-Codebase-KG-Agent` header value, or `unknown`."""
+    pid = agent_pid()
+    return str(pid) if pid else "unknown"
 
 
 def sessions_dir() -> Path:
@@ -722,11 +845,12 @@ def spawn_server_outside_job(build: str) -> None:
     kills every descendant when the helper exits, so `spawn_server` leaves no server behind there.
     """
     # The WMI child inherits nothing from this process, so forward every setting the
-    # server reads: the CODEBASE_KG_* overrides and the plugin's CLAUDE_PLUGIN_OPTION_* settings
-    # (`server_port`, `max_workers`).
+    # server reads: the CODEBASE_KG_* overrides, the plugin's CLAUDE_PLUGIN_OPTION_* settings
+    # (`server_port`, `max_workers`), and the two variables that move a client's plugin folder,
+    # or the server would not find itself installed (`install_roots`) and leave the port.
     env = {
         k: v for k, v in os.environ.items()
-        if k.startswith(("CODEBASE_KG_", "CLAUDE_PLUGIN_OPTION_")) and k != "CODEBASE_KG_PATH"
+        if (k.startswith(("CODEBASE_KG_", "CLAUDE_PLUGIN_OPTION_")) and k != "CODEBASE_KG_PATH") or k in MOVES_A_ROOT
     }
     code = (
         f"import os,sys;sys.stderr=open({str(log_path(build))!r},'a',encoding='utf-8',buffering=1);"
@@ -1133,10 +1257,153 @@ def run_private(args: list[str]) -> int:
         return 1
 
 
+BRIDGE_START_WAIT = 10.0
+CLIENT_HEADER, CWD_HEADER, GRAPH_HEADER = "X-Codebase-KG-Client", "X-Codebase-KG-Cwd", "X-Codebase-KG-Graph"
+AGENT_HEADER = "X-Codebase-KG-Agent"
+
+
+def ensure_http_server(wait: float = BRIDGE_START_WAIT) -> bool:
+    """True once the HTTP port holds this build or one it may not replace, starting this build when it does not."""
+    port = http_port()
+    mine = build_info()
+
+    def serving() -> bool:
+        kind, theirs = health(port, timeout=0.5)
+        return kind == OURS and not replaces(mine, theirs)
+
+    if serving():
+        return True
+    if health(port, timeout=0.5)[0] == OTHER:
+        return False
+    cache_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
+    with spawn_lock(mine["build"]) as locked:
+        if locked:
+            spawn_server_detached(mine["build"])
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if serving():
+                return True
+            time.sleep(_POLL)
+    return False
+
+
+def _load_bridge() -> Any:
+    """`slipspace/bridge.py`, loaded by path: this file runs outside the package when a launcher starts it."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("codebase_kg_bridge", PACKAGE_DIR / "slipspace" / "bridge.py")
+    if spec is None or spec.loader is None:
+        raise ImportError("cannot load the bridge")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def bridge_headers(port: int, fixed: dict[str, str]) -> Any:
+    """The function the bridge calls for each new connection's headers: `fixed`, plus the token for a verified holder."""
+
+    def headers(refresh: bool) -> dict[str, str]:
+        # The bridge calls this once for each new connection. Verify the holder every time and cache
+        # nothing: after the server exits, another program can bind the port, and a cached token would
+        # be sent to it.
+        token = verified_token(port)
+        return {**fixed, "Authorization": f"Bearer {token}"} if token else dict(fixed)
+
+    return headers
+
+
+def run_bridge(args: list[str]) -> int:
+    """Serve this session's stdio from the shared server's HTTP endpoint.
+
+    The session's folder and explicit graph path travel as request headers on every
+    call, so the server keeps nothing for the session and a restart loses nothing.
+    """
+    from urllib.parse import quote
+
+    explicit = args[0] if args and args[0].strip() else os.environ.get("CODEBASE_KG_PATH")
+    if not ensure_http_server():
+        print("codebase-kg: shared server unavailable; running a private one", file=sys.stderr)
+        return run_private(args)
+    port = http_port()
+    fixed = {CLIENT_HEADER: f"bridge-{secrets.token_hex(8)}", CWD_HEADER: quote(os.getcwd(), safe="/\\:")}
+    if explicit:
+        fixed[GRAPH_HEADER] = quote(str(Path(explicit).resolve()), safe="/\\:")
+
+    session = f"bridge-{os.getpid()}"
+
+    def register() -> None:
+        try:
+            register_session(session, agent_pid() or os.getpid())
+        except OSError:
+            pass
+
+    # On its own thread: reading the process table for the agent's pid takes longer than the first request.
+    threading.Thread(target=register, daemon=True).start()
+    print(f"codebase-kg: bridging to the shared server on port {port}", file=sys.stderr)
+    try:
+        return _load_bridge().Bridge(port, bridge_headers(port, fixed), ensure_http_server, name="the codebase-kg server").run()
+    finally:
+        try:
+            unregister_session(session)
+        except OSError:
+            pass
+
+
+HOOK_PREFIX = "kg_hook_"
+SEARCH_BUDGET, GIT_BUDGET = 1.5, 20.0
+
+
+def hook_is_push(name: str, arguments: Any) -> bool:
+    """True for the gate call of a command that may hold a `git push`.
+
+    The relay sends these while it leaves the server alone after a failure: a search that got no
+    answer in time must not let the next push through unchecked.
+    """
+    if name != "kg_hook_pre":
+        return False
+    tool_input = arguments.get("tool_input") if isinstance(arguments, dict) else None
+    text = tool_input if isinstance(tool_input, str) else json.dumps(tool_input or "")
+    return "git" in text and "push" in text
+
+
+def hook_budget(name: str, arguments: Any) -> float:
+    """Seconds the server gets for one hook call. A search decision takes milliseconds; a push or a
+    commit runs git in the repository."""
+    if name == "kg_hook_commit_check" or hook_is_push(name, arguments):
+        return GIT_BUDGET
+    return SEARCH_BUDGET
+
+
+def run_hooks() -> int:
+    """Serve this session's hook calls on stdio, from the shared server when it answers."""
+    port = http_port()
+    fixed = {CLIENT_HEADER: f"hooks-{secrets.token_hex(8)}"}
+    agent: list[str] = []
+
+    def headers(refresh: bool) -> dict[str, str]:
+        if not agent:
+            agent.append(agent_name())
+        token = verified_token(port)
+        own = {**fixed, AGENT_HEADER: agent[0]}
+        return {**own, "Authorization": f"Bearer {token}"} if token else own
+
+    off = (f"codebase-kg: the server on port {port} does not answer its hooks, so the search gate, the commit "
+           f"check and the push gate are off. They return when it does.")
+    on = "codebase-kg: the server answers its hooks again. The search gate, the commit check and the push gate are back on."
+    info = {"name": "codebase-kg-hooks", "version": package_version()}
+    return _load_bridge().HookRelay(
+        port, headers, ensure_http_server, off, on, hook_budget, HOOK_PREFIX, info, always=hook_is_push,
+    ).run()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
+    if args[:1] == ["--hooks"]:
+        return run_hooks()
     if os.environ.get("CODEBASE_KG_SHARED", "").strip() == "0":
         return run_private(args)
+    if os.environ.get("CODEBASE_KG_BRIDGE", "").strip() == "1":
+        return run_bridge(args)
     explicit = args[0] if args and args[0].strip() else os.environ.get("CODEBASE_KG_PATH")
     build = server_build()
     hello = {

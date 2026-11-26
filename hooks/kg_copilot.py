@@ -6,7 +6,6 @@ import contextlib
 import io
 import json
 import os
-import re
 import socket
 import sys
 from pathlib import Path
@@ -14,7 +13,6 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import kg_post_edit_check as edits
 import kg_push_gate as push
 import kg_search_gate as gate
 from _config import run_hook
@@ -29,9 +27,6 @@ QUERIES = {
     "kg_search", "kg_node", "kg_neighborhood", "kg_find_by_path",
     "kg_find_by_kind", "kg_find_by_link", "kg_find_by_reference",
 }
-PATCH_FILE = re.compile(
-    r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$", re.MULTILINE
-)
 
 
 def server_answers() -> bool:
@@ -88,20 +83,6 @@ def graph_query(tool: str) -> bool:
     } for name in QUERIES)
 
 
-def edited_paths(data: dict[str, Any]) -> list[str]:
-    args = data["tool_input"]
-    if data["tool_name"] not in {"Edit", "Write"}:
-        return []
-    path = args.get("file_path") or args.get("path")
-    if isinstance(path, str) and path:
-        paths = [path]
-    else:
-        patch = args.get("input") or args.get("command")
-        paths = PATCH_FILE.findall(patch) if isinstance(patch, str) else []
-    cwd = data.get("cwd") or os.getcwd()
-    return list(dict.fromkeys(str(Path(cwd) / path) for path in paths))
-
-
 def run(mode: str, data: dict[str, Any]) -> None:
     # A leftover Claude environment must not route a Copilot session to another repo.
     os.environ.pop("CLAUDE_PROJECT_DIR", None)
@@ -117,11 +98,6 @@ def run(mode: str, data: dict[str, Any]) -> None:
                 search_gate(payload)
                 if not captured.getvalue():
                     push._run(payload)
-        else:
-            for path in edited_paths(payload):
-                edits._run({**payload, "tool_name": "Edit", "tool_input": {"file_path": path}})
-                if captured.getvalue():
-                    break
     text = captured.getvalue().strip()
     if not text:
         return
@@ -141,6 +117,7 @@ def run(mode: str, data: dict[str, Any]) -> None:
 
 
 def main() -> None:
+    # `post` stays accepted so a hooks config printed earlier does not fail; it does nothing.
     if len(sys.argv) != 2 or sys.argv[1] not in {"pre", "post"}:
         sys.exit("usage: kg_copilot.py pre|post")
     run_hook(lambda data: run(sys.argv[1], data))

@@ -2,6 +2,175 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.18.0] — 2026-11-26 — Hooks answered by the server through a quiet local relay, and a server no copy can take over
+
+### Added
+
+- Antigravity CLI support for the search gate, the push gate and the session notice. `agy` reads
+  `hooks.json` at the plugin root and `.antigravity-plugin/plugin.json`, both new. The hooks file holds
+  only `command` handlers, because `agy` skips the whole file for one `mcp_tool`, `http` or `agent`
+  handler. `hooks/kg_antigravity.py` turns `agy` payloads (`run_command`, `call_mcp_tool`) into the
+  shape the shared gates read and answers `{"decision": "deny", "reason": ...}`. It exits 0 on any
+  error, because `agy` blocks a tool call when a hook fails. A graph query through the `codebase-kg`
+  MCP server earns search credit. See `antigravity/README.md`. Tested on `agy` 1.5.18 on Windows.
+
+- A commit check for Claude Code. After a `Bash` or `PowerShell` command that made a commit, the
+  agent receives the committed source no node covers, the deleted source the graph still anchors on
+  and the mapped source that changed since the graph was updated, with the instruction to run
+  `/codebase-kg:refresh` and commit the graph in a follow-up commit before pushing. The hook calls
+  the codebase-kg server directly (type `mcp_tool`, tool `kg_hook_commit_check`), so it starts no
+  process. It is advisory and says nothing when the server is unreachable. `commit_check: false` in
+  `.claude/codebase-kg.local.md` turns it off for a clone. Tested on Claude Code 2.1.332.
+- `GIT_CWD` in `git-hooks/kg_pre_push.py`, which the server sets to run the shared staleness rule in
+  a session's repository. The git hooks leave it unset and behave as before. The file is vendored
+  into repos, so a wired clone receives this change the next time `git-hooks/install.sh` runs.
+
+- A stdio-to-HTTP bridge for stdio clients, opt-in with `CODEBASE_KG_BRIDGE=1`
+  (`mcp/src/codebase_kg/slipspace/bridge.py`). The shim then serves the session from the shared
+  server's HTTP endpoint and not through the TCP relay, so every client reaches one dispatcher and a
+  stdio client can use MCP 2026-07-28, `server/discover` included. A client that opens with
+  `initialize` is translated in the bridge, which also delivers the server's input requests
+  (`roots/list`, `elicitation/create`) to it. The TCP relay stays the default.
+
+- `kg_cli.py strict-mcp-config [--port N]`, which prints the MCP config a `--strict-mcp-config` session
+  of Claude Code needs: the HTTP server and the hook relay under its full name (see Changed).
+
+- `kg_cli.py codex-config` ends with a line that says whether Codex trusts the plugin's hooks. Codex
+  skips an untrusted hook without a message, and its trust covers every file in the plugin, so the
+  gates stop in Codex after each plugin update until you run `/hooks` there. No hook can report
+  that, because the session-start hook is skipped too. The command asks Codex itself and writes
+  nothing; when Codex cannot be asked it prints nothing. `--no-hooks` leaves the check out. The
+  README and the setup skill say to run `/hooks` after the install and after every update.
+
+### Changed
+
+- A Claude Code session started with `--strict-mcp-config` must pass the hook relay itself. Such a
+  session loads the plugin's hooks and none of its MCP servers, and the hooks address the relay by the
+  name `plugin:codebase-kg:codebase-kg-hooks`. Without a server of that name no gate runs, and Claude
+  Code prints a "hook failed" notice for every hook call. Version 0.17.1 gated these sessions, because
+  its hooks were scripts. `kg_cli.py strict-mcp-config [--port N]` prints the config to pass
+  (`hooks/README.md`, "Sessions started with --strict-mcp-config").
+- Claude Code's hooks go through a hook relay. The plugin declares a second MCP server,
+  `codebase-kg-hooks`, which Claude Code starts on stdio with each session. It lists no tools and
+  adds nothing to the model's context. It passes each hook call to the shared server and answers an
+  empty result itself when that server gives none, so every gate fails open without a failure notice.
+  After a failure it starts the server again, which also brings the gates back after a plugin update
+  and `/reload-plugins`. `/mcp` shows the two servers.
+- The server counts a graph query for the agent process that made it, not for the client connection,
+  because hook calls and model calls arrive on two connections. A subagent's query earns credit for
+  its session as before.
+- The server answers a hook tool it does not know (`kg_hook_*`) with an empty result, so a session
+  whose hook list is newer than the server gets no error from it. The result carries a mark, and the
+  hook relay does not report the gates as back on for it.
+- The push gate takes `prompts: false` from a client that shows no permission prompt. It then denies
+  a skip prefix too and offers none in its reason. Codex does not honor a hook's `ask`: it runs the
+  command. Codex's own hooks still run the gate scripts in this release; `hooks/README.md`
+  ("Codex: gates answered by the server") holds the managed-hooks text for a machine you manage.
+- A graph query from Codex over HTTP earns search credit on the server. The older handshake path
+  passed no caller, so a gate answered by the server there never saw the query before it.
+- The hook relay always sends a command that may hold a `git push`, also while it leaves the server
+  alone after a failed call, so a search that got no answer does not let the next push through.
+- In Claude Code the search gate runs in the server. `hooks.json` has one hook of type `mcp_tool`
+  (`kg_hook_pre` on `Grep|Glob|Bash|PowerShell`, shared with the push gate) where it had 27 command hooks, one per search word, so a search
+  starts no Python process. The rule is unchanged: the server loads `hooks/kg_search_gate.py`, the script
+  Codex and Copilot CLI still run. Behavior changes for Claude Code:
+  - `SKIP_KG` no longer applies to the search gate in Claude Code. A direct hook passes no
+    environment, and a skip is the user's choice: `search_gate: off` in `.claude/codebase-kg.local.md`
+    replaces it. An agent's own way through is unchanged: repeat the search. The git hooks, Codex and
+    Copilot CLI read `SKIP_KG` as before.
+  - The server counts graph queries itself and holds the count in memory, per session. The hook that
+    started a process on every codebase-kg tool call to record the query is gone. A server restart
+    resets the count and the list of denied searches; a session older than the server is told once.
+  - With the server unreachable a search is allowed with no message. The script printed one.
+  - Every `Bash` and `PowerShell` call reaches the server, not only the ones an `if` rule named.
+- In Claude Code the push gate runs in the server too (`kg_hook_push_gate`), and an agent can no longer
+  skip it on its own. A stale push whose prefix carries `SKIP_KG=1` or a matching `KG_STALE_ACK=<n>`
+  gets `permissionDecision: "ask"`: Claude Code shows its permission prompt with the stale files, also
+  in a session that runs with permissions bypassed, and the push runs only when the user says yes. A run
+  with no user is denied. `SKIP_KG` and `KG_STALE_ACK` in the environment of the Claude Code process no
+  longer open the gate. The deny tells the agent to refresh the graph, commit it and push again without
+  asking the user. Codex and Copilot CLI run the script as before.
+- A hook answers `allow` for the six graph write tools in Claude Code, so a graph refresh does not stop
+  at a permission prompt. A graph update changes no code, and the graph file is in git.
+- Every tool has a written title, and `kg_add_link` and `kg_add_reference` carry `idempotentHint`: a
+  repeat of either changes nothing, so a client may send the call again after a dropped connection.
+- `kg_search` carries `_meta["anthropic/alwaysLoad"]`, so Claude Code does not put the entry point
+  behind its tool search. The search gate denies a text search until a graph query runs.
+- A client that closes the HTTP connection while a read runs cancels it: the server stops that read's
+  worker. A write always runs to its end. Closing the connection is the cancel signal of MCP 2026-07-28.
+- The `initialize` handshake of the older MCP revisions lives in one module, `classic.py`, marked
+  deprecated. Each `initialize` writes one line to the server log with the client's name and version.
+  Nothing is removed: Codex over HTTP, the TCP relay and the private stdio server still use it.
+
+### Fixed
+
+- A server that was away, older or slow filled the screen or stalled the session. Claude Code prints
+  a two-line "hook failed" notice for every hook that calls a server which is not connected or does
+  not know the tool, and the hooks called the shared server directly: one notice for each plain
+  command, three for each git command. A server that hung made every hook wait its whole timeout,
+  10 to 20 seconds for each tool call. The hooks call a local relay now (see Changed). The user gets
+  one line when the gates go off and one when they return, and a server that hangs costs one wait of
+  1.5 seconds.
+- A copy of the plugin could take over the shared server for every session on the machine. The server
+  that held the port gave it up to any copy of the same version whose files were newer, so a
+  checkout, a worktree, a scratch copy, or another agent's cached copy replaced the installed server
+  as soon as one of its sessions started, and every other session was then served by that copy. Now
+  only a release or an installed copy of a higher version replaces a running server. At the same
+  version the running server stays, and file times decide nothing. A development copy never takes
+  the port from another copy: its session uses the server that holds it, and one line names that
+  server's version and the `server_port` setting. `CODEBASE_KG_TAKEOVER=1` lets a development copy
+  take the port. A release holds the file `mcp/src/codebase_kg/RELEASE`, which the release workflow
+  writes. An installed copy sits in a client's plugin folder (Claude Code, Codex, Copilot CLI,
+  Antigravity CLI), so an install that holds the `main` tree counts too. `mcp/README.md` has the rule.
+- One build could not serve two ports. The state file was named by build alone, so a second server of
+  the same build on another `server_port` replaced it and the first server exited. The file is named
+  by build and port; on the default port the name is unchanged, so older versions still find it.
+- `kg_cli.py server start --port N` started the server on the `server_port` setting, not on `N`.
+- A search with an environment assignment in front of it was not read as a search, so
+  `X=1 grep -rn x src` and `env X=1 rg x` passed the search gate without a word, in every client. The
+  parser took the assignment for the command. It reads past `NAME=value` assignments, `env` and
+  `command` to the command word.
+- A `KG_STALE_ACK` value of non-ASCII digits, such as a superscript two, made the push gate script
+  raise, and a hook that errors allows the push. Only ASCII digits count.
+- Four answers of the 2026-07-28 HTTP front that the official conformance suite
+  (`@modelcontextprotocol/conformance` 0.2.0-alpha.12) reports against the specification:
+  - Whitespace around the `Mcp-Name` or `Mcp-Method` header value no longer reads as a header
+    mismatch (-32020).
+  - `prompts/list`, `resources/list` and `resources/templates/list` are unknown methods (404,
+    -32601). The server declares only the tools capability and answered them with empty lists.
+    Clients on the classic `initialize` path still get the empty lists.
+  - A tool call that needs the client's roots, from a client that did not declare the `roots`
+    capability, gets -32021 with `requiredCapabilities` and HTTP 400. It used to get a roots request
+    the client could not answer. A client that sends `X-Codebase-KG-Cwd` is served as before.
+  - An unknown tool gets -32602 and HTTP 400, before any roots request. It used to get a roots
+    request, or a result with `isError`.
+- An unsupported protocol version is reported (-32022) before a missing request envelope (-32602),
+  and a notification with no version header gets 202.
+
+- A lone `git grep` that the search gate denied opened with "nothing in this command ran" and listed
+  itself as a part that was refused with the search. The gate did not read `git grep` as the search.
+- In a subagent, and in `warn` mode, the gate lets the search run and adds its instruction as context.
+  That context opened with "denied a search of". It says the search ran.
+- A session of a development copy (a checkout, a scratch copy) moved a clone's graph diff driver pin
+  to that copy's version and called it the installed plugin. Only a release or an installed copy
+  moves the pin.
+- `kg_node` and `kg_neighborhood` left out the id one letter away from a wrong id when five other ids
+  shared a word with it. The closest spelling comes first in `did_you_mean`.
+- Two servers that started at the same moment in a cache folder that did not exist yet could lose one
+  of them: it exited with "not a codebase-kg build". The check of a state file's name resolved the
+  folder twice, and on Windows a folder resolves to another spelling once it exists.
+- A server that was killed left its state file in the cache folder for good, one for each build and
+  port that ever ran. A starting server removes the state files of servers that no longer run.
+
+### Removed
+
+- The `SessionEnd` hook (`hooks/kg_session_end.py`). The server already drops a session whose process
+  has exited, which covers Claude Code, Codex and the stdio bridge, so nothing has to unregister one.
+- The post-edit nudge (`hooks/kg_post_edit_check.py`) for Claude Code, Codex and Copilot CLI. It
+  printed a message the model never received, and it started Python on every edit. The
+  `post_edit_nudge` and `nudge_every` keys are no longer read; a per-clone file that still has them
+  loads as before.
+
 ## [0.17.1] — 2026-11-21 — The manifest drops a key the plugin schema does not define
 
 ### Removed

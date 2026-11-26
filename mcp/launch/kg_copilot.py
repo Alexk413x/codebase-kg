@@ -19,16 +19,11 @@ def mcp_config(python: str) -> dict:
 
 
 def hooks_config(python: str) -> dict:
-    return {"version": 1, "hooks": {
-        event: [{
-            "type": "command", "exec": python,
-            "args": [str(ROOT / "hooks" / "kg_copilot.py"), mode],
-            "timeoutSec": timeout,
-        }]
-        for event, mode, timeout in [
-            ("preToolUse", "pre", 20), ("postToolUse", "post", 10)
-        ]
-    }}
+    return {"version": 1, "hooks": {"preToolUse": [{
+        "type": "command", "exec": python,
+        "args": [str(ROOT / "hooks" / "kg_copilot.py"), "pre"],
+        "timeoutSec": 20,
+    }]}}
 
 
 def main() -> None:

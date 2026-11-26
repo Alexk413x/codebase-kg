@@ -3,7 +3,7 @@
   "tools": [
     {
       "name": "kg_search",
-      "title": "Kg Search",
+      "title": "Search the code graph",
       "description": "Full-text search for nodes by concept when you have no node id; the usual\nentry point. Up to 10 ranked results with `path#Symbol` anchors. CamelCase\nnames match in split form.",
       "inputSchema": {
         "type": "object",
@@ -37,11 +37,14 @@
       "annotations": {
         "readOnlyHint": true,
         "openWorldHint": false
+      },
+      "_meta": {
+        "anthropic/alwaysLoad": true
       }
     },
     {
       "name": "kg_node",
-      "title": "Kg Node",
+      "title": "Get a graph node",
       "description": "Fetch one node by id, with anchors, description, edges, inbound edges,\nlinks and references. An unknown id returns `found: false` and `did_you_mean`.\nNo source text or neighbour details (use `kg_neighborhood`).",
       "inputSchema": {
         "type": "object",
@@ -67,7 +70,7 @@
     },
     {
       "name": "kg_neighborhood",
-      "title": "Kg Neighborhood",
+      "title": "Get a node's neighborhood",
       "description": "A node with its outbound edges, inbound edges (who depends on it) and\ncounterpart, expanded `depth` hops. Use to see what surrounds a node before\nchanging it. Nearest first, paged by `limit`.",
       "inputSchema": {
         "type": "object",
@@ -111,7 +114,7 @@
     },
     {
       "name": "kg_find_by_kind",
-      "title": "Kg Find By Kind",
+      "title": "Find nodes by kind",
       "description": "List every node whose free-text `kind` matches, for a category question such\nas \"every migration\". For a concept or name use `kg_search`: one category can\nbe spelled several ways. Returns id, kind, description and anchors, not edges.",
       "inputSchema": {
         "type": "object",
@@ -150,7 +153,7 @@
     },
     {
       "name": "kg_find_by_path",
-      "title": "Kg Find By Path",
+      "title": "Find nodes by file path",
       "description": "Which node(s) own a source file, and what they connect to. Use when you\nhave a file and want its place in the map.",
       "inputSchema": {
         "type": "object",
@@ -189,7 +192,7 @@
     },
     {
       "name": "kg_find_by_link",
-      "title": "Kg Find By Link",
+      "title": "Find nodes by cross-graph link",
       "description": "Which code node(s) link to a node in another committed graph in this repo,\ntypically a screen in `baselines/baseline.db`. Use when you have a screen\nand want the code behind it.",
       "inputSchema": {
         "type": "object",
@@ -215,7 +218,7 @@
     },
     {
       "name": "kg_find_by_reference",
-      "title": "Kg Find By Reference",
+      "title": "Find nodes by reference",
       "description": "Which node(s) depend on a piece of external documentation. Use when an SDK\nor spec changes and you need every place the code relies on it. Each hit has\nthe `path` / `symbol` it narrows to, if any.",
       "inputSchema": {
         "type": "object",
@@ -271,7 +274,7 @@
     },
     {
       "name": "kg_upsert_node",
-      "title": "Kg Upsert Node",
+      "title": "Create or update graph nodes",
       "description": "Atomic: if any node is rejected nothing is written (`ok: false`,\n`written: false`). Creates or updates nodes for targeted fixes (bulk work:\n`kg_cli.py export`, edit, `build`). Only supplied keys change; `null` clears parity,\ncounterpart and divergence. `anchors`, `edges`, `external_links` and\n`references` replace the whole list, so read the node first to append.\nReturns each row changed, before and after.",
       "inputSchema": {
         "type": "object",
@@ -418,7 +421,7 @@
     },
     {
       "name": "kg_delete_node",
-      "title": "Kg Delete Node",
+      "title": "Delete graph nodes",
       "description": "Delete nodes; previews unless `dry_run=false`. A node's anchors, outbound\nedges and external links go with it. Edges from other nodes into it block the\ndelete unless `cascade_inbound=true`. Rejected whole if it would break the graph.",
       "inputSchema": {
         "type": "object",
@@ -458,7 +461,7 @@
     },
     {
       "name": "kg_add_link",
-      "title": "Kg Add Link",
+      "title": "Add a cross-graph link",
       "description": "Point a code node at a node in another committed graph in this repo,\ntypically a screen in `baselines/baseline.db`. Inverse of `kg_find_by_link`.\nRefused if the peer graph is present and lacks that node.",
       "inputSchema": {
         "type": "object",
@@ -489,12 +492,14 @@
       },
       "annotations": {
         "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
         "openWorldHint": false
       }
     },
     {
       "name": "kg_remove_link",
-      "title": "Kg Remove Link",
+      "title": "Remove a cross-graph link",
       "description": "Remove one cross-graph link from a node; the node, anchors and edges stay.\nRefused when the node has no link to `target`. Not for a documentation\nreference (`kg_remove_reference`) or an edge between code nodes\n(`kg_upsert_node` with the new `edges`). Returns the change, not the node.",
       "inputSchema": {
         "type": "object",
@@ -526,7 +531,7 @@
     },
     {
       "name": "kg_add_reference",
-      "title": "Kg Add Reference",
+      "title": "Add a reference to a node",
       "description": "Record where a fact a code node depends on is documented: an API page, spec,\nRFC or issue. Inverse of `kg_find_by_reference`. A `path` / `symbol` that\nmatches none of the node's anchors is refused, so read the node first. Not for\na link to a node in another graph (`kg_add_link`).",
       "inputSchema": {
         "type": "object",
@@ -586,12 +591,14 @@
       },
       "annotations": {
         "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
         "openWorldHint": false
       }
     },
     {
       "name": "kg_remove_reference",
-      "title": "Kg Remove Reference",
+      "title": "Remove a reference from a node",
       "description": "Remove a node's references to `url`: all of them, or with `path` / `symbol`\nonly the one with that exact narrowing. Refused when nothing matches. Not for\na link to a node in another graph (`kg_remove_link`). Returns the change, not\nthe node.",
       "inputSchema": {
         "type": "object",

@@ -75,7 +75,7 @@ the shim falls back to a private server. No Copilot SessionEnd hook stops a
 server that other clients use. The shared server's idle timeout handles cleanup.
 
 The separate hook adapter translates Copilot arguments and output. It reuses the
-search and push gates and the edit nudge. Graph queries earn three searches by
+search and push gates. Graph queries earn three searches by
 default; other graphs and write calls do not earn credit. A repeated denied
 search still passes. The adapter checks the authenticated stdio listener rather
 than assuming the optional HTTP port represents tool availability. If that

@@ -14,13 +14,14 @@ nothing when a textconv command cannot resolve — it falls back silently.
 
 ## The checklist
 
-1. **Bump the version in all five places.** They must agree. `mcp/tests/test_install_sh.py`
-   asserts that the pin tracks the manifest.
+1. **Bump the version in all six places.** They must agree. `mcp/tests/test_install_sh.py`
+   fails when they do not.
 
    | file | field |
    |---|---|
    | `.claude-plugin/plugin.json` | `version` |
    | `.codex-plugin/plugin.json` | `version` |
+   | `.antigravity-plugin/plugin.json` | `version` |
    | `mcp/pyproject.toml` | `version` |
    | `git-hooks/install.sh` | `KG_VERSION` default |
    | `mcp/uv.lock` | the `codebase-kg` entry (uv rewrites it) |
@@ -38,10 +39,17 @@ nothing when a textconv command cannot resolve — it falls back silently.
    cd mcp
    uv run --frozen python scripts/gen_catalog.py   # if a tool in server.py changed
    uv run --frozen pytest -q
+   uv run --frozen pyright
+   uv run --frozen ruff check ..
+   uv run --isolated --frozen --python 3.9 pytest -q   # the floor: hooks and server run on 3.9
    cd ..
    claude plugin validate --strict .
-   claude plugin eval . --scaffold
+   claude plugin eval <copy> --scaffold --trust-plugin
    ```
+
+   On Windows, run all of this from Git Bash. The hook tests and each case's `scaffold.sh` need a
+   POSIX shell, and PowerShell passes `scaffold.sh` a path with backslashes, which fails every case
+   with exit 127.
 
    `--scaffold` runs each case's `scaffold.sh`. Without it the query cases have no graph to query,
    and the query skill correctly skips the graph tools.
@@ -55,6 +63,17 @@ nothing when a textconv command cannot resolve — it falls back silently.
 
    `claude plugin eval` refuses the hard links in `mcp/.venv`. Run it on a copy made with
    `git ls-files -co --exclude-standard`, which leaves `.venv` out.
+
+   Give the copy a port of its own. The copy is a development copy, so it leaves port 47821 to the
+   installed plugin's server and its sessions use that server, which may be an older version with
+   no hook endpoints: the gates are then off and the cases measure nothing. `CODEBASE_KG_PORT` in
+   the shell does not reach the sessions the eval starts, so change the default of `server_port`
+   in the copy's `.claude-plugin/plugin.json` to a free port before the run. After the run, stop
+   the copy's server, which outlives the copy:
+
+   ```sh
+   python3 <copy>/mcp/launch/kg_cli.py server stop --port <that port>
+   ```
 
 4. **Open a PR and merge to main.** Tags point at the *merge* commit, which does
    not exist until then.
@@ -92,7 +111,7 @@ nothing when a textconv command cannot resolve — it falls back silently.
    loads the plugin cache, not the branch you merged.
 
 8. **Restart the server.** A running server keeps the build it started with.
-   A newer build takes the port from an older one when it starts, so restart
+   A release or an installed copy of a higher version takes the port from an older server when it starts, so restart
    Claude Code, or stop the old server first:
 
    ```sh

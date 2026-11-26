@@ -1,14 +1,13 @@
-"""`hooks/_config.py` — the resolution layer under the post-edit nudge.
+"""`hooks/_config.py` — the resolution layer under the hooks.
 
 `test_hook_parity.py` covers the constants and the frontmatter parser, because
 those are the halves that had drifted from the pre-push gate. Everything the
-hook actually *calls* at runtime — `load_config`, `find_graph`, `_rows`,
-`graph_meta`, `is_anchored`, `is_source_file` — was uncovered, which is how a
-file that runs after every edit sat at 64%.
+hooks actually *call* at runtime — `load_config`, `find_graph`, `_rows`,
+`graph_meta` — is covered here.
 
 The theme throughout is that this module is best-effort by contract: every
-failure has to read as "no nudge", never as an exception, because the caller is
-a hook that must not break an edit.
+failure has to read as "nothing found", never as an exception, because the
+caller is a hook that must not break a tool call.
 """
 
 from __future__ import annotations
@@ -68,12 +67,24 @@ def test_load_config_returns_defaults_without_a_local_md(tmp_path: Path) -> None
 def test_load_config_overlays_only_the_declared_keys(tmp_path: Path) -> None:
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude" / "codebase-kg.local.md").write_text(
-        "---\nroot: app/src\nnudge_every: 9\n---\n", encoding="utf-8"
+        "---\nroot: app/src\ngate_credit: 9\n---\n", encoding="utf-8"
     )
     cfg = c.load_config(tmp_path)
     assert cfg["root"] == "app/src"
-    assert cfg["nudge_every"] == 9
+    assert cfg["gate_credit"] == 9
     assert cfg["exclude_ext"] == c.DEFAULTS["exclude_ext"]  # untouched
+
+
+def test_a_local_md_with_keys_the_plugin_no_longer_reads_still_loads(tmp_path: Path) -> None:
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "codebase-kg.local.md").write_text(
+        "---\npost_edit_nudge: true\nnudge_every: 5\ngate_credit: 9\n---\n", encoding="utf-8"
+    )
+    cfg = c.load_config(tmp_path)
+    assert cfg["gate_credit"] == 9
+    assert {k: cfg[k] for k in c.DEFAULTS if k != "gate_credit"} == {
+        k: v for k, v in c.DEFAULTS.items() if k != "gate_credit"
+    }
 
 
 def test_load_config_does_not_mutate_the_shared_defaults(tmp_path: Path) -> None:
@@ -147,18 +158,13 @@ def test_find_graph_returns_none_when_absent(tmp_path: Path) -> None:
     assert c.find_graph(tmp_path, dict(c.DEFAULTS)) is None
 
 
-# --- _rows / graph_meta / is_anchored ----------------------------------------
+# --- _rows / graph_meta ----------------------------------------
 def test_graph_meta_reads_a_committed_key(graph_db: Path) -> None:
     assert c.graph_meta(graph_db, "root") == "app/src"
 
 
 def test_graph_meta_of_an_unknown_key_is_empty(graph_db: Path) -> None:
     assert c.graph_meta(graph_db, "no_such_key") == ""
-
-
-def test_is_anchored_is_true_only_for_anchored_paths(graph_db: Path) -> None:
-    assert c.is_anchored(graph_db, "domain/FeedRanker.kt")
-    assert not c.is_anchored(graph_db, "domain/Unmapped.kt")
 
 
 @pytest.mark.parametrize("make", [
@@ -172,11 +178,10 @@ def test_a_broken_graph_reads_as_no_rows_rather_than_raising(
     db = tmp_path / "broken.db"
     make(db)  # type: ignore[operator]
     assert c.graph_meta(db, "root") == ""
-    assert c.is_anchored(db, "anything") is False
 
 
 def test_rows_does_not_leave_the_connection_open(graph_db: Path) -> None:
-    """The hook runs per edit; a leaked handle per edit would be a real leak."""
+    """A hook runs per tool call; a leaked handle per call would be a real leak."""
     for _ in range(50):
         c.graph_meta(graph_db, "root")
     # A leaked read handle on Windows blocks this; on POSIX it would not.
@@ -187,76 +192,30 @@ def test_rows_does_not_leave_the_connection_open(graph_db: Path) -> None:
         conn.close()
 
 
-# --- is_source_file ----------------------------------------------------------
-def test_a_file_outside_the_project_is_not_source(tmp_path: Path) -> None:
-    outside = tmp_path.parent / "elsewhere.kt"
-    assert not c.is_source_file(outside, tmp_path, dict(c.DEFAULTS))
+def _posix_shell(name: str) -> str | None:
+    """The shell Claude Code would run a hook in, or None.
 
+    On Windows `bash` on PATH can be the WSL launcher in System32. It runs in another filesystem and
+    does not see this process's environment, so it is not the shell a hook runs in. Git for Windows'
+    shell is used when it is installed, and the test is skipped when only the WSL launcher exists.
+    """
+    import os
+    import shutil
 
-@pytest.mark.parametrize("rel", [
-    "node_modules/dep/index.js",
-    ".git/COMMIT_EDITMSG",
-    "build/generated/X.kt",
-    "Pods/Thing.swift",            # case-folded: the set is not all-lowercase
-    "DerivedData/Y.swift",
-])
-def test_ignored_directories_are_not_source(tmp_path: Path, rel: str) -> None:
-    assert not c.is_source_file(tmp_path / rel, tmp_path, dict(c.DEFAULTS))
-
-
-@pytest.mark.parametrize("name", [
-    "NOTES.md", "data.json", "uv.lock", "config.yaml", "setup.cfg",
-    ".gitignore", ".gitattributes", "rules.pro",
-])
-def test_docs_and_config_are_not_source(tmp_path: Path, name: str) -> None:
-    assert not c.is_source_file(tmp_path / name, tmp_path, dict(c.DEFAULTS))
-
-
-def test_a_dotfile_extension_is_matched_by_name_not_suffix(tmp_path: Path) -> None:
-    # Path(".gitignore").suffix is "", so a naive suffix check would call it
-    # source. The pre-push gate has the same carve-out.
-    assert not c.is_source_file(tmp_path / ".gitignore", tmp_path, dict(c.DEFAULTS))
-
-
-def test_code_under_the_root_is_source(tmp_path: Path) -> None:
-    cfg = {**c.DEFAULTS, "root": "app/src"}
-    assert c.is_source_file(tmp_path / "app" / "src" / "A.kt", tmp_path, cfg)
-
-
-def test_code_outside_the_root_is_not_source(tmp_path: Path) -> None:
-    cfg = {**c.DEFAULTS, "root": "app/src"}
-    assert not c.is_source_file(tmp_path / "other" / "A.kt", tmp_path, cfg)
-
-
-def test_an_empty_root_means_the_whole_project(tmp_path: Path) -> None:
-    assert c.is_source_file(tmp_path / "anywhere" / "A.kt", tmp_path, dict(c.DEFAULTS))
-
-
-def test_is_source_file_without_covers_prunes_ignored_dirs(tmp_path: Path) -> None:
-    assert not c.is_source_file(
-        tmp_path / ".githooks" / "pre-push", tmp_path, dict(c.DEFAULTS)
-    )
-
-
-def test_is_source_file_lets_covers_outrank_the_prune_and_the_extension_list(
-    tmp_path: Path,
-) -> None:
-    cfg = {**c.DEFAULTS, "covers": [".githooks/*", "app/src/**/*.kt", "docs/*.md"]}
-    assert c.is_source_file(tmp_path / ".githooks" / "pre-push", tmp_path, cfg)
-    assert c.is_source_file(
-        tmp_path / "app" / "src" / "main" / "build" / "Config.kt", tmp_path, cfg
-    )
-    assert c.is_source_file(tmp_path / "docs" / "a.md", tmp_path, cfg)
-    assert not c.is_source_file(tmp_path / "app" / "build" / "Skip.kt", tmp_path, cfg)
-
-
-def test_is_source_file_honours_exempt_and_root_with_covers(tmp_path: Path) -> None:
-    cfg = {
-        **c.DEFAULTS, "root": "app", "covers": ["src/**/*.kt"], "exempt": ["src/gen/*"],
-    }
-    assert c.is_source_file(tmp_path / "app" / "src" / "build" / "A.kt", tmp_path, cfg)
-    assert not c.is_source_file(tmp_path / "app" / "src" / "gen" / "A.kt", tmp_path, cfg)
-    assert not c.is_source_file(tmp_path / "other" / "src" / "A.kt", tmp_path, cfg)
+    found = shutil.which(name)
+    if sys.platform != "win32" or found is None:
+        return found
+    system = os.path.normcase(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32"))
+    if os.path.normcase(os.path.dirname(found)) != system:
+        return found
+    git = shutil.which("git")
+    if git is None:
+        return None
+    for folder in ("bin", os.path.join("usr", "bin")):
+        candidate = Path(git).resolve().parents[1] / folder / f"{name}.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 # --- hooks.json --------------------------------------------------------------
@@ -266,35 +225,61 @@ def _handlers(tool: str, script: str = "kg_search_gate.py") -> list[dict[str, ob
     config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
     return [
         h for group in config["hooks"]["PreToolUse"] if group["matcher"] == tool
-        for h in group["hooks"] if f"/{script.removesuffix('.py')}.cmd" in str(h["command"])
+        for h in group["hooks"] if f"/{script.removesuffix('.py')}.cmd" in str(h.get("command", ""))
     ]
 
 
-def _if_words(tool: str) -> set[str]:
-    rules = [str(h["if"]) for h in _handlers(tool)]
-    assert all(r.startswith(f"{tool}(") and r.endswith(" *)") for r in rules), rules
-    return {r[len(tool) + 1:-3].lower() for r in rules}
+def _direct(tool: str, endpoint: str) -> list[dict[str, object]]:
+    import json
+
+    config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
+    return [
+        h for group in config["hooks"]["PreToolUse"] if group["matcher"] == tool
+        for h in group["hooks"] if h["type"] == "mcp_tool" and h["tool"] == endpoint
+    ]
 
 
-def test_the_shell_if_rules_cover_every_search_word() -> None:
-    """The gate starts only for commands an `if` rule names, so a search word the
-    parser knows but no rule lists would never reach it."""
-    import kg_search_gate as gate
-
-    cmdlets = {"select-string", "sls", "get-childitem", "gci"}
-    # `git` for `git grep` and `git ls-files | xargs grep`.
-    assert _if_words("PowerShell") == gate._SEARCH_WORDS | {"git"}
-    assert _if_words("Bash") == (gate._SEARCH_WORDS - cmdlets) | {"sudo", "git"}
+SEARCH_TOOLS = "Grep|Glob|Bash|PowerShell"
 
 
-def test_every_shell_handler_carries_an_if_rule() -> None:
-    for tool in ("Bash", "PowerShell"):
-        assert all("if" in h for h in _handlers(tool)), tool
+def test_one_direct_hook_answers_both_gates_for_every_search_tool() -> None:
+    """A direct hook starts no process, so no `if` rule has to keep it from starting: the server
+    receives every command and decides. An `if` rule per search word would miss a word the parser
+    learns later. One hook for the search gate and the push gate, where two made two calls for a
+    git command."""
+    import json
+
+    config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
+    groups = [g for g in config["hooks"]["PreToolUse"] if not g["matcher"].startswith("mcp__")]
+    assert [g["matcher"] for g in groups] == [SEARCH_TOOLS]
+    (handler,) = _direct(SEARCH_TOOLS, "kg_hook_pre")
+    assert groups[0]["hooks"] == [handler]
+    assert handler["server"] == "plugin:codebase-kg:codebase-kg-hooks"
+    assert "if" not in handler and "onFailure" not in handler, "the gates fail open"
+    assert handler["input"] == {
+        "tool_name": "${tool_name}", "tool_input": "${tool_input}", "cwd": "${cwd}",
+        "session_id": "${session_id}", "agent_id": "${agent_id}", "transcript_path": "${transcript_path}",
+    }
+    assert not _handlers(SEARCH_TOOLS), "no search gate process starts for Claude Code"
+    assert not _handlers(SEARCH_TOOLS, "kg_push_gate.py"), "no push gate process starts for Claude Code"
 
 
-def test_the_push_gate_starts_only_for_git_commands() -> None:
-    handlers = _handlers("Bash", "kg_push_gate.py")
-    assert [h["if"] for h in handlers] == ["Bash(git *)"]
+def test_the_graph_write_tools_are_allowed_without_a_prompt() -> None:
+    """The push gate tells the agent to refresh the graph without asking the user. A permission prompt on
+    a graph write would stop that refresh, and a graph update changes no code."""
+    import json
+    import re
+
+    config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
+    (group,) = [g for g in config["hooks"]["PreToolUse"] if "kg_hook_allow_write" in json.dumps(g)]
+    from codebase_kg import worker
+
+    for name in worker.WRITE_TOOLS:
+        assert re.fullmatch(group["matcher"], f"mcp__plugin_codebase-kg_codebase-kg__{name}"), name
+        assert re.fullmatch(group["matcher"], f"mcp__codebase-kg__{name}"), name
+    for name in ("kg_search", "kg_node", "kg_find_by_path"):
+        assert not re.fullmatch(group["matcher"], f"mcp__plugin_codebase-kg_codebase-kg__{name}"), name
+    assert not re.fullmatch(group["matcher"], "mcp__plugin_other_other__kg_upsert_node")
 
 
 
@@ -314,7 +299,7 @@ def _launch_commands() -> list[tuple[str, str]]:
     return [
         ("hooks.json", str(h["command"]))
         for groups in json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))["hooks"].values()
-        for group in groups for h in group["hooks"]
+        for group in groups for h in group["hooks"] if h["type"] == "command"
     ]
 
 
@@ -325,7 +310,7 @@ def test_every_command_sources_one_launcher_that_runs_in_sh_and_powershell() -> 
     PowerShell 5.1 has no `&&`, and the interpreter is chosen inside the launcher. The tail hands
     the script's exit code to PowerShell."""
     commands = _launch_commands()
-    assert len(commands) == 33
+    assert len(commands) == 2
     for source, command in commands:
         assert command.startswith(LAUNCH_PREFIX) and command.endswith(LAUNCH_TAIL), (source, command)
         name = command[len(LAUNCH_PREFIX):-len(LAUNCH_TAIL)] + ".cmd"
@@ -334,11 +319,10 @@ def test_every_command_sources_one_launcher_that_runs_in_sh_and_powershell() -> 
 
 
 def test_the_launchers_are_one_template_with_the_script_swapped() -> None:
-    template = (RUN / "kg_search_gate.cmd").read_bytes().decode("utf-8")
+    template = (RUN / "kg_server_start.cmd").read_bytes().decode("utf-8")
     scripts = {
-        "kg_search_gate": "hooks", "kg_push_gate": "hooks", "kg_post_edit_check": "hooks",
-        "kg_session_end": "hooks", "kg_server_start": "hooks", "kg_session_start": "hooks",
-        "kg_headers": "mcp/launch",
+        "kg_server_start": "hooks",
+        "kg_session_start": "hooks", "kg_headers": "mcp/launch",
     }
     assert sorted(p.stem for p in RUN.glob("*.cmd")) == sorted(scripts)
     back = chr(92)
@@ -346,8 +330,8 @@ def test_the_launchers_are_one_template_with_the_script_swapped() -> None:
         text = (RUN / f"{stem}.cmd").read_bytes().decode("utf-8")
         assert chr(13) not in text, f"{stem}: sh cannot read a CR"
         assert (ROOT / folder / f"{stem}.py").is_file()
-        want = template.replace("hooks/kg_search_gate.py", f"{folder}/{stem}.py")
-        want = want.replace(f"hooks{back}kg_search_gate.py", f"{folder}/{stem}.py".replace("/", back))
+        want = template.replace("hooks/kg_server_start.py", f"{folder}/{stem}.py")
+        want = want.replace(f"hooks{back}kg_server_start.py", f"{folder}/{stem}.py".replace("/", back))
         assert text == want, stem
     assert template.startswith(':<<"::KG_CMD"' + chr(10))
     code = [ln.lower() for ln in template.splitlines() if not ln.startswith("rem ")]
@@ -402,14 +386,13 @@ def _interpreter_stubs() -> dict[str, str]:
 def test_a_failing_hook_script_runs_once_and_reads_the_payload_in_sh(tmp_path: Path, shell: str) -> None:
     """The launcher picks one interpreter and runs the script once: a script that exits non-zero
     must not be retried under the next interpreter, and a python3 that does not start is skipped."""
-    import shutil
     import subprocess
 
-    exe = shutil.which(shell)
+    exe = _posix_shell(shell)
     if exe is None:
         pytest.skip(f"no {shell}")
-    runs, env = _plugin_with(tmp_path, "kg_session_end", _interpreter_stubs())
-    command = LAUNCH_PREFIX + "kg_session_end" + LAUNCH_TAIL
+    runs, env = _plugin_with(tmp_path, "kg_session_start", _interpreter_stubs())
+    command = LAUNCH_PREFIX + "kg_session_start" + LAUNCH_TAIL
     done = subprocess.run([exe, "-c", command], input=b'{"k": 1}', env=env, capture_output=True,
                           timeout=30, check=False)
     assert done.returncode == 3, done.stderr
@@ -425,8 +408,8 @@ def test_the_launcher_says_so_when_no_interpreter_starts_in_sh(tmp_path: Path) -
     if sh is None:
         pytest.skip("no POSIX shell")
     fail = "#!/bin/sh\nexit 9\n"
-    runs, env = _plugin_with(tmp_path, "kg_session_end", {"py": fail, "python3": fail, "python": fail})
-    done = subprocess.run([sh, "-c", LAUNCH_PREFIX + "kg_session_end" + LAUNCH_TAIL], env=env, capture_output=True,
+    runs, env = _plugin_with(tmp_path, "kg_session_start", {"py": fail, "python3": fail, "python": fail})
+    done = subprocess.run([sh, "-c", LAUNCH_PREFIX + "kg_session_start" + LAUNCH_TAIL], env=env, capture_output=True,
                           timeout=30, check=False)
     assert done.returncode == 127 and b"no working Python" in done.stderr
     assert not runs.exists()
@@ -447,7 +430,7 @@ def _powershell(shell: str, command: str, env: dict[str, str], payload: bytes = 
                           env=env, cwd=cwd, capture_output=True, timeout=60, check=False)
 
 
-def _powershell_command(stem: str = "kg_session_end") -> str:
+def _powershell_command(stem: str = "kg_session_start") -> str:
     """Claude Code rewrites the placeholder to `${env:CLAUDE_PLUGIN_ROOT}` for PowerShell."""
     return LAUNCH_PREFIX.replace("${CLAUDE_PLUGIN_ROOT}", "${env:CLAUDE_PLUGIN_ROOT}") + stem + LAUNCH_TAIL
 
@@ -459,7 +442,7 @@ def test_the_hook_command_runs_once_in_powershell_and_returns_the_exit_code(
 ) -> None:
     """PowerShell is the shell on Windows without Git Bash. The script reads the payload from
     stdin, runs once, and its exit code reaches the caller, as it does through sh."""
-    runs, env = _plugin_with(tmp_path, "kg_session_end", folder=folder)
+    runs, env = _plugin_with(tmp_path, "kg_session_start", folder=folder)
     done = _powershell(shell, _powershell_command(), env, b'{"k": 2}')
     assert done.stdout.decode().strip() == 'got:{"k": 2}', done.stderr
     assert done.returncode == 3
@@ -472,7 +455,7 @@ def test_the_launcher_finds_the_script_in_powershell_without_the_variable(
 ) -> None:
     """The batch half locates the script from its own folder, so a caller that expands the
     placeholder in the command text but exports no variable still works."""
-    _, env = _plugin_with(tmp_path, "kg_session_end")
+    _, env = _plugin_with(tmp_path, "kg_session_start")
     root = env.pop("CLAUDE_PLUGIN_ROOT")
     command = _powershell_command().replace("${env:CLAUDE_PLUGIN_ROOT}", root)
     done = _powershell(shell, command, env, b'{"k": 3}')
@@ -488,7 +471,7 @@ def test_the_launcher_says_so_when_no_interpreter_starts_in_powershell(
     import shutil
 
     exe = shutil.which(shell)
-    runs, env = _plugin_with(tmp_path, "kg_session_end")
+    runs, env = _plugin_with(tmp_path, "kg_session_start")
     # cmd.exe stays reachable; py, python3 and python do not.
     env["PATH"] = os.path.join(os.environ.get("SystemRoot", "C:/Windows"), "System32")
     done = _powershell(exe or shell, _powershell_command(), env)
@@ -500,7 +483,7 @@ def _planted_project(tmp_path: Path) -> Path:
     """A project folder holding look-alike interpreters and plugin scripts. Each one that runs
     creates `ran` in the folder and prints `planted`."""
     project = tmp_path / "project"
-    for rel in ("hooks/kg_session_end.py", "mcp/launch/kg_headers.py"):
+    for rel in ("hooks/kg_session_start.py", "mcp/launch/kg_headers.py"):
         (project / rel).parent.mkdir(parents=True, exist_ok=True)
         (project / rel).write_bytes(f"open({str(project / 'ran')!r}, 'w')\nprint('planted')\n".encode())
     for name in ("py", "python3", "python"):
@@ -517,7 +500,7 @@ def _without_cwd_guard(env: dict[str, str]) -> dict[str, str]:
 
 
 def test_the_launchers_turn_off_the_working_folder_lookup_before_any_interpreter() -> None:
-    text = (RUN / "kg_search_gate.cmd").read_bytes().decode("utf-8")
+    text = (RUN / "kg_server_start.cmd").read_bytes().decode("utf-8")
     assert text.index("set NoDefaultCurrentDirectoryInExePath=1\n") < text.index("py -3")
     assert "kg_root=." not in text
 
@@ -526,15 +509,14 @@ def test_the_launchers_turn_off_the_working_folder_lookup_before_any_interpreter
 def test_the_launcher_never_runs_a_script_from_the_working_folder_in_sh(tmp_path: Path, shell: str) -> None:
     """Without the variable, bash finds the plugin from the launcher's own path. A shell that cannot
     (dash) stops with exit 127 instead of using the working folder, which is the project for a hook."""
-    import shutil
     import subprocess
 
-    exe = shutil.which(shell)
+    exe = _posix_shell(shell)
     if exe is None:
         pytest.skip(f"no {shell}")
-    _, env = _plugin_with(tmp_path, "kg_session_end", _interpreter_stubs())
+    _, env = _plugin_with(tmp_path, "kg_session_start", _interpreter_stubs())
     root = env.pop("CLAUDE_PLUGIN_ROOT")
-    command = (LAUNCH_PREFIX + "kg_session_end" + LAUNCH_TAIL).replace("${CLAUDE_PLUGIN_ROOT}", root)
+    command = (LAUNCH_PREFIX + "kg_session_start" + LAUNCH_TAIL).replace("${CLAUDE_PLUGIN_ROOT}", root)
     project = _planted_project(tmp_path)
     done = subprocess.run([exe, "-c", command], input=b'{"k": 4}', env=env, cwd=project,
                           capture_output=True, timeout=30, check=False)
@@ -552,7 +534,7 @@ def test_the_launcher_never_runs_a_script_from_the_working_folder_in_sh(tmp_path
 def test_the_hook_command_ignores_interpreters_in_the_working_folder_in_powershell(
     tmp_path: Path, shell: str
 ) -> None:
-    runs, env = _plugin_with(tmp_path, "kg_session_end")
+    runs, env = _plugin_with(tmp_path, "kg_session_start")
     project = _planted_project(tmp_path)
     done = _powershell(shell, _powershell_command(), _without_cwd_guard(env), b'{"k": 5}', cwd=project)
     assert not (project / "ran").exists()
@@ -598,7 +580,7 @@ def _run_helper(shell: str, root: Path, env: dict[str, str], cwd: Path | None = 
         command = _headers_helper().replace("${CLAUDE_PLUGIN_ROOT}", str(root))
         args: object = f'"{comspec}" /d /s /c "{command}"'
     else:
-        exe = shutil.which(shell)
+        exe = _posix_shell(shell) if shell in ("sh", "bash", "dash") else shutil.which(shell)
         if exe is None:
             pytest.skip(f"no {shell}")
         command = _headers_helper().replace(
@@ -703,16 +685,20 @@ def test_the_real_headers_helper_prints_its_headers_through_the_platform_shell(s
     assert done.returncode == 0, done.stderr
     assert len(done.stdout.decode().strip().splitlines()) == 1
     headers = json.loads(done.stdout)
-    assert set(headers) == {"X-Codebase-KG-Client"}, headers
+    assert set(headers) == {"X-Codebase-KG-Client", "X-Codebase-KG-Agent"}, headers
 
 
-def test_the_async_credit_hook_says_why_it_is_async() -> None:
+def test_no_hook_reports_graph_queries_to_the_gate() -> None:
+    """The server receives every graph query itself and counts them. A hook on the codebase-kg tools
+    would start a process on every query to tell the server what it already knows."""
     import json
 
     config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
-    (group,) = [g for g in config["hooks"]["PreToolUse"] if g["matcher"].startswith("mcp__")]
-    assert all(h.get("async") is True for h in group["hooks"])
-    assert "`async: true` on purpose" in config["description"]
+    assert config["hooks"]["PreToolUse"][0]["matcher"] == SEARCH_TOOLS
+    assert not [g for g in config["hooks"]["PreToolUse"] if "search_gate" in json.dumps(g)]
+    on_graph_tools = [g for g in config["hooks"]["PreToolUse"] if g["matcher"].startswith("mcp__")]
+    assert [h["tool"] for g in on_graph_tools for h in g["hooks"]] == ["kg_hook_allow_write"]
+    assert "async" not in json.dumps(config["hooks"])
 
 
 # --- gate state is replaced, not rewritten in place -----------------------------

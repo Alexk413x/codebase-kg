@@ -6,8 +6,8 @@ that have no plugin install. That constraint forces the same helpers to exist
 twice; it does not license them to disagree.
 
 They had already drifted: `hooks/_config.py` was missing five entries from
-`IGNORE_DIRS` and one from the extension list, so the post-edit hook nudged
-about files in `Pods/` and `node_modules/` that both other surfaces correctly
+`IGNORE_DIRS` and one from the extension list, so the hooks treated files in
+`Pods/` and `node_modules/` as source that both other surfaces correctly
 ignored. Nothing failed — the only thing holding them together was a comment
 saying "match the pre-push gate's logic".
 
@@ -27,7 +27,6 @@ sys.path.insert(0, str(ROOT / "git-hooks"))
 sys.path.insert(0, str(ROOT / "hooks"))
 
 import _config
-import kg_post_edit_check
 import kg_pre_push
 from codebase_kg import writer
 
@@ -103,7 +102,7 @@ def test_both_parsers_reject_a_placeholder() -> None:
 
 def test_a_comment_tail_does_not_silently_disable_the_hook() -> None:
     # The concrete regression: an un-stripped comment made `root` match no file,
-    # so is_source_file returned False for everything and the hook went quiet.
+    # so the hooks classified every file as unmapped and went quiet.
     root = _config._parse_frontmatter(LOCAL_MD)["root"]
     assert "#" not in str(root)
 
@@ -199,9 +198,7 @@ def test_the_shipped_template_parses_the_same_way_in_both() -> None:
     "app/src/main/Foo.kt",
     "app/src/main/ui/Bar.kt",
 ])
-def test_both_agree_a_source_file_counts(tmp_path: Path, rel: str) -> None:
-    cfg: dict[str, object] = {"root": "app/src/main", "exclude_ext": list(EXCLUDE_EXT)}
-    assert _config.is_source_file(tmp_path / rel, tmp_path, cfg) is True
+def test_the_pre_push_gate_counts_a_source_file(rel: str) -> None:
     assert kg_pre_push.is_source(rel, "app/src/main", None) is True
 
 
@@ -211,9 +208,7 @@ def test_both_agree_a_source_file_counts(tmp_path: Path, rel: str) -> None:
     "app/src/main/Pods/Vendor.swift",
     "app/src/main/node_modules/pkg/index.ts",
 ])
-def test_both_agree_a_non_source_file_does_not(tmp_path: Path, rel: str) -> None:
-    cfg: dict[str, object] = {"root": "app/src/main", "exclude_ext": list(EXCLUDE_EXT)}
-    assert _config.is_source_file(tmp_path / rel, tmp_path, cfg) is False
+def test_the_pre_push_gate_does_not_count_a_non_source_file(rel: str) -> None:
     assert kg_pre_push.is_source(rel, "app/src/main", None) is False
 
 
@@ -244,20 +239,10 @@ def test_norm_root_has_not_drifted_between_the_copies() -> None:
 
 
 @pytest.mark.parametrize("root", ["", "."])
-def test_a_dot_root_classifies_source_exactly_like_an_empty_one(
-    tmp_path: Path, root: str
-) -> None:
+def test_a_dot_root_classifies_source_exactly_like_an_empty_one(root: str) -> None:
     rel = "app/Foo.kt"
-    cfg: dict[str, object] = {"root": root, "exclude_ext": list(EXCLUDE_EXT)}
-    assert _config.is_source_file(tmp_path / rel, tmp_path, cfg) is True
     assert kg_pre_push.is_source(rel, kg_pre_push.norm_root(root), None) is True
     assert kg_pre_push._rel_to_root(rel, root) == rel
-
-
-def test_a_dot_root_still_anchors_the_edited_file(tmp_path: Path) -> None:
-    """The signal that went missing: an unanchored file must still be reportable."""
-    edited = tmp_path / "app" / "Foo.kt"
-    assert kg_post_edit_check._rel_to_root(edited, tmp_path, ".") == "app/Foo.kt"
 
 
 def test_the_meta_model_refuses_to_carry_a_dot_root() -> None:
@@ -389,21 +374,15 @@ def test_both_dir_matchers_agree(pattern: str, rel_dir: str) -> None:
     )
 
 
-@pytest.mark.parametrize("rel", [
-    "app/src/main/build/Config.kt",
-    "app/build/Skip.kt",
-    ".githooks/pre-push",
-    "docs/a.md",
+@pytest.mark.parametrize("rel, expected", [
+    ("app/src/main/build/Config.kt", True),
+    ("app/build/Skip.kt", False),
+    (".githooks/pre-push", True),
+    ("docs/a.md", False),
 ])
-def test_both_hooks_let_covers_decide(tmp_path: Path, rel: str) -> None:
-    covers = ["app/src/**/*.kt", ".githooks/*"]
-    cfg: dict[str, object] = {
-        "root": "", "exclude_ext": list(EXCLUDE_EXT), "covers": covers,
-    }
-    expected = kg_pre_push.is_source(
-        rel, "", None, kg_pre_push.compile_patterns(covers), None
-    )
-    assert _config.is_source_file(tmp_path / rel, tmp_path, cfg) is expected
+def test_the_pre_push_gate_lets_covers_decide(rel: str, expected: bool) -> None:
+    covers = kg_pre_push.compile_patterns(["app/src/**/*.kt", ".githooks/*"])
+    assert kg_pre_push.is_source(rel, "", None, covers, None) is expected
 
 
 def test_every_hook_setting_is_documented_in_the_template_and_the_schema() -> None:

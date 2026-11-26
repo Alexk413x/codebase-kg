@@ -17,16 +17,9 @@ root: app/src/main/java/com/example/app
 # (`kg_path` is an alias for this key, so a pre-0.2 file keeps working.)
 graph_path: knowledge/code_graph.db
 
-# Advisory post-edit nudge. Set false to silence it entirely.
-post_edit_nudge: true
-
-# Nudge once per this many edits to already-mapped source files. (A file that no node covers is
-# reported the first time you touch it, regardless of this.)
-nudge_every: 5
-
 # The search gate: a Grep/Glob aimed at mapped code is denied with instructions to query the graph
 # first, and it keeps asking rather than standing down after one nudge. `warn` sends the message
-# without denying; `off` disables it. SKIP_KG=1 in the environment silences it for one shell.
+# without denying; `off` disables it. In Claude Code this key is the only off switch: SKIP_KG does not apply.
 search_gate: block
 
 # Also treat a shell `grep`/`rg`/`git grep`/`find -name` as a search. Set false to gate only the search tools.
@@ -39,6 +32,10 @@ gate_shell_search: true
 # repeat of a search that was just denied — the escape hatch for code the graph has not mapped yet.
 # No value here can strand an agent.
 gate_credit: 3
+
+# The commit check (Claude Code): after a commit, the server lists the committed files the graph does
+# not describe to the agent. Advisory. Set false to turn it off for this clone.
+commit_check: true
 
 # File extensions that never count as source, for a graph that declares no `covers` patterns (a
 # graph with `covers` decides by those patterns instead, and ignores this). Setting it REPLACES

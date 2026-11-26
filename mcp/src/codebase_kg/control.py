@@ -1,9 +1,9 @@
 """Check, start or stop the shared server: kg_cli.py server status|start|stop|sessions|register|unregister.
 
-`status` prints what answers on the HTTP port (the `server_port` setting, else
-47821): the build, its pid and its `max_workers`. `stop` asks that server to
+`status` prints what answers on the HTTP port (`--port`, else the `server_port`
+setting, else 47821): the build, its pid and its `max_workers`. `stop` asks that server to
 exit, with the token from its state file, and waits until the port is free. `start`
-starts a server if none answers and waits until it does. The next session's
+starts a server on that port if none answers and waits until it does. The next session's
 SessionStart hook, or the next shim, starts a server again, which reads the
 settings afresh.
 
@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
+import os
 import sys
 import time
 
@@ -50,6 +51,19 @@ def start(port: int) -> dict[str, object]:
         return {**found, "started": False}
     if not found.get("ok"):
         return found
+    # The server reads its port from the environment, which it inherits from here.
+    before = os.environ.get("CODEBASE_KG_PORT")
+    os.environ["CODEBASE_KG_PORT"] = str(port)
+    try:
+        return _start(port)
+    finally:
+        if before is None:
+            os.environ.pop("CODEBASE_KG_PORT", None)
+        else:
+            os.environ["CODEBASE_KG_PORT"] = before
+
+
+def _start(port: int) -> dict[str, object]:
     build = shim.build_info()["build"]
     shim.cache_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
     with shim.spawn_lock(build) as locked:

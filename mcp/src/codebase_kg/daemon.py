@@ -7,14 +7,15 @@ serves classic MCP to the shims over loopback TCP (`tcp_transport.py`) and MCP
 `core.Core`, which runs tool calls on the worker pool in `pool.py`.
 
 The TCP listener binds 127.0.0.1 on a port the OS picks. The server publishes
-`{version, port, pid, token, http_port}` in a per-build state file readable
-only by the user, where `version` is `shim.server_build()`: the package version
-plus a digest of the source files. `http_port` is the port `shim.http_port()`
-names, or null when this server holds none. When that port answers as an older
-codebase-kg build that its state file verifies, this server asks it to stop and
-takes the port. When it answers as a newer build, or as anything it cannot
-verify, this server serves the shims only; when it answers as this same build,
-this server exits, because its state file is the one the shims read.
+`{version, port, pid, token, http_port}` in a state file readable only by the
+user, one per build and HTTP port, where `version` is `shim.server_build()`: the
+package version plus a digest of the source files. `http_port` is the port
+`shim.http_port()` names, or null when this server holds none. When that port
+answers as a build this one may replace (`shim.replaces`) and its state file
+verifies it, this server asks it to stop and takes the port. When it answers as
+any other build, or as anything it cannot verify, this server serves the shims
+only; when it answers as this same build, this server exits, because its state
+file is the one the shims read.
 
 Claude Code sends each call to whatever holds the port, but nothing restarts a
 server that stopped mid-session. So a server that holds the HTTP port exits only
@@ -25,8 +26,9 @@ exit within `ORPHAN_CHECK_INTERVAL` seconds once their state file is gone or
 names another server, and at once on `POST /shutdown` with the state-file token.
 Each removes its state file if it is still its own.
 
-Agents also register their sessions (`shim.register_session`, called by the
-SessionStart and SessionEnd hooks). Once a server has seen a registered session,
+Agents also register their sessions with their process id (`shim.register_session`,
+called by the SessionStart hook, the Codex headers helper and the stdio bridge). A
+session whose process has exited is dropped. Once a server has seen a registered session,
 it exits when none has been live for `CODEBASE_KG_SESSION_GRACE` seconds (default
 300; negative turns this off) and nothing has used it for as long. A server that
 never saw a registered session, such as one only Codex uses, keeps the idle limits above.
@@ -223,6 +225,11 @@ def serve() -> None:
     engine = core.Core(pool)
     tcp = tcp_transport.TcpServer(engine, daemon.version, daemon.token, daemon.opened, daemon.closed)
     state = shim.state_path(daemon.version)
+    # With `server_port` 0 the OS picks the port: a shim finds the file under the setting,
+    # and whoever verifies the port's holder finds it under the port.
+    states = [state]
+    if daemon.http_port is not None and shim.state_path(daemon.version, daemon.http_port) != state:
+        states.append(shim.state_path(daemon.version, daemon.http_port))
     state.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     daemon.state = state
     http: http_transport.HttpServer | None = None
@@ -234,10 +241,12 @@ def serve() -> None:
                 http_transport.health_reply({**info, "max_workers": limit}, os.getpid()),
                 on_request=daemon.touch, on_shutdown=daemon.stop,
             )
-        shim.write_atomic(state, json.dumps({
-            "version": daemon.version, "port": tcp.port, "pid": os.getpid(), "token": daemon.token,
-            "http_port": daemon.http_port,
-        }).encode("utf-8"))
+        for path in states:
+            shim.write_atomic(path, json.dumps({
+                "version": daemon.version, "port": tcp.port, "pid": os.getpid(), "token": daemon.token,
+                "http_port": daemon.http_port,
+            }).encode("utf-8"))
+        shim.clear_dead_states()
         logger.info("serving codebase-kg %s on 127.0.0.1:%d", daemon.version, tcp.port)
         logger.info("tool calls run on up to %d worker processes", limit)
         _start(tcp, "kg-tcp", running)
@@ -255,7 +264,8 @@ def serve() -> None:
             http_sock.close()
         # Last, so the state file verifies this server until it frees the port: a
         # headers helper that finds no state file for a build still answering sends no token.
-        _remove_if_ours(state, daemon.token)
+        for path in states:
+            _remove_if_ours(path, daemon.token)
         if pool is not None:
             pool.close()
         logger.info("shutting down")

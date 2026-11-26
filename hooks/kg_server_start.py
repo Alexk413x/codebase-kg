@@ -3,15 +3,17 @@
 Claude Code tries to connect to the HTTP server a few times in the first
 seconds of a session, once more as soon as the SessionStart hooks finish, and
 then gives up for the session. So this hook checks `GET /health` on the
-`server_port` setting and, when nothing answers, or an older codebase-kg build
-answers, starts this plugin's build detached and waits up to 8 s for it. A cold
+`server_port` setting and, when nothing answers, or a build this one may replace
+answers (`shim.replaces`), starts this plugin's build detached and waits up to 8 s for it. A cold
 Python start takes 2 to 5 s on a loaded Windows machine.
 
-It also registers the session (`shim.register_session`), so the server can exit
-once its last session ends; `kg_session_end.py` unregisters it.
+It also registers the session with the agent's pid (`shim.register_session`). The
+server drops a session whose pid has exited, so it can exit once its last
+session ends and nothing has to unregister one.
 
 It always exits 0 and prints one line only when something is wrong: the port
-belongs to another program, or the server did not come up in time. Stdlib only.
+belongs to another program, the server did not come up in time, or this is a development
+copy (not a release, not installed by a client) and another build holds the port. Stdlib only.
 """
 
 from __future__ import annotations
@@ -32,9 +34,21 @@ POLL = 0.1
 
 
 def _serving(shim: Any, port: int, mine: dict[str, Any]) -> bool:
-    """True when the port holds this build or one that outranks it."""
+    """True when the port holds this build or one it may not replace."""
     kind, theirs = shim.health(port, timeout=0.5)
-    return kind == shim.OURS and not shim.outranks(mine, theirs)
+    return kind == shim.OURS and not shim.replaces(mine, theirs)
+
+
+def _held(port: int, mine: dict[str, Any], theirs: dict[str, Any]) -> str | None:
+    """The line for a development copy, which leaves the port to another build."""
+    if mine.get("released") or mine.get("installed") or theirs.get("build") == mine.get("build"):
+        return None
+    return (
+        f"codebase-kg: version {theirs.get('version')} ({theirs.get('build')}) holds port {port}. This copy "
+        f"is a development copy (not a release, and not in a client's plugin folder), so it does not "
+        f"replace that server, and this session uses it. To run this copy's own server, set the plugin's "
+        f"server_port option to a free port."
+    )
 
 
 def ensure_server(shim: Any, wait: float = WAIT, spawn: Callable[[str], object] | None = None) -> str | None:
@@ -47,8 +61,8 @@ def ensure_server(shim: Any, wait: float = WAIT, spawn: Callable[[str], object] 
             f"codebase-kg: port {port} belongs to another program, so the codebase-kg tools "
             f"are unavailable. Set the plugin's server_port option to a free port."
         )
-    if kind == shim.OURS and not shim.outranks(mine, theirs):
-        return None
+    if kind == shim.OURS and not shim.replaces(mine, theirs):
+        return _held(port, mine, theirs)
     build = mine["build"]
     shim.cache_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
     with shim.spawn_lock(build) as locked:

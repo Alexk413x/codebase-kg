@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from codebase_kg import push_gate
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.writer import build
 
@@ -168,8 +169,27 @@ def _clean_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)  # the gate changes directory into the repo
 
 
-def _call(command: str, cwd: Path, capsys: pytest.CaptureFixture) -> str:
-    payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}
+BACKEND = "script"
+script_only = pytest.mark.script_only
+
+
+@pytest.fixture(autouse=True, params=["script", "server"])
+def backend(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Every test runs against the hook script and against the server's hook endpoint. A test marked
+    `script_only` covers what differs on purpose: the script lets a skip in the command or in its
+    environment through, and the server asks the user."""
+    if request.param == "server" and request.node.get_closest_marker("script_only"):
+        pytest.skip("covers the hook script's own process")
+    monkeypatch.setattr(sys.modules[__name__], "BACKEND", request.param)
+    return request.param
+
+
+def _call(command: str, cwd: Path, capsys: pytest.CaptureFixture, tool: str = "Bash") -> str:
+    if BACKEND == "server":
+        result = push_gate.call({"tool_name": tool, "command": command, "cwd": str(cwd)})
+        text = result["content"][0]["text"]
+        return "" if text == "{}" else text
+    payload = {"tool_name": tool, "tool_input": {"command": command}, "cwd": str(cwd)}
     gate._run(payload)
     return capsys.readouterr().out
 
@@ -233,6 +253,7 @@ def test_no_verify_does_not_open_the_gate(
     assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
+@script_only
 def test_skip_kg_in_the_command_allows_the_push(
     tmp_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
@@ -241,6 +262,7 @@ def test_skip_kg_in_the_command_allows_the_push(
     assert _call("export SKIP_KG=1 && git push", repo, capsys) == ""
 
 
+@script_only
 def test_skip_kg_in_the_process_env_allows_the_push(
     tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -249,6 +271,7 @@ def test_skip_kg_in_the_process_env_allows_the_push(
     assert _call("git push", repo, capsys) == ""
 
 
+@script_only
 def test_a_matching_ack_allows_the_push(
     tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -266,6 +289,16 @@ def test_a_wrong_ack_does_not_allow_the_push(
     assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
     monkeypatch.setenv("KG_STALE_ACK", "7")
     out = _call("git push", repo, capsys)
+    assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize("ack", ["\u00b2", "\u0662", "1\u00b2"])
+def test_an_ack_of_non_ascii_digits_does_not_open_the_gate(
+    tmp_path: Path, capsys: pytest.CaptureFixture, ack: str,
+) -> None:
+    """`str.isdigit` accepts these and `int` rejects them. The error used to end the hook, which allows."""
+    repo = _make_repo(tmp_path, drift=(KNOWN,))
+    out = _call(f"KG_STALE_ACK={ack} git push", repo, capsys)
     assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
@@ -409,13 +442,17 @@ def test_powershell_backtick_continuation_and_ack(
     assert _ps("$env:KG_STALE_ACK = 1\ngit `\n  push origin main", repo, capsys) == ""
 
 
-def test_hooks_json_routes_powershell_git_commands_to_the_push_gate() -> None:
+def test_hooks_json_routes_bash_and_powershell_commands_to_the_push_gate() -> None:
+    """The push gate shares the `PreToolUse` hook of the search gate (`core.pre_tool`), which hands it a push."""
     config = json.loads((Path(gate.__file__).parent / "hooks.json").read_text(encoding="utf-8"))
-    commands = [
-        h["command"] for m in config["hooks"]["PreToolUse"] for h in m["hooks"]
-        if h.get("if") == "PowerShell(git *)"
+    (handler,) = [
+        h for m in config["hooks"]["PreToolUse"] if "Bash" in m["matcher"].split("|") and "PowerShell" in m["matcher"].split("|")
+        for h in m["hooks"]
     ]
-    assert any(c.endswith("/kg_push_gate.cmd\"; exit $LASTEXITCODE") for c in commands)
+    assert handler["type"] == "mcp_tool" and handler["tool"] == "kg_hook_pre"
+    assert handler["input"]["tool_name"] == "${tool_name}" and handler["input"]["tool_input"] == "${tool_input}"
+    # With `onFailure: "block"` an unreachable server would block every command, not only a push.
+    assert "onFailure" not in handler
 
 
 # --- review fixes: comments, wrappers, dry runs ---------------------------------

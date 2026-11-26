@@ -264,12 +264,11 @@ def test_annotations_mark_queries_read_only_and_writes_closed_world() -> None:
         assert hints[name] == {
             "readOnlyHint": False, "destructiveHint": True, "openWorldHint": False,
         }, name
-    assert hints["kg_upsert_node"] == {
-        "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True,
-        "openWorldHint": False,
-    }
-    for name in ("kg_add_link", "kg_add_reference"):
-        assert hints[name] == {"readOnlyHint": False, "openWorldHint": False}, name
+    for name in ("kg_upsert_node", "kg_add_link", "kg_add_reference"):
+        assert hints[name] == {
+            "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True,
+            "openWorldHint": False,
+        }, name
 
 
 def test_server_instructions_are_short_and_name_the_graph_file() -> None:

@@ -22,22 +22,19 @@ from __future__ import annotations
 import json
 import re
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
-from . import cli, resolve, shim, worker
-from .pool import CallError, Pool, Refused, WorkerError
+from . import cli, commit_check, push_gate, resolve, search_gate, shim, worker
+from .pool import CallError, Cancelled, Pool, Refused, WorkerError
 
 CATALOG: dict[str, Any] = json.loads((Path(__file__).with_name("catalog.json")).read_text(encoding="utf-8"))
 TOOLS: dict[str, dict[str, Any]] = {t["name"]: t for t in CATALOG["tools"]}
 INSTRUCTIONS: str = CATALOG["instructions"]
 SERVER_INFO = {"name": "codebase-kg", "version": shim.package_version()}
 
-CLASSIC_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR = -32700, -32600, -32601, -32602, -32603
-NO_CWD = "codebase-kg: the request names no working directory. Send an absolute X-Codebase-KG-Cwd header."
-EMPTY_LISTS = {"prompts/list": "prompts", "resources/list": "resources",
-               "resources/templates/list": "resourceTemplates"}
 
 _INT = re.compile(r"[+-]?[0-9]+(?:_[0-9]+)*(?:\.0*)?")
 _TRUE = frozenset({"1", "on", "t", "true", "y", "yes"})
@@ -149,6 +146,56 @@ def error_result(text: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": text}], "isError": True}
 
 
+def hook_result(name: Any, args: Any, client: str | None = None) -> dict[str, Any] | None:
+    """The result of a hook endpoint, or None when `name` is not one.
+
+    Hook endpoints are tools a hook calls and the catalog does not list. They take
+    the session's folder as an argument, so they need no session. `client` is the
+    caller's client id, which ties a hook call to the model calls of its session.
+    """
+    if name == PRE_TOOL:
+        return pre_tool(args, client)
+    if name == commit_check.TOOL:
+        return commit_check.call(args)
+    if name == search_gate.TOOL:
+        return search_gate.call(args, client)
+    if name == push_gate.TOOL:
+        return push_gate.call(args)
+    if name == push_gate.ALLOW_WRITE_TOOL:
+        return push_gate.allow_write()
+    if isinstance(name, str) and name.startswith(HOOK_PREFIX):
+        # A hook list from a newer version than this server: an error here would show the user a
+        # failure notice on every tool call. The mark tells the hook relay that no gate ran.
+        return {"content": [{"type": "text", "text": "{}"}], "isError": False, "_meta": {NOT_ANSWERED_KEY: True}}
+    return None
+
+
+HOOK_PREFIX = "kg_hook_"
+NOT_ANSWERED_KEY = "slipspace/notAnswered"
+PRE_TOOL = "kg_hook_pre"
+
+
+def pre_tool(args: Any, client: str | None = None) -> dict[str, Any]:
+    """One answer for a `PreToolUse` hook on Grep, Glob, Bash and PowerShell: the push gate's when it has
+    one, else the search gate's. One hook call for each tool call, where two hooks made two."""
+    if isinstance(args, dict) and args.get("tool_name") in ("Bash", "PowerShell"):
+        tool_input = args.get("tool_input")
+        if isinstance(tool_input, str):
+            try:
+                tool_input = json.loads(tool_input)
+            except ValueError:
+                tool_input = None
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        if isinstance(command, str) and "git" in command and "push" in command:
+            push_args = {"tool_name": args.get("tool_name"), "command": command, "cwd": args.get("cwd")}
+            if "prompts" in args:
+                push_args["prompts"] = args["prompts"]
+            pushed = push_gate.call(push_args)
+            if pushed["content"][0]["text"] != "{}":
+                return pushed
+    return search_gate.call(args, client)
+
+
 class Core:
     """Thread-safe: each transport thread calls `call_tool` for its own session."""
 
@@ -162,9 +209,11 @@ class Core:
         with self._guard:
             return self._writers.setdefault(key, threading.Lock())
 
-    def _run(self, name: str, args: dict[str, Any], graph: Path) -> dict[str, Any]:
+    def _run(
+        self, name: str, args: dict[str, Any], graph: Path, cancelled: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
         if self.pool is not None:
-            return self.pool.call(name, args, str(graph))
+            return self.pool.call(name, args, str(graph), cancelled)
         request = dumps({"id": 0, "tool": name, "args": args, "graph": str(graph)}).encode("utf-8")
         reply = json.loads(worker.answer(request))
         if reply.get("ok"):
@@ -173,7 +222,15 @@ class Core:
             raise Refused(reply["refused"])
         raise CallError(str(reply.get("error")))
 
-    def call_tool(self, conn: resolve.Connection, name: Any, raw_args: Any) -> dict[str, Any]:
+    def call_tool(
+        self, conn: resolve.Connection, name: Any, raw_args: Any, cancelled: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """One tool call's result.
+
+        `cancelled` is asked while a read waits for its worker; once true, the worker is
+        stopped and `Cancelled` is raised. A write is never cancelled: it runs to its end,
+        so the graph on disk is the one the write produced or the one before it.
+        """
         if not isinstance(name, str) or name not in TOOLS:
             return error_result(f"Unknown tool: {name!r}")
         try:
@@ -192,43 +249,11 @@ class Core:
                 with self._writer(graph):
                     result = self._run(name, args, graph)
             else:
-                result = self._run(name, args, graph)
+                result = self._run(name, args, graph, cancelled)
+        except Cancelled:
+            raise
         except Refused as exc:
             return text_result(exc.body, is_error=True)
         except (CallError, WorkerError) as exc:
             return error_result(f"Error calling tool {name!r}: {exc}")
         return text_result(result)
-
-
-def classic(core: Core, conn: resolve.Connection | None, msg: dict[str, Any]) -> dict[str, Any] | None:
-    """The response to one message of a classic (initialize-first) MCP session, or None for none.
-
-    A `conn` of None is a stateless HTTP request that named no working directory.
-    """
-    method = msg.get("method")
-    if not isinstance(method, str) or "id" not in msg:
-        return None
-    raw = msg.get("params")
-    params: dict[str, Any] = raw if isinstance(raw, dict) else {}
-    result: dict[str, Any]
-    if method == "initialize":
-        asked = params.get("protocolVersion")
-        result = {
-            "protocolVersion": asked if asked in CLASSIC_VERSIONS else CLASSIC_VERSIONS[-1],
-            "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": SERVER_INFO, "instructions": INSTRUCTIONS,
-        }
-    elif method == "ping":
-        result = {}
-    elif method == "tools/list":
-        result = {"tools": CATALOG["tools"]}
-    elif method in EMPTY_LISTS:
-        result = {EMPTY_LISTS[method]: []}
-    elif method == "tools/call":
-        if conn is None:
-            result = error_result(NO_CWD)
-        else:
-            result = core.call_tool(conn, params.get("name"), params.get("arguments"))
-    else:
-        return shim.rpc_error(msg["id"], METHOD_NOT_FOUND, "Method not found")
-    return {"jsonrpc": "2.0", "id": msg["id"], "result": result}

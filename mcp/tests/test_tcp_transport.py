@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from codebase_kg import core, resolve, tcp_transport
+from codebase_kg import classic, core, resolve, tcp_transport
 
 
 def test_serve_lines_answers_a_slow_call_after_input_ends(
@@ -17,11 +17,11 @@ def test_serve_lines_answers_a_slow_call_after_input_ends(
 ) -> None:
     release = threading.Event()
 
-    def classic(engine: Any, conn: Any, msg: dict[str, Any]) -> dict[str, Any]:
+    def answer(engine: Any, conn: Any, msg: dict[str, Any]) -> dict[str, Any]:
         release.wait(5)
         return {"jsonrpc": "2.0", "id": msg["id"], "result": {"ok": True}}
 
-    monkeypatch.setattr(core, "classic", classic)
+    monkeypatch.setattr(classic, "answer", answer)
     request = {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {}}
     out = io.BytesIO()
     threading.Timer(0.2, release.set).start()

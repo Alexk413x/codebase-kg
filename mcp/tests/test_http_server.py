@@ -55,24 +55,31 @@ def _free_port() -> int:
 
 
 def _start(cache: Path, cwd: Path, **env: str) -> subprocess.Popen[bytes]:
+    return _start_logged(cache, cwd, Path(os.devnull), env)
+
+
+def _start_logged(cache: Path, cwd: Path, log: Path, env: dict[str, str]) -> subprocess.Popen[bytes]:
     full = {**os.environ, "CODEBASE_KG_CACHE_DIR": str(cache), "CODEBASE_KG_PORT": "0", **env}
-    return subprocess.Popen(
-        shim.server_command("--serve"),
-        cwd=cwd, env=full, stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    with open(log, "wb") as stderr:
+        return subprocess.Popen(
+            shim.server_command("--serve"),
+            cwd=cwd, env=full, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=stderr,
+        )
 
 
 def _state(cache: Path) -> dict[str, Any]:
     deadline = time.monotonic() + TIMEOUT
     path = cache / f"server-{BUILD}.json"
     while time.monotonic() < deadline:
-        try:
-            state = json.loads(path.read_text(encoding="utf-8"))
-            if state.get("http_port"):
-                return state
-        except (OSError, ValueError):
-            pass
+        # A server on a port of its own names its state file by build and port.
+        for found in [path, *cache.glob(f"server-{BUILD}-p*.json")]:
+            try:
+                state = json.loads(found.read_text(encoding="utf-8"))
+                if state.get("http_port"):
+                    return state
+            except (OSError, ValueError):
+                pass
         time.sleep(0.05)
     raise AssertionError(f"no state with an HTTP port at {path}")
 
@@ -236,9 +243,12 @@ def _roots(path: Path) -> dict[str, Any]:
 def test_a_client_is_asked_for_its_roots_once(tmp_path: Path) -> None:
     clients = http_transport.Clients()
     headers = {"x-codebase-kg-client": "c1"}
-    first = clients.connection(headers, {})
+    first = clients.connection(headers, {}, {"roots": {}})
     assert first == {"resultType": "input_required",
                      "inputRequests": {http_transport.ROOTS_REQUEST: {"method": "roots/list"}}}
+    with pytest.raises(http_transport.RpcError) as refused:
+        clients.connection(headers, {}, {"elicitation": {}})
+    assert refused.value.code == -32021 and refused.value.data == {"requiredCapabilities": {"roots": {}}}
     bound = clients.connection(headers, _roots(tmp_path))
     assert getattr(bound, "cwd") == tmp_path  # noqa: B009 - pyright rejects `.cwd` on the dict arm of the union
     assert clients.connection(headers, {}) is bound
@@ -438,7 +448,7 @@ class _Holder:
         return [h.get("Authorization", "") for _, _, h in self.requests if "Authorization" in h]
 
 
-MINE = {"build": "9.9.9+mine", "version": "9.9.9", "built": 100.0}
+MINE = {"build": "9.9.9+mine", "version": "9.9.9", "built": 100.0, "released": True, "origin": "mine"}
 
 
 def _older() -> dict[str, Any]:
@@ -525,6 +535,19 @@ def test_a_traversal_build_reads_no_file_outside_the_cache(
             shim.state_path(bad)
 
 
+def test_a_build_file_name_does_not_depend_on_the_cache_folder_existing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check resolved the folder twice. A second server that created the folder between the two
+    calls changed the answer on Windows, and the first server exited at start."""
+    new = tmp_path / "not-there-yet"
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(new))
+    monkeypatch.setattr(Path, "resolve", lambda *args, **kwargs: pytest.fail("resolved a path"))
+    assert shim.state_path(BUILD, 5) == new / f"server-{BUILD}-p5.json"
+    assert shim.lock_path(BUILD, 5) == new / f"server-{BUILD}-p5.lock"
+    assert shim.log_path(BUILD) == new / f"server-{BUILD}.log"
+
+
 def test_a_state_file_for_another_build_is_rejected(cache: Path) -> None:
     health = _older()
     holder = _Holder(health)
@@ -551,13 +574,250 @@ def test_a_newer_build_keeps_the_port(cache: Path) -> None:
         holder.close()
 
 
-def test_builds_order_by_version_then_source_time() -> None:
-    old = {"build": "0.11.0+a", "version": "0.11.0", "built": 50.0}
-    new = {"build": "0.12.0+b", "version": "0.12.0", "built": 10.0}
-    edited = {"build": "0.12.0+c", "version": "0.12.0", "built": 20.0}
-    assert shim.outranks(new, old) and not shim.outranks(old, new)
-    assert shim.outranks(edited, new) and not shim.outranks(new, edited)
-    assert not shim.outranks(new, dict(new))
+def _build(build: str, version: str, released: bool = True, origin: str = "", built: float = 1.0) -> dict[str, Any]:
+    return {"build": build, "version": version, "built": built, "released": released, "origin": origin or build}
+
+
+def test_a_release_replaces_a_lower_version_and_nothing_else() -> None:
+    old = _build("0.11.0+a", "0.11.0", built=50.0)
+    new = _build("0.12.0+b", "0.12.0", built=10.0)
+    assert shim.replaces(new, old, takeover=False) and not shim.replaces(old, new, takeover=False)
+    assert not shim.replaces(new, dict(new), takeover=False)
+
+
+def test_the_same_version_never_displaces_whatever_the_file_times() -> None:
+    held = _build("0.12.0+b", "0.12.0", built=10.0)
+    copy = _build("0.12.0+c", "0.12.0", built=99999.0)
+    assert not shim.replaces(copy, held, takeover=False) and not shim.replaces(held, copy, takeover=False)
+
+
+def test_a_copy_that_is_not_a_release_never_displaces_without_the_switch() -> None:
+    held = _build("0.12.0+b", "0.12.0")
+    checkout = _build("0.13.0+c", "0.13.0", released=False, built=99999.0)
+    assert not shim.replaces(checkout, held, takeover=False)
+    assert shim.replaces(checkout, held, takeover=True)
+    assert not shim.replaces(checkout, dict(checkout), takeover=True)
+
+
+def test_the_switch_is_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    held = _build("0.12.0+b", "0.12.0")
+    checkout = _build("0.12.0+c", "0.12.0", released=False)
+    monkeypatch.delenv("CODEBASE_KG_TAKEOVER", raising=False)
+    assert not shim.replaces(checkout, held)
+    monkeypatch.setenv("CODEBASE_KG_TAKEOVER", "1")
+    assert shim.replaces(checkout, held)
+    monkeypatch.setenv("CODEBASE_KG_TAKEOVER", "0")
+    assert not shim.replaces(checkout, held)
+
+
+def test_a_copy_replaces_the_server_that_runs_from_its_own_folder() -> None:
+    before = _build("0.12.0+b", "0.12.0", released=False, origin="checkout")
+    edited = _build("0.12.0+c", "0.12.0", released=False, origin="checkout")
+    elsewhere = _build("0.12.0+d", "0.12.0", released=False, origin="scratch")
+    assert shim.replaces(edited, before, takeover=False)
+    assert not shim.replaces(elsewhere, before, takeover=False)
+
+
+def test_a_holder_from_before_the_marker_is_replaced_by_a_higher_release_only() -> None:
+    legacy = {"build": "0.17.1+a", "version": "0.17.1", "built": 9e9}
+    assert shim.replaces(_build("0.18.0+b", "0.18.0"), legacy, takeover=False)
+    assert not shim.replaces(_build("0.18.0+c", "0.18.0", released=False), legacy, takeover=False)
+    assert not shim.replaces(_build("0.17.1+d", "0.17.1"), legacy, takeover=False)
+
+
+def _tree(plugin: Path, marker: bool = False) -> Path:
+    """A plugin folder with a server package in it, as a copy of the `main` tree unless `marker`."""
+    package = plugin / "mcp" / "src" / "codebase_kg"
+    package.mkdir(parents=True)
+    (package / "shim.py").write_text("", encoding="utf-8")
+    if marker:
+        (package / shim.RELEASE_MARKER).write_text("9.9.9 test\n", encoding="utf-8")
+    return package
+
+
+@pytest.fixture
+def homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    for name in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "CODEBASE_KG_TAKEOVER"):
+        monkeypatch.delenv(name, raising=False)
+    return home
+
+
+def _info(package: Path, version: str) -> dict[str, Any]:
+    return {"build": f"{version}+{shim.origin(package)}", "version": version, "built": 1.0,
+            "released": shim.released(package), "installed": shim.installed(package), "origin": shim.origin(package)}
+
+
+HELD = {"build": "0.17.1+a", "version": "0.17.1", "built": 9e9}
+
+
+@pytest.mark.parametrize("below_home", [
+    ".claude/plugins/cache/alexk413x/codebase-kg/0.18.0-c0a92b89b510",  # Claude Code: marketplace/plugin/version
+    ".codex/plugins/cache/alexk413x/codebase-kg/0.18.0",               # Codex: marketplace/plugin/version
+    ".copilot/installed-plugins/alexk413x/codebase-kg",                # Copilot CLI: marketplace/plugin
+    ".gemini/config/plugins/codebase-kg",                              # Antigravity CLI, global: plugin
+])
+def test_a_main_tree_copy_at_a_clients_plugin_depth_is_installed_and_replaces_a_lower_version(
+    homes: Path, below_home: str,
+) -> None:
+    package = _tree(homes / below_home)
+    assert shim.installed(package) and not shim.released(package)
+    assert shim.replaces(_info(package, "0.18.0"), HELD)
+    assert not shim.replaces(_info(package, "0.17.1"), HELD), "the same version never displaces"
+
+
+@pytest.mark.parametrize("below_home", [
+    "Projects/codebase-kg",                                             # a checkout
+    "Projects/codebase-kg/.claude/worktrees/agy",                       # a worktree
+    "scratchpad/evalcopy",                                              # the copy `claude plugin eval` runs
+    ".claude/plugins/cache-old/alexk413x/codebase-kg/0.18.0",           # a name that only starts like the root
+    ".claude/plugins/cache/alexk413x/codebase-kg",                      # one folder too high
+    ".claude/plugins/cache/alexk413x/codebase-kg/0.18.0/evals/copy",    # a copy inside an installed plugin
+    ".copilot/installed-plugins/codebase-kg",                           # Copilot CLI needs marketplace/plugin
+    ".gemini/config/plugins/group/codebase-kg",                         # Antigravity CLI needs plugin alone
+])
+def test_the_same_tree_anywhere_else_is_a_development_copy_and_never_replaces(homes: Path, below_home: str) -> None:
+    package = _tree(homes / below_home)
+    assert not shim.installed(package)
+    assert not shim.replaces(_info(package, "0.18.0"), HELD)
+
+
+def test_a_workspace_copy_for_antigravity_counts_only_with_the_release_marker(homes: Path) -> None:
+    """`<repo>/.agents/plugins/<plugin>` is a folder inside a repository, where any copy can sit."""
+    plain = _tree(homes / "repo-a" / ".agents" / "plugins" / "codebase-kg")
+    marked = _tree(homes / "repo-b" / ".agents" / "plugins" / "codebase-kg", marker=True)
+    assert not shim.installed(plain) and not shim.installed(marked)
+    assert not shim.replaces(_info(plain, "0.18.0"), HELD)
+    assert shim.replaces(_info(marked, "0.18.0"), HELD)
+
+
+def test_the_roots_follow_claude_config_dir_and_codex_home(homes: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    claude, codex = homes / "elsewhere" / "claude", homes / "elsewhere" / "codex"
+    moved = [_tree(claude / "plugins" / "cache" / "m" / "codebase-kg" / "0.18.0"),
+             _tree(codex / "plugins" / "cache" / "m" / "codebase-kg" / "0.18.0")]
+    default = _tree(homes / ".claude" / "plugins" / "cache" / "m" / "codebase-kg" / "0.18.0")
+    assert [shim.installed(p) for p in moved] == [False, False] and shim.installed(default)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude))
+    monkeypatch.setenv("CODEX_HOME", str(codex))
+    assert [shim.installed(p) for p in moved] == [True, True] and not shim.installed(default)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the WMI start is the Windows path")
+def test_the_server_started_outside_the_job_learns_where_the_plugin_folders_are(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The WMI child inherits no environment. Without these two it would look under the default folders,
+    find itself not installed and leave the port to the older server."""
+    seen: dict[str, str] = {}
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "D:/claude")
+    monkeypatch.setenv("CODEX_HOME", "D:/codex")
+    monkeypatch.setenv("UNRELATED_SETTING", "1")
+
+    def run(command: list[str], **kwargs: Any) -> Any:
+        seen["command"] = kwargs["env"]["KG_COMMAND"]
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    shim.spawn_server_outside_job(shim.server_build())
+    assert "'CLAUDE_CONFIG_DIR': 'D:/claude'" in seen["command"] and "'CODEX_HOME': 'D:/codex'" in seen["command"]
+    assert "UNRELATED_SETTING" not in seen["command"]
+
+
+def test_a_cache_that_is_a_link_and_a_plugin_that_is_a_link_both_count(homes: Path) -> None:
+    real_cache = homes / "disk" / "cache"
+    package = _tree(real_cache / "m" / "codebase-kg" / "0.18.0")
+    (homes / ".claude" / "plugins").mkdir(parents=True)
+    try:
+        (homes / ".claude" / "plugins" / "cache").symlink_to(real_cache, target_is_directory=True)
+        elsewhere = _tree(homes / "disk" / "tree")
+        linked = homes / ".codex" / "plugins" / "cache" / "m" / "codebase-kg"
+        linked.mkdir(parents=True)
+        (linked / "0.18.0").symlink_to(homes / "disk" / "tree", target_is_directory=True)
+    except OSError:
+        pytest.skip("this platform or account cannot make a directory link")
+    assert shim.installed(package), "the copy's real path is under the link's target"
+    assert shim.installed(homes / ".claude" / "plugins" / "cache" / "m" / "codebase-kg" / "0.18.0" / "mcp" / "src" / "codebase_kg")
+    assert not shim.installed(elsewhere), "the link's target, named by its own path, is in no root"
+    assert shim.installed(linked / "0.18.0" / "mcp" / "src" / "codebase_kg"), "named through the root, it is"
+
+
+def test_this_checkout_is_not_installed() -> None:
+    info = shim.build_info()
+    assert info["installed"] is False and shim.installed() is False
+
+
+def test_this_checkout_is_not_a_release() -> None:
+    """Only the release workflow writes the marker. A marker on `main` or a feature branch would let every
+    checkout, worktree and scratch copy of a bumped version take the shared port."""
+    assert not (shim.PACKAGE_DIR / shim.RELEASE_MARKER).exists()
+    info = shim.build_info()
+    assert info["released"] is False and len(info["origin"]) == 12
+    root = shim.MCP_DIR.parent
+    marker = "mcp/src/codebase_kg/" + shim.RELEASE_MARKER
+    assert marker in (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+    workflow = root / ".github" / "workflows" / "release.yml"
+    if workflow.is_file():
+        text = workflow.read_text(encoding="utf-8")
+        assert f"> {marker}" in text and f"git add -f {marker}" in text
+        assert f"git cat-file -e HEAD:{marker}" in text
+
+
+def test_one_build_serves_two_ports_at_once(tmp_path: Path) -> None:
+    """The state file was named by build alone, so a second instance on another port replaced it and the
+    first one exited within ORPHAN_CHECK_INTERVAL."""
+    from codebase_kg import daemon
+
+    repo, cache = _repo(tmp_path / "repo", "repo"), tmp_path / "cache"
+    ports = [_free_port(), _free_port()]
+    logs = [tmp_path / f"server-{port}.log" for port in ports]
+    procs = [_start_logged(cache, repo, log, {"CODEBASE_KG_PORT": str(port)}) for port, log in zip(ports, logs)]
+
+    def report() -> str:
+        state = f"ports {ports}, health {[shim.health(p)[0] for p in ports]}, exit codes {[p.poll() for p in procs]}"
+        return os.linesep.join([state, *(log.read_text(encoding="utf-8", errors="replace") for log in logs)])
+
+    try:
+        deadline = time.monotonic() + TIMEOUT
+        while time.monotonic() < deadline and not all(shim.health(p)[0] == shim.OURS for p in ports):
+            time.sleep(0.1)
+        assert all(shim.health(p)[0] == shim.OURS for p in ports), report()
+        time.sleep(daemon.ORPHAN_CHECK_INTERVAL + 2.0)
+        assert [proc.poll() for proc in procs] == [None, None], report()
+        pids = [shim.health(port)[1].get("pid") for port in ports]
+        assert pids[0] != pids[1] and all(pids)
+        assert sorted(p.name for p in cache.glob(f"server-{BUILD}-p*.json")) == sorted(
+            f"server-{BUILD}-p{port}.json" for port in ports)
+    finally:
+        for proc in procs:
+            _stop(proc)
+
+
+def test_server_start_gives_its_port_to_the_server_it_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`--port` chose only the port to look at: the server took its port from the setting, which could be
+    the shared one."""
+    from codebase_kg import control
+
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("CODEBASE_KG_PORT", "47821")
+    port, seen = _free_port(), []
+    monkeypatch.setattr(control, "START_WAIT", 0.3)
+    monkeypatch.setattr(shim, "spawn_server_detached", lambda build: seen.append(
+        (os.environ.get("CODEBASE_KG_PORT"), shim.lock_path(build).name)))
+    result = control.start(port)
+    assert result["ok"] is False and seen == [(str(port), f"server-{BUILD}-p{port}.lock")]
+    assert os.environ["CODEBASE_KG_PORT"] == "47821"
+
+
+def test_the_state_file_is_named_by_build_and_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("CODEBASE_KG_PORT", "47999")
+    build = "0.18.0+0123456789ab"
+    assert shim.state_path(build).name == f"server-{build}-p47999.json"
+    assert shim.state_path(build, 48000) != shim.state_path(build)
+    assert shim.lock_path(build, 48000).name == f"server-{build}-p48000.lock"
+    # Builds before 0.18 read the name without a port, and they share the default port.
+    assert shim.state_path(build, shim.DEFAULT_HTTP_PORT).name == f"server-{build}.json"
+    assert shim.log_path(build).name == f"server-{build}.log"
 
 
 def test_the_port_setting_falls_back_to_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -612,13 +872,62 @@ def test_the_hook_starts_the_server_when_nothing_answers(hook: Any, cache: Path)
     assert not shim.lock_path(mine["build"]).exists()
 
 
-def test_the_hook_replaces_an_older_build(hook: Any, cache: Path) -> None:
+def test_the_hook_replaces_an_older_build(hook: Any, cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CODEBASE_KG_TAKEOVER", raising=False)
     fake = _fake_shim(hook, [])
-    mine = fake.build_info()
+    mine = {**fake.build_info(), "version": "9.9.9", "released": True}
+    fake.build_info = lambda: mine
     answers = iter([("codebase-kg", _older())])
     fake.health = lambda port, timeout=1.0: next(answers, ("codebase-kg", {**mine, "service": "codebase-kg"}))
     assert hook.ensure_server(fake) is None
     assert fake.spawned == [mine["build"]]
+
+
+def test_a_copy_that_is_not_a_release_leaves_the_port_and_says_so_in_one_line(
+    hook: Any, cache: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CODEBASE_KG_TAKEOVER", raising=False)
+    fake = _fake_shim(hook, [("codebase-kg", _older())])
+    mine = {**fake.build_info(), "version": "9.9.9", "released": False}
+    fake.build_info = lambda: mine
+    message = hook.ensure_server(fake)
+    assert fake.spawned == []
+    assert message is not None and "\n" not in message
+    assert "version 0.0.1" in message and "server_port" in message and "development copy" in message
+
+
+def test_an_installed_copy_from_main_gets_no_development_notice(
+    hook: Any, cache: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A marketplace install can hold the `main` tree: no marker, yet a client installed it."""
+    monkeypatch.delenv("CODEBASE_KG_TAKEOVER", raising=False)
+    fake = _fake_shim(hook, [("codebase-kg", {**_older(), "version": "9.9.9"})])
+    mine = {**fake.build_info(), "version": "9.9.9", "released": False, "installed": True}
+    fake.build_info = lambda: mine
+    assert hook.ensure_server(fake) is None and fake.spawned == []
+
+
+def test_the_switch_lets_a_copy_that_is_not_a_release_replace_the_holder(
+    hook: Any, cache: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODEBASE_KG_TAKEOVER", "1")
+    fake = _fake_shim(hook, [])
+    mine = {**fake.build_info(), "released": False}
+    fake.build_info = lambda: mine
+    answers = iter([("codebase-kg", _older())])
+    fake.health = lambda port, timeout=1.0: next(answers, ("codebase-kg", {**mine, "service": "codebase-kg"}))
+    assert hook.ensure_server(fake) is None
+    assert fake.spawned == [mine["build"]]
+
+
+def test_a_release_that_finds_a_higher_or_equal_version_says_nothing(
+    hook: Any, cache: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CODEBASE_KG_TAKEOVER", raising=False)
+    fake = _fake_shim(hook, [("codebase-kg", _older())])
+    mine = {**fake.build_info(), "version": "0.0.1", "released": True}
+    fake.build_info = lambda: mine
+    assert hook.ensure_server(fake) is None and fake.spawned == []
 
 
 def test_the_hook_prints_one_line_when_the_server_does_not_come_up(hook: Any, cache: Path) -> None:
@@ -679,7 +988,7 @@ def test_the_helper_prints_json_with_no_server(tmp_path: Path) -> None:
     started = time.monotonic()
     out = _helper({"CODEBASE_KG_CACHE_DIR": str(tmp_path),
                    "CLAUDE_CODE_MCP_SERVER_URL": f"http://127.0.0.1:{_free_port()}/mcp"})
-    assert set(out) == {"X-Codebase-KG-Client"}
+    assert set(out) == {"X-Codebase-KG-Client", "X-Codebase-KG-Agent"}
     assert time.monotonic() - started < helper_module().WAIT + 5
 
 
@@ -917,3 +1226,58 @@ def test_the_cli_sends_no_credential_to_a_squatter(cache: Path) -> None:
         holder.close()
     assert out["ok"] is False and "matches no state file" in str(out["error"])
     assert holder.authorizations() == []
+
+
+def test_a_closed_client_connection_reads_as_gone_and_an_open_one_does_not() -> None:
+    """Closing the connection is how a 2026-07-28 client cancels a request over HTTP."""
+    ours, theirs = socket.socketpair()
+    try:
+        handler = http_transport.Handler.__new__(http_transport.Handler)
+        handler.connection = ours
+        assert handler._client_gone() is False
+        theirs.sendall(b"POST /mcp HTTP/1.1")
+        assert handler._client_gone() is False, "a client that sent its next request has not gone"
+        ours.recv(64)
+        theirs.close()
+        deadline = time.monotonic() + 5
+        while not handler._client_gone() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert handler._client_gone() is True
+    finally:
+        ours.close()
+
+
+def test_clear_dead_states_keeps_a_running_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(tmp_path))
+    ended = subprocess.Popen([sys.executable, "-c", ""])
+    ended.wait()
+    dead = tmp_path / "server-0.1.0+aaaaaaaaaaaa-p5.json"
+    dead.write_text(json.dumps({"pid": ended.pid}), encoding="utf-8")
+    alive = tmp_path / "server-0.1.0+bbbbbbbbbbbb.json"
+    alive.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    unread = tmp_path / "server-0.1.0+cccccccccccc.json"
+    unread.write_text("not json", encoding="utf-8")
+    (tmp_path / "http-token").write_text("t", encoding="utf-8")
+
+    shim.clear_dead_states()
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["http-token", alive.name, unread.name]
+
+
+def test_a_starting_server_removes_the_state_of_a_dead_one(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    ended = subprocess.Popen([sys.executable, "-c", ""])
+    ended.wait()
+    dead = cache / "server-0.1.0+aaaaaaaaaaaa-p5.json"
+    dead.write_text(json.dumps({"pid": ended.pid}), encoding="utf-8")
+    proc = _start(cache, tmp_path)
+    try:
+        _state(cache)
+        deadline = time.monotonic() + TIMEOUT
+        while dead.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not dead.exists()
+    finally:
+        proc.kill()
+        proc.wait()

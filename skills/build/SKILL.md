@@ -160,8 +160,8 @@ pre-commit and pre-push staleness checks into the repo's hooks dir and registers
 step 6 just declared the attribute for. Without it a freshly built graph has no wiring at all —
 nothing reports when the code moves away from it.
 
-The search gate and the post-edit nudge ship inside the plugin and need no install; they activate on
-their own now that the repo has a graph.
+The search gate and the commit-time check ship inside the plugin and need no install; they activate on
+their own when the repo has a graph.
 
 ### 8. Parity (only if paired)
 If a `counterpart` repo exists, leave parity fields out of this pass and hand off to `link`,

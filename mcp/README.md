@@ -87,7 +87,26 @@ rm .kg-export.json                                                        # a sn
 One server process per machine and server build serves every session. A build is the
 plugin version plus a short digest of the path, size and mtime of every `*.py` in the server package,
 so a dev checkout and an installed copy at the same version never share a server.
-Claude Code reaches it over HTTP, MCP 2026-07-28 (`mcp/claude.mcp.json`, named by `mcpServers` in `.claude-plugin/plugin.json`, and `http_transport.py`). The plugin has no root `.mcp.json`: Codex reads that file, and cannot expand `${user_config.server_port}` in its HTTP entry.
+
+**Which build holds the HTTP port** (`shim.replaces`). One port serves every session, so a build that
+starts must decide whether it may take the port from the build that holds it:
+
+- A copy that is a release, or that a client installed, replaces a lower version. At the same
+  version the running server stays. File times decide nothing.
+- A release holds the file `mcp/src/codebase_kg/RELEASE`, which only the release workflow writes.
+- An installed copy sits in a client's plugin folder, at the depth that client puts a plugin:
+  `<CLAUDE_CONFIG_DIR or ~/.claude>/plugins/cache/<marketplace>/<plugin>/<version>`,
+  `<CODEX_HOME or ~/.codex>/plugins/cache/<marketplace>/<plugin>/<version>`,
+  `~/.copilot/installed-plugins/<marketplace>/<plugin>` and `~/.gemini/config/plugins/<plugin>`.
+  The place counts because a marketplace install can hold the `main` tree, which has no marker.
+  Antigravity's folder inside one repository, `<repo>/.agents/plugins/<plugin>`, does not count:
+  a copy there replaces a lower version only with the marker.
+- A copy replaces the server that runs from its own folder after its files changed.
+- Anything else is a development copy: a checkout, a worktree, a scratch copy, the copy
+  `claude plugin eval` runs. It never takes the port from another build. Its session uses the server
+  that holds the port, and the SessionStart hook says so in one line. `CODEBASE_KG_TAKEOVER=1` lets
+  it take the port from any build; give it its own `server_port` instead when you can.
+Claude Code reaches it over HTTP, MCP 2026-07-28 (`mcp/claude.mcp.json`, named by `mcpServers` in `.claude-plugin/plugin.json`, and `http_transport.py`). That file names a second server, `codebase-kg-hooks`: a stdio relay with no tools that carries Claude Code's hook calls to the same endpoint and answers them itself when the server gives no answer (`hooks/README.md`, "The hook relay"). The plugin has no root `.mcp.json`: Codex reads that file, and cannot expand `${user_config.server_port}` in its HTTP entry.
 
 Codex reaches the same HTTP endpoint with a table in `~/.codex/config.toml`, which `kg_cli.py codex-config` prints. Codex opens with a classic `initialize` (protocol 2025-06-18), so `http_transport.py` answers a request that carries a classic protocol version, or an `initialize` with no version, through `core.classic`: plain JSON results with no `resultType` or `_meta`, no `Mcp-Session-Id`, and `notifications/initialized` answered with 202. The classic form has no server-to-client channel to ask for roots, so the session's folder comes from the `X-Codebase-KG-Cwd` header, and a `tools/call` without it returns a tool error. Codex runs `mcp/launch/kg_headers.py` once per connection, in the session's folder, with no environment of its own, so every setting is an argument:
 
@@ -142,8 +161,41 @@ while the session is open, the shim:
 If no shared server comes back, the rest of the session runs on a private server with the same replay.
 When the session closes its stdin, the shim exits and does not reconnect.
 
+### Bridge mode (opt-in)
+
+With `CODEBASE_KG_BRIDGE=1` the shim does not use the TCP relay. It serves the session's stdio from
+the shared server's HTTP endpoint (`slipspace/bridge.py`), so every client reaches one dispatcher.
+
+- The bridge always speaks MCP 2026-07-28 to the server. A stdio client that speaks it too passes
+  through, and so gets `server/discover` on stdio.
+- For a client that opens with `initialize`, the bridge answers `initialize` from `server/discover`,
+  absorbs `notifications/initialized`, answers `ping`, and adds the 2026-07-28 envelope to each request.
+  A result of type `input_required` becomes a request to the client (`roots/list`,
+  `elicitation/create`), and the bridge repeats the call with the client's answer.
+- The session's folder and explicit graph path travel as `X-Codebase-KG-Cwd` and
+  `X-Codebase-KG-Graph` on every request, with a per-process `X-Codebase-KG-Client` id. The server keeps
+  nothing for the session, so a server restart needs no replay.
+- Requests overlap: each runs on its own connection. `notifications/cancelled` closes the matching
+  connection and the bridge writes no answer for that request.
+- Connections are kept open and reused for up to 20 seconds. Before the token goes onto a new
+  connection, the shim checks that the port's holder is this user's server (`verified_token`), and it
+  caches nothing: a program that binds the port after the server exits gets no token.
+- When nothing answers on the port, the bridge starts the server and tries once more. When the server
+  refuses the token, the bridge opens a new connection and tries once more. A request that fails on a
+  kept connection is sent once more on a new one. A request that fails on a new connection after it was
+  sent is not retried, because the server may have run the call: the client gets a JSON-RPC error.
+- The whole response is read before it is parsed, so a progress notification in a streamed response
+  reaches the client when the call ends. The server sends plain JSON, so nothing is delayed today.
+- When no shared server can start at launch, the session runs on a private stdio server, as in relay mode.
+- The bridge talks to whichever build holds the HTTP port, as Claude Code does. The relay talks only to
+  a server of its own build.
+
+The relay stays the default until the bridge passes real-client checks on Codex, Copilot CLI and
+Antigravity CLI.
+
 | Variable | Effect |
 |---|---|
+| `CODEBASE_KG_BRIDGE=1` | Serve the session through the stdio-to-HTTP bridge and not the TCP relay. |
 | `CODEBASE_KG_SHARED=0` | Skip the shared server; run a private stdio server for this session. |
 | `CODEBASE_KG_SHARED_TIMEOUT` | Seconds the shim waits for the shared server before it falls back. Default 10. |
 | `CODEBASE_KG_IDLE_TIMEOUT` | Seconds the shared server stays up with no connections. Default 600. |
@@ -152,6 +204,7 @@ When the session closes its stdin, the shim exits and does not reconnect.
 | `CODEBASE_KG_MAX_WORKERS` | Worker processes for tool calls, overriding the `max_workers` setting. Default 8; 0 runs calls in the server. |
 | `CODEBASE_KG_CALL_TIMEOUT` | Seconds a worker may take for one call before it is killed. Default 60. |
 | `CODEBASE_KG_PORT` | The HTTP port, overriding the `server_port` setting. 0 lets the OS pick. |
+| `CODEBASE_KG_TAKEOVER` | `1` lets a development copy take the HTTP port from another build ("Which build holds the HTTP port"). For a checkout that should serve the machine; a second copy with the switch takes it back. |
 | `CODEBASE_KG_CACHE_DIR` | Where the state, lock, token and log files live. |
 
 `kg_cli.py server status` prints the build, pid and `max_workers` of the server on the HTTP port. It
@@ -170,25 +223,29 @@ host's job object, and falls back to a plain detached start when WMI fails (`shi
 ## The HTTP front
 
 `http_transport.py` serves MCP 2026-07-28 as Claude Code 2.1.293 sends it: one self-contained POST
-per request, no sessions. It answers `server/discover`, `tools/list`, `tools/call` and the empty
-prompt and resource lists; a notification gets 202. It advertises only the tools capability.
+per request, no sessions. It answers `server/discover`, `tools/list` and `tools/call`; a
+notification gets 202. It declares only the tools capability, so a prompt or resource method is an
+unknown method. A request that opens with a classic `initialize`, or carries a classic protocol
+version, gets the classic stateless form instead (see the module docstring).
 
 | Request | Answer |
 |---|---|
 | Body is not JSON | 400, `-32700` |
 | Body is not one JSON-RPC message | 400, `-32600` |
 | `params._meta` lacks the protocol version or client capabilities | 400, `-32602` |
-| A header contradicts the body (`mcp-protocol-version`, `mcp-method`, `mcp-name`) | 400, `-32020` |
-| Any protocol version but 2026-07-28, including a classic `initialize` | 400, `-32022`, with the supported versions |
-| Unknown method | 404, `-32601` |
+| A header contradicts the body (`mcp-protocol-version`, `mcp-method`, `mcp-name`) | 400, `-32020`. Whitespace around a header value is ignored |
+| A protocol version that is neither 2026-07-28 nor a classic version, or no version on a request that is not `initialize` | 400, `-32022`, with the supported versions. Checked before the envelope |
+| Unknown tool | 400, `-32602` |
+| A tool call that needs the client's roots, from a client that did not declare `roots` | 400, `-32021`, with `requiredCapabilities` |
+| Unknown method, including `prompts/*` and `resources/*` | 404, `-32601` |
 | `GET /mcp` | 405 |
 | An `Accept` without JSON | 406 |
 | Body over 8 MB | 413 |
 | Wrong `Host`, foreign `Origin`, missing or wrong token | 403 |
-| Tool error or refused write | 200, a result with `isError: true` |
+| Tool error, bad arguments or refused write | 200, a result with `isError: true` |
 
-The first tool call from an unseen client returns `resultType: "input_required"` with a roots
-request; the retry carries the roots in `inputResponses`. When those roots include no local folder, the
+The first tool call from an unseen client that declared `roots` returns
+`resultType: "input_required"` with a roots request; the retry carries the roots in `inputResponses`. When those roots include no local folder, the
 call gets an error result that tells the client to send `X-Codebase-KG-Cwd`; the server does not ask again. Request bodies may be chunked. A keep-alive
 connection idle for 60 s is closed.
 
@@ -240,12 +297,15 @@ server was running.
 | `catalog.json` | The `tools/list` result and the server instructions the server sends. |
 | `daemon.py` | The server: `--serve` runs the shared one (state file, idle and orphan exit); without it, a private stdio server. |
 | `core.py` | The catalog, argument checks, and one tool call on the pool, for every transport. Writes to one graph run one at a time. |
+| `classic.py` | Deprecated: the `initialize` handshake of the revisions before 2026-07-28, for Codex over HTTP, the TCP relay and the private stdio server. Each `initialize` logs the client's name. |
 | `http_transport.py` | MCP over HTTP for Claude Code: Host, Origin and token checks, `/health`, `/shutdown`, roots binding, port claim and handover. |
 | `tcp_transport.py` | Classic MCP over lines: the shims' TCP listener and handshake, and the private stdio server. |
 | `pool.py` / `worker.py` | The elastic worker pool and the worker that runs read and write tools. |
 | `resolve.py` | Which graph a session's calls use. |
 | `control.py` | `kg_cli.py server status`, `start`, `stop`, `sessions`, `register` and `unregister`. |
 | `shim.py` | What stdio clients launch: finds or starts the shared server and relays the session to it. Stdlib only. It also holds the HTTP port, token and `/health` helpers that the hooks and `kg_headers.py` load by path. |
+| `slipspace/bridge.py` | The stdio-to-HTTP bridge, and the translation for stdio clients that open with `initialize`. It imports nothing from the package, so it can move to a shared repository. |
+| `commit_check.py` | The hook endpoint `kg_hook_commit_check`: what the commits a command just made left out of the graph. |
 | `tools.py` | The read-only queries the MCP tools wrap. |
 | `edits.py` | The targeted-write facade. It re-exports the tools from the `edit_*.py` modules. |
 | `edit_core.py` | The edit engine: copy, mutate in one transaction, validate, rebuild canonically through `writer.build` — or discard, leaving the committed file byte-identical. |
@@ -258,6 +318,7 @@ server was running.
 | `query.py` | `kg_cli.py query`: one read tool from a shell. |
 | `cli.py` | Console I/O that survives a non-UTF-8 stdout, and UTF-8 stdin decoding. |
 | `codex_config.py` | `kg_cli.py codex-config`: the Codex config table. |
+| `strict_config.py` | `kg_cli.py strict-mcp-config`: the MCP config a Claude Code session started with `--strict-mcp-config` must pass, with the hook relay under the name the hooks address. |
 
 ## Development
 

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from codebase_kg import core, shim
+from codebase_kg import classic, core, shim
 from test_http_server import _start, _state
 from test_shared_server import TIMEOUT, _repo, _stop
 
@@ -156,15 +156,15 @@ def test_tools_list(front: dict[str, Any]) -> None:
     assert result["tools"] == core.CATALOG["tools"] and len(result["tools"]) == 13
 
 
-@pytest.mark.parametrize(("method", "key"), [
-    ("prompts/list", "prompts"), ("resources/list", "resources"),
-    ("resources/templates/list", "resourceTemplates"),
+def test_discover_declares_exactly_what_the_server_answers(front: dict[str, Any]) -> None:
+    """The server has tools only, so it declares tools only and answers no prompt or resource method."""
+    assert _complete(_req(front, "server/discover"))["capabilities"] == {"tools": {"listChanged": False}}
+
+
+@pytest.mark.parametrize("method", [
+    "ping", "bogus/method", "initialize", "prompts/list", "prompts/get", "resources/list",
+    "resources/templates/list", "resources/read", "completion/complete",
 ])
-def test_empty_lists(front: dict[str, Any], method: str, key: str) -> None:
-    assert _complete(_req(front, method))[key] == []
-
-
-@pytest.mark.parametrize("method", ["ping", "bogus/method", "initialize"])
 def test_an_unknown_method_is_404(front: dict[str, Any], method: str) -> None:
     error = _rpc_error(_req(front, method), 404, -32601)
     assert error["data"] == method
@@ -188,6 +188,56 @@ def test_the_cwd_header_needs_no_roots(front: dict[str, Any]) -> None:
     assert data["count"] == 1
 
 
+def test_a_hook_endpoint_answers_an_unseen_client_without_asking_for_roots(front: dict[str, Any]) -> None:
+    reply = _call(front, "kg_hook_commit_check", {"command": "git status", "cwd": str(front["repo"])},
+                  client="hook-only", roots=False)
+    result = _complete(reply)
+    assert result["isError"] is False and json.loads(result["content"][0]["text"]) == {}
+    listed = [tool["name"] for tool in _complete(_req(front, "tools/list"))["tools"]]
+    assert "kg_hook_commit_check" not in listed
+
+
+def _gate_call(front: dict[str, Any], client: str, pattern: str, session: str) -> dict[str, Any]:
+    reply = _call(front, "kg_hook_search_gate", {
+        "tool_name": "Grep", "tool_input": json.dumps({"pattern": pattern}), "cwd": str(front["repo"]),
+        "session_id": session,
+    }, client=client, roots=False)
+    return json.loads(_complete(reply)["content"][0]["text"])
+
+
+def test_a_graph_query_over_http_clears_the_next_searches_of_its_own_client(front: dict[str, Any]) -> None:
+    """The server ties a model's query to a session by the client id both calls carry, so no hook has to
+    report the query. Another client's session earns nothing from it."""
+    def denied(out: dict[str, Any]) -> bool:
+        return out.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+
+    assert denied(_gate_call(front, "gate-a", "first", "sess-a"))
+    _tool_ok(_call(front, "kg_search", {"query": "widget"}, client="gate-a"))
+    assert not denied(_gate_call(front, "gate-a", "second", "sess-a"))
+    assert denied(_gate_call(front, "gate-b", "second", "sess-b"))
+    listed = [tool["name"] for tool in _complete(_req(front, "tools/list"))["tools"]]
+    assert "kg_hook_search_gate" not in listed
+
+
+@pytest.mark.parametrize("endpoint", ["kg_hook_commit_check", "kg_hook_search_gate"])
+@pytest.mark.parametrize("version", [V, "2025-06-18"])
+@pytest.mark.parametrize("authorization", [None, "Bearer wrong-token", "Basic abc"])
+def test_a_hook_endpoint_is_refused_without_the_token_before_it_runs(
+    endpoint: str,
+    front: dict[str, Any], tmp_path: Path, version: str, authorization: str | None,
+) -> None:
+    """The endpoint runs git in a folder the caller names. A caller without the token must not reach it:
+    a `git commit` in `tmp_path` would raise if the server ran git there, and the reply would not be 403."""
+    params: dict[str, Any] = {"name": endpoint,
+                              "arguments": {"command": "git commit -m x", "cwd": str(tmp_path)}}
+    if version == V:
+        params["_meta"] = META
+    reply = _post(front, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params},
+                  headers={"Authorization": authorization, "mcp-protocol-version": version})
+    assert reply.status == 403
+    assert reply.body == {"error": "missing or wrong bearer token"}
+
+
 def test_a_root_that_is_not_a_file_is_refused(front: dict[str, Any]) -> None:
     reply = _req(front, "tools/call", {"name": "kg_search", "arguments": {"query": "x"},
                                        "inputResponses": {ROOTS_KEY: {"roots": [{"uri": "https://x/"}]}}},
@@ -195,9 +245,50 @@ def test_a_root_that_is_not_a_file_is_refused(front: dict[str, Any]) -> None:
     _tool_error(reply)
 
 
+@pytest.mark.parametrize("name", ["kg_nope", "kg_stats", "", None])
+def test_an_unknown_tool_is_a_protocol_error_before_any_roots_request(front: dict[str, Any], name: Any) -> None:
+    """`kg_stats` is a CLI-only read: the catalog does not list it, so a client cannot call it."""
+    reply = _req(front, "tools/call", {"name": name, "arguments": {}},
+                 headers={"x-codebase-kg-client": "never-seen", "mcp-name": None if name is None else str(name)})
+    error = _rpc_error(reply, 400, -32602)
+    assert error["message"] == f"Unknown tool: {name}"
+
+
+def test_a_client_without_the_roots_capability_gets_32021_and_not_a_roots_request(front: dict[str, Any]) -> None:
+    meta = {"io.modelcontextprotocol/clientCapabilities": {"elicitation": {"form": {}}}}
+    reply = _req(front, "tools/call", {"name": "kg_search", "arguments": {"query": "widget"}, "_meta": meta},
+                 headers={"x-codebase-kg-client": "no-roots"})
+    error = _rpc_error(reply, 400, -32021)
+    assert error["data"] == {"requiredCapabilities": {"roots": {}}}
+
+
+def test_a_client_without_the_roots_capability_is_served_by_the_cwd_header(front: dict[str, Any]) -> None:
+    meta = {"io.modelcontextprotocol/clientCapabilities": {}}
+    reply = _req(front, "tools/call", {"name": "kg_search", "arguments": {"query": "widget"}, "_meta": meta},
+                 headers={"x-codebase-kg-cwd": str(front["repo"])})
+    assert [r["id"] for r in _tool_ok(reply)["results"]] == ["alpha_widget"]
+
+
+@pytest.mark.parametrize("header", ["  kg_search  ", "kg_search ", "	kg_search"])
+def test_whitespace_around_the_name_header_is_not_a_mismatch(front: dict[str, Any], header: str) -> None:
+    reply = _call(front, "kg_search", {"query": "widget"}, client="ows", headers={"mcp-name": header})
+    assert [r["id"] for r in _tool_ok(reply)["results"]] == ["alpha_widget"]
+
+
+def test_an_unsupported_version_is_reported_before_a_missing_envelope(front: dict[str, Any]) -> None:
+    reply = _post(front, {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                  headers={"mcp-protocol-version": "2099-01-01"})
+    error = _rpc_error(reply, 400, -32022)
+    assert error["data"] == {"supported": [V], "requested": "2099-01-01"}
+
+
+def test_a_notification_without_a_version_header_is_accepted(front: dict[str, Any]) -> None:
+    reply = _post(front, {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}},
+                  headers={"mcp-protocol-version": None, "mcp-method": None})
+    assert reply.status == 202 and reply.body == ""
+
+
 @pytest.mark.parametrize(("name", "args"), [
-    ("kg_nope", {}),
-    ("kg_stats", {}),
     ("kg_node", {}),
     ("kg_node", {"id": "alpha_widget", "zzz": 1}),
     ("kg_neighborhood", {"id": "alpha_widget", "depth": "two"}),
@@ -328,7 +419,7 @@ def test_a_classic_call_honours_the_graph_header(front: dict[str, Any]) -> None:
 @pytest.mark.parametrize("cwd", [None, "rel/dir", ""])
 def test_a_classic_call_without_a_usable_cwd_is_a_tool_error(front: dict[str, Any], cwd: str | None) -> None:
     result = _plain(_classic(front, "tools/call", {"name": "kg_search", "arguments": {"query": "widget"}}, cwd=cwd))
-    assert result["isError"] is True and result["content"][0]["text"] == core.NO_CWD
+    assert result["isError"] is True and result["content"][0]["text"] == classic.NO_CWD
 
 
 def test_a_classic_request_with_a_bad_id_is_refused(front: dict[str, Any]) -> None:
@@ -410,7 +501,7 @@ def test_a_refused_post_is_answered_after_its_body_is_read(front: dict[str, Any]
 def test_health_needs_no_token(front: dict[str, Any]) -> None:
     reply = _post(front, method="GET", path="/health", headers={"Authorization": None})
     assert reply.status == 200
-    assert set(reply.body) == {"service", "build", "version", "built", "pid", "max_workers"}
+    assert set(reply.body) == {"service", "build", "version", "built", "released", "installed", "origin", "pid", "max_workers"}
     assert reply.body["service"] == "codebase-kg" and reply.body["build"] == shim.server_build()
 
 
@@ -445,3 +536,21 @@ def test_the_unchanged_shim_reaches_the_same_server(front: dict[str, Any]) -> No
         proc.wait(timeout=TIMEOUT)
     log = proc.stderr.read().decode("utf-8", "replace")
     assert f"connected to the shared server (pid {front['proc'].pid})" in log
+
+
+def test_a_classic_initialize_is_logged_as_deprecated_with_the_client_name(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="codebase_kg.classic"):
+        reply = classic.answer(core.Core(None), None, {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "clientInfo": {"name": "codex-mcp-client", "version": "0.167.2"}},
+        })
+        classic.answer(core.Core(None), None, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    assert reply is not None and reply["result"]["protocolVersion"] == "2025-06-18"
+    lines = [r.getMessage() for r in caplog.records]
+    assert lines == [
+        "deprecated handshake: codex-mcp-client 0.167.2 sent initialize for MCP 2025-06-18; MCP 2026-07-28 replaces it"
+    ]

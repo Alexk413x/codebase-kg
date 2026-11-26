@@ -95,7 +95,7 @@ def test_the_port_defaults_to_the_servers_port(monkeypatch: pytest.MonkeyPatch):
 
 
 def _config(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, str(RUNNER), "codex-config", *args], capture_output=True, text=True,
+    return subprocess.run([sys.executable, str(RUNNER), "codex-config", "--no-hooks", *args], capture_output=True, text=True,
                           check=False)
 
 
@@ -173,17 +173,20 @@ def test_codex_windows_hooks_read_plugin_root_from_the_powershell_environment():
 
 def test_every_codex_hook_script_exists_and_hooks_json_runs_it_too():
     claude = (ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    # Claude Code asks the server for both gates' decisions; the server loads the same scripts.
+    answered_by_the_server = {"kg_search_gate.py": "kg_hook_pre", "kg_push_gate.py": "kg_hook_pre"}
     for _, hook in _codex_commands():
         script = str(hook["command"]).split("/hooks/")[1].split('"')[0]
         assert (ROOT / "hooks" / script).is_file(), script
-        assert f"/mcp/launch/run/{script.removesuffix('.py')}.cmd" in claude, script
+        if script in answered_by_the_server:
+            assert f'"tool": "{answered_by_the_server[script]}"' in claude, script
+        else:
+            assert f"/mcp/launch/run/{script.removesuffix('.py')}.cmd" in claude, script
 
 
 def test_codex_matchers_name_only_tools_codex_reports():
     matchers = {matcher for matcher, _ in _codex_commands()}
-    assert matchers == {
-        "Bash", "mcp__.*codebase[-_]?kg.*", "apply_patch|Edit|Write", "startup|resume|clear"
-    }
+    assert matchers == {"Bash", "mcp__.*codebase[-_]?kg.*", "startup|resume|clear"}
     # Codex has no Grep, Glob or PowerShell tool name, and ignores a per-hook `if`.
     assert not any("Grep" in m or "PowerShell" in m for m in matchers)
 

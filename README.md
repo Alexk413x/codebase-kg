@@ -36,6 +36,10 @@ For **GitHub Copilot CLI**, use the separate [Copilot setup](copilot/README.md).
 It adds a stdio transport configuration and hook adapter without changing the
 Claude Code or Codex setup.
 
+For **Antigravity CLI** (`agy`), use the separate [Antigravity setup](antigravity/README.md).
+It adds a manifest, a root `hooks.json` and a hook adapter. You add the stdio MCP server with
+`agy mcp add`.
+
 ## How it works
 
 Each repo gets a committed `knowledge/code_graph.db`. A node is a row:
@@ -164,7 +168,15 @@ in about 0.2 s and holds about 25 MB while idle.
   The path in the table holds the plugin version. You paste the table once: after an update, the
   Codex SessionStart hook moves the path, and a codebase-kg `CLAUDE_PLUGIN_ROOT` set as below, to
   the new plugin folder and prints one line. It moves a path only when its folder is missing or
-  holds an older release. If
+  holds an older release.
+  **Trust the hooks in Codex, after the install and after every update.** Codex runs a plugin's hooks
+  only after you reviewed them: run `/hooks` in Codex, or choose "Trust all and continue" on the
+  "Hooks need review" start screen. Codex's trust covers every file in the plugin, so each update
+  asks again. Until you do, Codex skips the hooks without a message: no search gate, no push gate, no
+  session notice, and no move of the config paths after an update. The git pre-push hook still blocks
+  a stale push, and the graph tools still work. The gates in Codex also fail open: Codex runs the
+  command when a hook fails or times out. `codex-config` ends with a line that says whether
+  Codex trusts the hooks; it asks Codex itself and writes nothing. If
   the HTTP table does not work on your machine, run `codex-config --stdio` and paste that table
   instead: it starts one small relay process per session and needs no HTTP server or `py`.
   Codex sets `CLAUDE_PLUGIN_ROOT` for plugin hooks but not for the commands an agent runs, and the
@@ -182,14 +194,17 @@ in about 0.2 s and holds about 25 MB while idle.
   `.codex/config.toml.example` in the plugin folder holds this same table, to copy to a gitignored
   `.codex/config.toml` when you work on the plugin itself.
 - **Port.** The plugin setting `server_port` (default 47821) moves it. When another program holds
-  the port, the hook prints one line naming the setting. A newer codebase-kg build takes the port
-  from an older one; an older build leaves a newer one running.
+  the port, the hook prints one line naming the setting. A release or an installed copy of a higher
+  version takes the port from an older server; at the same version the running server stays. A
+  development copy (a checkout, a worktree, a scratch copy) never takes the port from another copy:
+  its session uses the server that holds it and says so in one line. The rule is in `mcp/README.md`,
+  "Which build holds the HTTP port".
 - **Security.** The server binds `127.0.0.1` only, refuses any `Host` but its own loopback address
   and any foreign `Origin`, and needs a bearer token that only your user account can read. The
   `headersHelper` (`mcp/launch/kg_headers.py`) sends that token only after the server on the port
   proves, through its state file, to be yours.
-- **Lifetime.** The `SessionStart` and `SessionEnd` hooks register and unregister each Claude Code
-  session. A server that has seen a registered session exits after 300 s
+- **Lifetime.** The `SessionStart` hook registers each Claude Code session with its process id, and
+  the server drops a session whose process has exited. A server that has seen a registered session exits after 300 s
   (`CODEBASE_KG_SESSION_GRACE`) with no live session and no use, so a session that starts within that
   time keeps it. A server that has seen none exits after 8 hours with no request if it holds the HTTP
   port, and after 10 minutes with no connection if it serves only shims.
@@ -267,6 +282,8 @@ A graph built before self-edges were allowed rejects a node that points at itsel
 codebase-kg/
 ├── .claude-plugin/
 │   └── plugin.json           # plugin manifest (name: codebase-kg)
+├── .antigravity-plugin/
+│   └── plugin.json           # Antigravity CLI manifest; agy reads hooks.json beside this folder
 ├── .codex-plugin/
 │   └── plugin.json           # Codex manifest; names hooks/codex-hooks.json
 ├── .codex/
@@ -274,7 +291,9 @@ codebase-kg/
 ├── .github/
 │   ├── plugin/plugin.json    # GitHub Copilot CLI manifest; names hooks/copilot-hooks.json
 │   └── workflows/release.yml # release automation
+├── antigravity/              # Antigravity CLI setup notes (README.md)
 ├── copilot/                  # Copilot CLI setup notes (README.md)
+├── hooks.json                # Antigravity CLI hooks (agy reads only a hooks.json at the plugin root)
 ├── evals/                    # eval cases for the skills (build, query, refresh, validate triggers), with fixtures and mocks
 ├── SCHEMA.md                 # ← the spec: node shape, anchors, parity, the description contract
 ├── README.md
@@ -292,9 +311,9 @@ codebase-kg/
 ├── skills/                   # query / build / refresh / audit / link / validate, and setup
 ├── mcp/
 │   ├── src/codebase_kg/      # the server and the CLIs (module map in mcp/README.md)
-│   ├── launch/               # kg_cli.py (CLI runner), kg-shim and kg-shim.cmd (stdio relay), kg_headers.py (HTTP headers helper), kg_copilot.py (Copilot CLI stdio configuration printer), run/ (one launcher per hook script and for kg_headers.py)
-│   └── claude.mcp.json       # registers the HTTP endpoint, with kg_headers.py as the headersHelper
-├── hooks/                    # Claude Code, Codex and Copilot CLI hooks: the search gate, the push gate, the post-edit nudge, the unwired-clone notice, the server start, the session end
+│   ├── launch/               # kg_cli.py (CLI runner), kg-shim and kg-shim.cmd (stdio relay), kg-hooks and kg-hooks.cmd (hook relay), kg_headers.py (HTTP headers helper), kg_copilot.py (Copilot CLI stdio configuration printer), run/ (one launcher per hook script and for kg_headers.py)
+│   └── claude.mcp.json       # registers the HTTP endpoint, with kg_headers.py as the headersHelper, and the hook relay
+├── hooks/                    # Claude Code, Codex, Copilot CLI and Antigravity CLI hooks: the search gate, the push gate, the unwired-clone notice, the server start
 └── git-hooks/                # advisory pre-commit + pre-push staleness checks and install.sh, vendored into any repo (stdlib-only)
 ```
 
@@ -317,7 +336,7 @@ and nothing answers as codebase-kg on the server port, it allows the search and 
 session. The message names `kg_cli.py server start`.
 
 It ships with the plugin, so there is nothing to install — it activates in every repo that has a
-graph, and stays silent in every repo that does not. `SKIP_KG=1` silences it for a shell;
+graph, and stays silent in every repo that does not.
 `search_gate: warn` in `.claude/codebase-kg.local.md` downgrades it to a message, and
 `search_gate: off` disables it.
 
@@ -328,19 +347,28 @@ The division of labor it enforces: **the graph is authoritative for where code l
 authoritative for what it does now.** The graph is a committed snapshot, so orient with it, then read
 the anchored files to confirm behavior.
 
+### Sessions started with `--strict-mcp-config`
+
+A Claude Code session started with `--strict-mcp-config` must pass the plugin's hook relay itself, or
+it runs without gates and shows a failure notice for every hook call. Print the config to pass with
+`kg_cli.py strict-mcp-config [--port N]` (`hooks/README.md`, "Sessions started with --strict-mcp-config").
+
 ## Keeping the graph in sync with commits
 
-Two advisory layers, both pointing at the same fix (`/codebase-kg:refresh`):
+Three advisory layers, all pointing at the same fix (`/codebase-kg:refresh`):
 
-- **In-session nudge** (`hooks/`): while Claude edits source, it says so the first time you touch a
-  file no node covers, and periodically once enough mapped files have changed. It reads the graph's
-  `covers` and `exempt` patterns. The edit counter resets when the graph file changes.
+- **Commit check** (Claude Code; a hook that asks the codebase-kg server after a commit): lists the
+  committed files the graph does not describe to the agent, which then refreshes the graph and
+  commits it before pushing.
 - **Push gate for agents** (`hooks/kg_push_gate.py`, a `PreToolUse` hook on Bash): when an agent runs
   `git push` (also `git -C <dir> push`, chained, or env-prefixed) while any mapped file is stale
   against `HEAD`, the hook denies the call. The reason lists the stale files and tells the agent to run
-  `/codebase-kg:refresh`, commit the graph and push again. `SKIP_KG=1` and a matching
-  `KG_STALE_ACK=<n>` pass it, and so does a push that only deletes refs. `--no-verify` does not, because
-  it skips git hooks and not this one. The hook fails open on any error. It uses the pre-push hook's
+  `/codebase-kg:refresh`, commit the graph and push again, without asking you. An agent cannot skip
+  the check on its own in Claude Code: a push prefixed with `SKIP_KG=1` or a matching
+  `KG_STALE_ACK=<n>` makes Claude Code ask you, in a permission prompt that lists the stale files, and
+  a session with no user is refused. In Codex, Copilot CLI and Antigravity CLI those prefixes pass. A push that only deletes
+  refs passes. `--no-verify` does not, because it skips git hooks and not this one. The hook fails
+  open on any error. It uses the pre-push hook's
   comparison, so both agree on what is stale.
 - **Commit/push checks** (`git-hooks/`): installed per-repo via `/codebase-kg:setup`. They compare
   the change set against the graph and report three things: source no node covers, deleted files the

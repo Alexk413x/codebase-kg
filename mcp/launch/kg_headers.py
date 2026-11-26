@@ -102,6 +102,11 @@ def headers(
     wait: float = WAIT, graph: str | None = None, cwd: str | None = None, start: bool = False,
 ) -> dict[str, str]:
     out = {"X-Codebase-KG-Client": uuid.uuid4().hex}
+    try:
+        agent = _start_hook().load_shim().agent_name()
+    except Exception:  # noqa: BLE001 - clients that cannot name their agent share one count on the server
+        agent = "unknown"
+    out["X-Codebase-KG-Agent"] = agent
     graph = (os.environ.get("CODEBASE_KG_PATH", "") if graph is None else graph).strip()
     if graph:
         out["X-Codebase-KG-Graph"] = quote(graph, safe="/\\:")

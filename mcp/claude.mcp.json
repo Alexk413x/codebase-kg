@@ -4,6 +4,13 @@
       "type": "http",
       "url": "http://127.0.0.1:${user_config.server_port}/mcp",
       "headersHelper": "call=\"${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_headers.cmd\"; . \"${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_headers.cmd\"; exit $LASTEXITCODE"
+    },
+    "codebase-kg-hooks": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/mcp/launch/kg-hooks",
+      "args": [],
+      "env": {
+        "CLAUDE_PLUGIN_OPTION_SERVER_PORT": "${user_config.server_port}"
+      }
     }
   }
 }

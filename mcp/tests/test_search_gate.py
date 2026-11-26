@@ -1,8 +1,7 @@
 """The PreToolUse search gate — the hook that makes the graph get used at all.
 
 `hooks/kg_search_gate.py` is the only piece of the plugin that can *deny* a tool
-call, so it carries a heavier burden than the advisory nudge beside it. Three
-properties dominate, in this order:
+call, so it carries a heavy burden. Three properties dominate, in this order:
 
 1. **It can never strand an agent.** An immediate repeat of the same search is
    always allowed, a malformed payload is silent, and a state file it cannot
@@ -22,12 +21,15 @@ with the developer's real repos.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
+import textwrap
 from pathlib import Path
 from typing import Any
 
 import pytest
+from codebase_kg import search_gate
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.writer import build
 
@@ -43,6 +45,24 @@ class _Stdin:
 
     def read(self) -> str:
         return self._text
+
+
+BACKEND = "script"
+CLIENT = "client-under-test"
+script_only = pytest.mark.script_only
+
+
+@pytest.fixture(autouse=True, params=["script", "server"])
+def backend(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Every test runs twice: against the hook script, and against the server's hook endpoint, which
+    loads the same script. A test marked `script_only` covers what only a process of its own has: the
+    environment, the state files and the claim files."""
+    if request.param == "server" and request.node.get_closest_marker("script_only"):
+        pytest.skip("covers the hook script's own process")
+    monkeypatch.setattr(sys.modules[__name__], "BACKEND", request.param)
+    for store in (search_gate._states, search_gate._queried, search_gate._sessions):
+        store.clear()
+    return request.param
 
 
 @pytest.fixture(autouse=True)
@@ -88,6 +108,8 @@ def run(
 
     `cwd` is the shell's directory, which the Bash tool keeps across calls. The
     host then names the project in CLAUDE_PROJECT_DIR, as Claude Code does."""
+    if BACKEND == "server":
+        return _server_run(proj, tool, tool_input or {}, session, cwd)
     if cwd is not None:
         monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(proj))
     payload = {
@@ -100,6 +122,21 @@ def run(
     gate.main()
     out = capsys.readouterr().out.strip()
     return json.loads(out) if out else None
+
+
+def _server_run(
+    proj: Path, tool: str, tool_input: dict[str, Any], session: str, cwd: Path | None,
+) -> dict[str, Any] | None:
+    """The same call through the server: a graph query reaches it as a model's tool call, and anything
+    else as the hook's call, with the tool input as the JSON text Claude Code substitutes."""
+    if gate._KG_TOOL.match(tool):
+        search_gate.note_query(CLIENT)
+        return None
+    result = search_gate.call({
+        "tool_name": tool, "tool_input": json.dumps(tool_input), "cwd": str(cwd or proj), "session_id": session,
+    }, CLIENT)
+    assert result["isError"] is False
+    return json.loads(result["content"][0]["text"]) or None
 
 
 def decision(result: dict[str, Any] | None) -> str | None:
@@ -316,7 +353,7 @@ def test_gate_credit_zero_means_a_query_buys_nothing(
 ])
 def test_gate_credit_parsing(raw: dict[str, Any], expected: int) -> None:
     """A typo costs the setting, never the feature — the same posture as
-    `nudge_every` and `search_gate`."""
+    `search_gate`."""
     assert gate.gate_credit(raw) == expected
 
 
@@ -392,11 +429,103 @@ def test_a_repo_without_a_graph_is_never_gated(
     assert run(monkeypatch, capsys, bare, "Grep", {"pattern": "x"}) is None
 
 
+@script_only
 def test_skip_kg_silences_it(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("SKIP_KG", "1")
     assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "x"}) is None
+
+
+def test_skip_kg_in_the_servers_environment_does_not_reach_its_gate(
+    repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The server's environment belongs to whoever started it, not to the session that searches."""
+    monkeypatch.setenv("SKIP_KG", "1")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo.parent / "another-project"))
+    monkeypatch.setattr(search_gate, "_script", None)
+    out = _server_run(repo, "Grep", {"pattern": "x"}, "s1", None)
+    assert decision(out) == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "export SKIP_KG=1; grep -rn Known .",
+    "export SKIP_KG=1 && rg Known app",
+    "$env:SKIP_KG = '1'; Select-String -Path . -Pattern Known",
+])
+def test_skip_kg_written_in_front_of_a_search_does_not_open_the_servers_gate(repo: Path, command: str) -> None:
+    """A skip is the user's choice. An agent that could write its own would pass the gate without a word;
+    its way through is to repeat the search."""
+    tool = "PowerShell" if command.startswith("$env") else "Bash"
+    assert decision(_server_run(repo, tool, {"command": command}, "s1", None)) == "deny"
+    assert _server_run(repo, tool, {"command": command}, "s1", None) is None, "the repeat passes"
+
+
+@pytest.mark.parametrize("command", [
+    "FOO=1 grep -rn Known .",
+    "SKIP_KG=1 grep -rn Known .",
+    "A=1 B=2 rg Known app",
+    'LABEL="two words" grep -rn Known .',
+    "LC_ALL=C grep -rn Known app/src",
+    "env X=1 grep -rn Known .",
+    "env grep -rn Known .",
+    "command grep -rn Known .",
+    "sudo FOO=1 grep -rn Known .",
+    "X=1 find . -name '*.kt'",
+    "X=1 git grep Known",
+    "cd app && Y=2 rg Known",
+])
+def test_a_search_with_an_environment_prefix_is_still_a_search(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    """An assignment in front changes the environment the search runs in, not that it is a search. The
+    parser used to read the assignment as the command, so any `X=1 grep ...` passed the gate unseen."""
+    assert decision(run(monkeypatch, capsys, repo, "Bash", {"command": command})) == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "FOO=grep ls",
+    "X=1 git status",
+    "GREP=1 make test",
+    "env",
+    "env X=1 ls -la",
+    "echo FOO=1 grep -rn Known .",
+    "FOO=1",
+])
+def test_an_environment_prefix_does_not_make_another_command_a_search(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    assert run(monkeypatch, capsys, repo, "Bash", {"command": command}) is None
+
+
+def test_a_crafted_environment_prefix_cannot_stall_the_parser() -> None:
+    """A regex that backtracks exponentially on a run of quotes stalls the hook, and a hook that times
+    out allows the command. Runs in a child process so a regression fails here and does not hang the run."""
+    code = textwrap.dedent('''
+        from pathlib import Path
+        import _shell_search as s
+        for n in (40, 400, 4000):
+            for quote in (chr(34), chr(39)):
+                for tail in ("|", " ", "!", " x", "=", " grep"):
+                    s.is_shell_search("X=" + quote * n + tail)
+                    s.is_shell_search("X=" + (quote * 2) * n + tail)
+                    s.is_shell_search(("X=" + quote + "a ") * n + tail)
+                    s.parse_shell_search("X=" + quote * n + tail, Path("."))
+            s.is_shell_search("A=1 " * n + "ls")
+            s.is_shell_search("env " * n + "ls")
+    ''')
+    hooks = Path(__file__).resolve().parents[2] / "hooks"
+    done = subprocess.run(
+        [sys.executable, "-c", code], cwd=hooks, capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert done.returncode == 0, done.stderr
+
+
+def test_a_powershell_search_after_an_environment_assignment_is_a_search(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    command = "$env:X = '1'; Select-String -Path . -Pattern Known"
+    assert decision(run(monkeypatch, capsys, repo, "PowerShell", {"command": command})) == "deny"
 
 
 def _write_local_config(proj: Path, body: str) -> None:
@@ -428,8 +557,7 @@ def test_warn_mode_advises_instead_of_denying(
 
 @pytest.mark.parametrize("raw", ["block", "BLOCK", "nonsense", "true"])
 def test_an_unknown_mode_keeps_the_gate_on(raw: str) -> None:
-    """A typo should cost the setting, not the feature — the same posture as
-    `nudge_every`."""
+    """A typo should cost the setting, not the feature."""
     assert gate.gate_mode({"search_gate": raw}) == "block"
 
 
@@ -519,6 +647,7 @@ def test_a_malformed_payload_is_silent(
     assert capsys.readouterr().out.strip() == ""
 
 
+@script_only
 def test_it_degrades_to_a_warning_when_state_cannot_be_written(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -549,7 +678,10 @@ def test_a_subagent_is_informed_instead_of_denied(
     result = json.loads(capsys.readouterr().out)
     assert decision(result) is None
     assert "systemMessage" not in result
-    assert "kg_search" in result["hookSpecificOutput"]["additionalContext"]
+    context = result["hookSpecificOutput"]["additionalContext"]
+    assert "kg_search" in context
+    assert context.startswith("codebase-kg: this search of app/src ran, but query the graph")
+    assert "denied a search" not in context
 
 
 def test_the_main_agent_is_still_denied(
@@ -688,11 +820,26 @@ def test_the_end_to_end_gate_still_denies_a_tree_search(
 
 
 # --- an exemption is free, not cheap -----------------------------------------
-def _credit(repo: Path, session: str = "s1") -> int:
+def _state(repo: Path, session: str = "s1") -> dict[str, Any]:
+    """The session's gate state: the script's state file, or the server's memory."""
+    if BACKEND == "server":
+        return search_gate._read_state(repo, session)
     try:
-        return int(json.loads(gate._state_path(repo, session).read_text(encoding="utf-8"))["credit"])
-    except (OSError, ValueError, KeyError, TypeError):
-        return 0
+        return json.loads(gate._state_path(repo, session).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _credit(repo: Path, session: str = "s1") -> int:
+    """The searches the session may still make. The server applies a query's credit at the next gate
+    call from the same client, so a query it has noted and not yet applied counts here."""
+    try:
+        held = int(_state(repo, session)["credit"])
+    except (ValueError, KeyError, TypeError):
+        held = 0
+    if BACKEND == "server" and CLIENT in search_gate._queried:
+        return max(held, gate.gate_credit(gate.load_config(repo)))
+    return held
 
 
 @pytest.mark.parametrize(
@@ -929,8 +1076,8 @@ def test_the_denial_memory_is_bounded(
 ) -> None:
     for i in range(gate._DENIED_MEMORY * 2):
         run(monkeypatch, capsys, repo, "Grep", {"pattern": f"p{i}"})
-    state = json.loads(gate._state_path(repo, "s1").read_text(encoding="utf-8"))
-    assert len(state["denied"]) <= gate._DENIED_MEMORY
+    state = _state(repo)
+    assert 0 < len(state["denied"]) <= gate._DENIED_MEMORY
 
 
 def test_two_handlers_for_one_shell_call_decide_once(
@@ -1025,6 +1172,17 @@ def test_a_denied_plain_search_carries_no_nothing_ran_notice(
     assert decision(result) == "deny"
     reason = result["hookSpecificOutput"]["permissionDecisionReason"]  # type: ignore[index]
     assert "nothing in this command ran" not in reason
+
+
+@pytest.mark.parametrize("command", ["git grep -n x -- app", "git --no-pager grep -n x -- app", "git -C . grep x"])
+def test_a_denied_git_grep_is_not_named_as_a_part_that_did_not_run(
+    command: str, repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result = run(monkeypatch, capsys, repo, "Bash", {"command": command}, session=command)
+    assert decision(result) == "deny"
+    reason = result["hookSpecificOutput"]["permissionDecisionReason"]  # type: ignore[index]
+    assert "nothing in this command ran" not in reason
+    assert gate.other_clauses(f"echo done >> log.txt && {command}") == ["echo done >> log.txt"]
 
 
 # --- the shell's own directory, and what counts as located --------------------

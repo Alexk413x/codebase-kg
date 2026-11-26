@@ -92,11 +92,17 @@ IGNORE_DIRS = {
 _IGNORE_LOWER = {d.lower() for d in IGNORE_DIRS}
 
 
+# Not thread-safe: a caller that sets this runs one check at a time. The hooks
+# leave it None and git reads the process's working directory.
+GIT_CWD: str | None = None
+
+
 def _git(*args: str) -> str:
     # git prints paths as UTF-8; quotepath=off keeps non-ASCII names unescaped.
     try:
         return subprocess.run(
             ["git", "-c", "core.quotepath=off", *args],
+            cwd=GIT_CWD,
             capture_output=True,
             encoding="utf-8",
             errors="replace",
@@ -138,6 +144,7 @@ def blob_digests(specs: list[str]) -> dict[str, str]:
         proc = subprocess.run(
             ["git", "cat-file", "--batch"],
             input="\n".join(specs).encode("utf-8") + b"\n",
+            cwd=GIT_CWD,
             capture_output=True,
             check=False,
         )

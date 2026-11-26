@@ -4,7 +4,7 @@ A shim connection opens with one JSON handshake line — the token, the build,
 and the session's cwd and explicit graph path — and the server answers with one
 line before any MCP traffic flows. It refuses a handshake with a wrong token or
 from any other build. Then the session speaks classic MCP (`initialize`,
-`tools/list`, `tools/call`), answered by `core.classic`. Each tool call runs on
+`tools/list`, `tools/call`), answered by `classic.answer`. Each tool call runs on
 its own thread, so one session's slow call does not hold up its next one.
 
 A private server (the shim's fallback, or `CODEBASE_KG_SHARED=0`) speaks the
@@ -24,7 +24,7 @@ from collections.abc import Callable
 from io import BufferedIOBase
 from typing import IO, Any, cast
 
-from . import core, resolve, shim
+from . import classic, core, resolve, shim
 
 logger = logging.getLogger("codebase_kg.tcp")
 
@@ -52,7 +52,7 @@ def serve_lines(
 
     def call(msg: dict[str, Any]) -> None:
         try:
-            reply = core.classic(engine, conn, msg)
+            reply = classic.answer(engine, conn, msg)
         except Exception:
             logger.exception("request failed")
             reply = None if "id" not in msg else shim.rpc_error(msg["id"], core.INTERNAL_ERROR, "Internal error")

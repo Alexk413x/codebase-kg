@@ -3,14 +3,17 @@
 Claude Code reaches the server at `http://127.0.0.1:<port>/mcp` and speaks MCP
 2026-07-28: every request is one self-contained POST, with no `initialize`, no
 sessions and no server-to-client channel. This front serves `server/discover`,
-`tools/list`, `tools/call` and the empty prompt and resource lists, answers a
-notification with 202, and refuses a protocol version it does not serve with
--32022. Stdio clients keep classic MCP through the shim (`tcp_transport.py`),
+`tools/list` and `tools/call`, the methods of the one capability it declares,
+answers a notification with 202, and refuses a protocol version it does not
+serve with -32022. An unknown tool is -32602, and a call that needs the client's
+roots from a client that did not declare them is -32021. A client that closes the
+connection while a read runs cancels it: the read's worker is stopped. A write
+runs to its end. Stdio clients keep classic MCP through the shim (`tcp_transport.py`),
 served from the same `core.Core`.
 
 Codex opens with a classic `initialize` instead, so a request that carries a
 classic protocol version, or an `initialize` with no version, gets the classic
-stateless form from `core.classic`: plain JSON results, no `Mcp-Session-Id`,
+stateless form from `classic.answer`: plain JSON results, no `Mcp-Session-Id`,
 and `notifications/initialized` answered with 202. The roots request needs a
 server-to-client channel the classic form does not have, so the client's
 `headersHelper` equivalent must send `X-Codebase-KG-Cwd`.
@@ -42,6 +45,7 @@ import hmac
 import http.client
 import json
 import logging
+import select
 import socket
 import sys
 import threading
@@ -54,21 +58,22 @@ from typing import Any, cast
 from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 
-from . import core, resolve, shim
+from . import classic, core, pool, resolve, search_gate, shim
 
 logger = logging.getLogger("codebase_kg.http")
 
 MODERN_PROTOCOL = "2026-07-28"
 ROOTS_REQUEST = "codebase-kg-roots"
 CLIENT_HEADER = "x-codebase-kg-client"
+AGENT_HEADER = "x-codebase-kg-agent"
 CWD_HEADER = "x-codebase-kg-cwd"
 GRAPH_HEADER = "x-codebase-kg-graph"
 VERSION_KEY = "io.modelcontextprotocol/protocolVersion"
 CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities"
 SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo"
-HEADER_MISMATCH, UNSUPPORTED_VERSION = -32020, -32022
+HEADER_MISMATCH, MISSING_CAPABILITY, UNSUPPORTED_VERSION = -32020, -32021, -32022
 STATUS = {core.PARSE_ERROR: 400, core.INVALID_REQUEST: 400, core.INVALID_PARAMS: 400,
-          HEADER_MISMATCH: 400, UNSUPPORTED_VERSION: 400, core.METHOD_NOT_FOUND: 404}
+          HEADER_MISMATCH: 400, MISSING_CAPABILITY: 400, UNSUPPORTED_VERSION: 400, core.METHOD_NOT_FOUND: 404}
 NOT_ONE_MESSAGE = "Body must be a single JSON-RPC request or notification object"
 MAX_CLIENTS = 1024
 MAX_BODY = 8 * 1024 * 1024
@@ -80,6 +85,16 @@ DRAIN_MAX = 1024 * 1024
 DRAIN_TIMEOUT = 2.0
 HANDOVER_TIMEOUT = 5.0
 LISTED = {"ttlMs": 0, "cacheScope": "private"}
+
+
+class RpcError(Exception):
+    """A request the server answers with a JSON-RPC error instead of a result."""
+
+    def __init__(self, code: int, message: str, data: Any = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.data = data
 
 
 class BodyError(ValueError):
@@ -116,9 +131,13 @@ class Clients:
         self.bound: OrderedDict[tuple[str, str | None], resolve.Connection] = OrderedDict()
 
     def connection(
-        self, headers: Mapping[str, str | None], params: dict[str, Any],
+        self, headers: Mapping[str, str | None], params: dict[str, Any], capabilities: object = None,
     ) -> resolve.Connection | dict[str, Any]:
-        """The client's connection, or the result to answer with: an error or the roots request."""
+        """The client's connection, or the result to answer with: an error or the roots request.
+
+        Raises `RpcError` -32021 when only a roots request could find the folder and the
+        client did not declare `roots`.
+        """
         graph, cwd, client = (_decoded(headers.get(h)) for h in (GRAPH_HEADER, CWD_HEADER, CLIENT_HEADER))
         if cwd is not None:
             return resolve.connection(cwd, graph) or core.error_result(
@@ -134,6 +153,12 @@ class Clients:
             if isinstance(responses, dict) and ROOTS_REQUEST in responses:
                 return core.error_result(
                     "codebase-kg: the client's roots include no local folder. Send an absolute X-Codebase-KG-Cwd header."
+                )
+            if not isinstance(capabilities, dict) or "roots" not in capabilities:
+                raise RpcError(
+                    MISSING_CAPABILITY,
+                    "Missing required client capability: roots. Declare it, or send an absolute X-Codebase-KG-Cwd header.",
+                    {"requiredCapabilities": {"roots": {}}},
                 )
             return {"resultType": "input_required", "inputRequests": {ROOTS_REQUEST: {"method": "roots/list"}}}
         if key is not None:
@@ -357,13 +382,13 @@ class Handler(BaseHTTPRequestHandler):
             self._rpc_error(None, core.INVALID_REQUEST, NOT_ONE_MESSAGE)
             return
         if version != MODERN_PROTOCOL and (
-            version in core.CLASSIC_VERSIONS or (version is None and msg["method"] == "initialize")
+            version in classic.VERSIONS or (version is None and msg["method"] == "initialize")
         ):
             self._classic(msg)
             return
         if "id" not in msg:
-            if version != MODERN_PROTOCOL:
-                self._unsupported(None, version or "")
+            if version is not None and version != MODERN_PROTOCOL:
+                self._unsupported(None, version)
             else:
                 self._send(202, content_type=None)
             return
@@ -378,6 +403,9 @@ class Handler(BaseHTTPRequestHandler):
             if len(self.headers.get_all(name) or []) > 1:
                 self._rpc_error(request_id, HEADER_MISMATCH, f"{name} header appears more than once")
                 return
+        if version != MODERN_PROTOCOL:
+            self._unsupported(request_id, version)
+            return
         params = msg.get("params")
         meta = params.get("_meta") if isinstance(params, dict) else None
         if not isinstance(params, dict) or not isinstance(meta, dict) or VERSION_KEY not in meta \
@@ -391,18 +419,23 @@ class Handler(BaseHTTPRequestHandler):
             self._rpc_error(request_id, HEADER_MISMATCH,
                             "mcp-protocol-version header does not match the request envelope's protocol version")
             return
-        if self.headers.get("mcp-method") != method:
+        if (self.headers.get("mcp-method") or "").strip() != method:
             self._rpc_error(request_id, HEADER_MISMATCH, "mcp-method header does not match the request body's method")
             return
         if method == "tools/call" and params.get("name") is not None \
-                and unquote(self.headers.get("mcp-name") or "") != params.get("name"):
+                and unquote((self.headers.get("mcp-name") or "").strip()) != params.get("name"):
             self._rpc_error(request_id, HEADER_MISMATCH,
                             "mcp-name header does not match the request body's 'name' parameter")
             return
-        if version != MODERN_PROTOCOL:
-            self._unsupported(request_id, version)
+        try:
+            result = self._dispatch(method, params)
+        except RpcError as exc:
+            self._rpc_error(request_id, exc.code, exc.message, exc.data)
             return
-        result = self._dispatch(method, params)
+        except pool.Cancelled:
+            logger.info("the client closed the connection during %s; the call was stopped", method)
+            self.close_connection = True
+            return
         if result is None:
             self._rpc_error(request_id, core.METHOD_NOT_FOUND, "Method not found", method)
             return
@@ -422,12 +455,20 @@ class Handler(BaseHTTPRequestHandler):
         if msg["method"] == "tools/call":
             conn = classic_connection({h: self.headers.get(h) for h in (GRAPH_HEADER, CWD_HEADER)})
         try:
-            reply = core.classic(self.srv.core, conn, msg)
+            reply = classic.answer(self.srv.core, conn, msg, caller(self.headers))
         except Exception:
             logger.exception("classic request failed")
             self._rpc_error(request_id, core.INTERNAL_ERROR, "Internal error")
             return
         self._json(200, reply)
+
+    def _client_gone(self) -> bool:
+        """True once the client has closed its side of the connection, which cancels the request on this transport."""
+        try:
+            readable, _, _ = select.select([self.connection], [], [], 0)
+            return bool(readable) and self.connection.recv(1, socket.MSG_PEEK) == b""
+        except (OSError, ValueError):
+            return True
 
     def _unsupported(self, request_id: Any, requested: str) -> None:
         self._rpc_error(request_id, UNSUPPORTED_VERSION, "Unsupported protocol version",
@@ -439,15 +480,24 @@ class Handler(BaseHTTPRequestHandler):
                     "capabilities": {"tools": {"listChanged": False}}, "instructions": core.INSTRUCTIONS}
         if method == "tools/list":
             return {"tools": core.CATALOG["tools"], **LISTED}
-        if method in core.EMPTY_LISTS:
-            return {core.EMPTY_LISTS[method]: [], **LISTED}
         if method == "tools/call":
+            name = params.get("name")
+            client = caller(self.headers)
+            hooked = core.hook_result(name, params.get("arguments"), client)
+            if hooked is not None:
+                return hooked
+            if not isinstance(name, str) or name not in core.TOOLS:
+                raise RpcError(core.INVALID_PARAMS, f"Unknown tool: {name}")
             headers = {h: self.headers.get(h) for h in (GRAPH_HEADER, CWD_HEADER, CLIENT_HEADER)}
-            found = self.srv.clients.connection(headers, params)
+            found = self.srv.clients.connection(headers, params, params["_meta"].get(CAPABILITIES_KEY))
             if not isinstance(found, resolve.Connection):
                 return found
             try:
-                return self.srv.core.call_tool(found, params.get("name"), params.get("arguments"))
+                result = self.srv.core.call_tool(found, name, params.get("arguments"), self._client_gone)
+                search_gate.note_query(client)
+                return result
+            except pool.Cancelled:
+                raise
             except Exception as exc:
                 logger.exception("tool call failed")
                 return core.error_result(f"Error calling tool {params.get('name')!r}: {exc}")
@@ -470,7 +520,7 @@ def bind(port: int) -> socket.socket:
 
 
 def claim_port(port: int, mine: dict[str, Any]) -> socket.socket | None:
-    """Bind the HTTP port, taking it from an older codebase-kg build. None leaves it to its holder.
+    """Bind the HTTP port, taking it from a build `shim.replaces` allows. None leaves it to its holder.
 
     The stop request goes only to a holder `shim.verified_holder` confirms, with
     that holder's own state-file token, so an unverified peer never gets a credential.
@@ -492,7 +542,7 @@ def claim_port(port: int, mine: dict[str, Any]) -> socket.socket | None:
     if kind == shim.UNRESPONSIVE:
         logger.warning("port %d accepts connections but did not answer /health; serving the shims only", port)
         return None
-    if not shim.outranks(mine, theirs):
+    if not shim.replaces(mine, theirs):
         logger.info("codebase-kg %s holds port %d; serving the shims only", theirs.get("build"), port)
         return None
     holder = shim.verified_holder(port)
@@ -517,6 +567,22 @@ def claim_port(port: int, mine: dict[str, Any]) -> socket.socket | None:
     return None
 
 
+def caller(headers: Any) -> str | None:
+    """Who a graph query earns search credit for: the agent process when the client names it, else the client id.
+
+    Claude Code's hooks reach the server through the hook relay and its model calls through the HTTP
+    connection, two clients with two ids. Both name the agent process they belong to, so a query
+    and the gate call that follows it meet. A client that could not find its agent says `unknown`,
+    and such clients share one count: a query then always earns credit.
+    """
+    agent = _decoded(headers.get(AGENT_HEADER))
+    if agent and (agent == "unknown" or agent.isdigit()):
+        return f"agent:{agent}"
+    return _decoded(headers.get(CLIENT_HEADER))
+
+
 def health_reply(info: dict[str, Any], pid: int) -> dict[str, Any]:
     return {"service": shim.OURS, "build": info["build"], "version": info["version"],
-            "built": info["built"], "pid": pid, "max_workers": info.get("max_workers")}
+            "built": info["built"], "released": bool(info.get("released")), "installed": bool(info.get("installed")),
+            "origin": info.get("origin"),
+            "pid": pid, "max_workers": info.get("max_workers")}

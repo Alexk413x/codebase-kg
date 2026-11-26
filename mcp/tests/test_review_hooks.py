@@ -13,7 +13,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
 
 import pytest
 from codebase_kg.models import Anchor, Meta, Node
@@ -26,7 +25,6 @@ sys.path.insert(0, str(HOOKS))
 sys.path.insert(0, str(GIT_HOOKS))
 
 import _config as cfg_mod
-import kg_post_edit_check as post_edit
 import kg_pre_commit as pre_commit
 import kg_pre_push as pre_push
 import kg_push_gate as push_gate
@@ -83,7 +81,6 @@ def _clean_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("KG_STALE_ACK", raising=False)
 
 
-# --- 18: the nudge counter resets when the graph is rewritten ------------------
 class _Stdin:
     def __init__(self, text: str) -> None:
         self._text = text
@@ -93,29 +90,6 @@ class _Stdin:
 
     def read(self) -> str:
         return self._text
-
-
-def test_the_nudge_counter_resets_when_the_graph_file_changes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    repo = _graph_repo(tmp_path)
-    mapped = repo / "src" / KNOWN
-    payload = json.dumps({
-        "tool_name": "Edit", "tool_input": {"file_path": str(mapped)}, "cwd": str(repo),
-    })
-
-    def edit() -> list[dict[str, Any]]:
-        monkeypatch.setattr(post_edit.sys, "stdin", _Stdin(payload))
-        post_edit.main()
-        out = capsys.readouterr().out.strip()
-        return [json.loads(line) for line in out.splitlines()]
-
-    for _ in range(4):
-        assert edit() == []
-    graph = repo / "knowledge" / "code_graph.db"
-    later = graph.stat().st_mtime_ns + 5_000_000_000
-    os.utime(graph, ns=(later, later))
-    assert edit() == []
 
 
 # --- 19: Git Bash drive paths --------------------------------------------------
@@ -508,25 +482,3 @@ def test_the_search_gate_reads_covers_from_the_graph(tmp_path: Path) -> None:
     )
     assert checked is not None and checked[0] == graph
 
-
-def test_post_edit_hook_nudges_for_a_covered_file_in_a_build_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    repo = tmp_path / "repo"
-    (repo / "app" / "src" / "build").mkdir(parents=True)
-    (repo / "app" / "src" / "Known.kt").write_text("class K", encoding="utf-8")
-    edited = repo / "app" / "src" / "build" / "Config.kt"
-    edited.write_text("class C", encoding="utf-8")
-    build(
-        repo / "knowledge" / "code_graph.db",
-        Meta(codebase="x", root="", generated="2026-07-30", covers=["app/src/**/*.kt"]),
-        [Node(id="k", kind="K", anchors=[Anchor("app/src/Known.kt", "K")])],
-        source_root=repo,
-    )
-    payload = json.dumps({
-        "tool_name": "Edit", "tool_input": {"file_path": str(edited)}, "cwd": str(repo),
-    })
-    monkeypatch.setattr(post_edit.sys, "stdin", _Stdin(payload))
-    post_edit.main()
-    out = capsys.readouterr().out
-    assert "app/src/build/Config.kt" in out

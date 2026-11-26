@@ -1,0 +1,10 @@
+#!/bin/sh
+# Starts the hook relay (shim.py --hooks), which answers Claude Code's hook calls. Claude Code runs this
+# file on macOS and Linux and kg-hooks.cmd on Windows: the MCP config names the path without an extension.
+shim="$(dirname "$0")/../src/codebase_kg/shim.py"
+# Each candidate must run: on Windows (Git Bash), python3 can be a Microsoft Store stub.
+for candidate in "py -3" python3 python; do
+  if $candidate -c "" </dev/null >/dev/null 2>&1; then exec $candidate -I -S "$shim" --hooks; fi
+done
+echo "kg-hooks: no working Python interpreter (tried py -3, python3, python)" >&2
+exit 127

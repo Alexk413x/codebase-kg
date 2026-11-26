@@ -109,8 +109,10 @@ _KG_TOOL = re.compile(r"^mcp__.*codebase[-_]?kg.*__", re.IGNORECASE)
 
 _STATE_TTL = 7 * 24 * 3600  # prune abandoned session files after a week
 
+DENIED = "denied a search of {target}: {reason}"
+ALLOWED = "this search of {target} ran, but query the graph before the next one: {reason}"
 GATE_MESSAGE = (
-    "codebase-kg: denied a search of {target}: {reason}. This repo has a committed "
+    "codebase-kg: {opening}. This repo has a committed "
     "code graph ({graph}). Query it before searching source.\n\n"
     "1. kg_search from the codebase-kg server (its tool name contains codebase-kg) for "
     "what you are looking for — it finds the components, not just the string. Then "
@@ -518,19 +520,22 @@ def _deny(
     # other's record, so neither retry was recognised.
     state["denied"] = ([k for k in _denied_list(state) if k not in keys] + keys)[-_DENIED_MEMORY:]
     recorded = _write_state(proj, session, state)
-    message = GATE_MESSAGE.format(
-        graph=graph.name, credit=gate_credit(cfg),
-        target=verdict.target or "the repo", reason=_deny_reason(verdict, state, cfg),
-    )
+    def message(opening: str) -> str:
+        return GATE_MESSAGE.format(
+            graph=graph.name, credit=gate_credit(cfg),
+            opening=opening.format(
+                target=verdict.target or "the repo", reason=_deny_reason(verdict, state, cfg)),
+        )
+
     if gate_mode(cfg) == "warn" or not recorded:
-        _advise(message, notify_user=True)
+        _advise(message(ALLOWED), notify_user=True)
     elif data.get("agent_id"):
         # A subagent may hold no codebase-kg tool and so could never earn credit;
         # the hook cannot see its tool list, so it informs instead of denying.
-        _advise(message)
+        _advise(message(ALLOWED))
     else:
         tool = str(data.get("tool_name") or "")
-        emit_deny(_nothing_ran_notice(tool, _tool_input(data)) + message)
+        emit_deny(_nothing_ran_notice(tool, _tool_input(data)) + message(DENIED))
 
 
 def _run(data: dict[str, object]) -> None:

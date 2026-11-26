@@ -27,9 +27,9 @@ Ask whether to go ahead, and continue only if the user says yes.
 
 ## What is already handled without this command
 
-The **search gate** and the **post-edit nudge** ship inside the plugin (`hooks/hooks.json`) and need
-no per-repo install. They activate on their own in any repo that has a `knowledge/code_graph.db`,
-and stay silent in any repo that does not. Mention this so the user knows the behavior is already
+The **search gate** ships inside the plugin (`hooks/hooks.json`) and needs
+no per-repo install. It activates on its own in any repo that has a `knowledge/code_graph.db`,
+and stays silent in any repo that does not. Mention this so the user knows the behavior is already
 live; do not try to install it.
 
 ## Steps
@@ -272,7 +272,8 @@ Then tell the user what is now live:
 - **Search gate** (from the plugin, no install): a `Grep`/`Glob` or shell `grep`/`rg`/`git grep`/`find -name`
   aimed at mapped code is denied with the instruction to query the graph first. A codebase-kg query
   clears the next `gate_credit` searches (default 3), and a repeat of a denied search always passes.
-- **Post-edit nudge** (from the plugin, no install): advisory, points at `/codebase-kg:refresh`.
+- **Commit-time check** (from the plugin, no install): a hook on `git commit` that asks the codebase-kg
+  server. It lists unmapped and changed files to the agent and points at `/codebase-kg:refresh`.
 - **Unwired-clone notice** (from the plugin, no install): at session start, a clone of this repo with
   no `core.hooksPath` or no `diff.codegraph.textconv` gets one line naming `sh <hooks dir>/install.sh`.
   It never wires a clone, because git leaves `.git/config` out of a clone precisely so that cloning
@@ -285,8 +286,8 @@ Then tell the user what is now live:
   `pre-push` blocks on one thing only — any mapped file that has drifted, including the files this
   push touches. That is zero in a repo kept current; release it with `KG_STALE_ACK=<count>` (the count is
   in the message and the ack expires when it moves), `SKIP_KG=1`, or `git push --no-verify`.
-  `SKIP_KG=1` silences either hook, and the search gate, when a change deliberately outruns the
-  graph.
+  `SKIP_KG=1` silences either hook when a change deliberately outruns the graph. It does not apply to
+  the search gate in Claude Code; `search_gate: off` in `.claude/codebase-kg.local.md` turns that off.
 - **One command per clone**: everyone else who clones this repo runs `sh <hooks dir>/install.sh` once.
   It needs plain git, POSIX sh and `uv` — no Claude Code and no plugin install.
 - The fix for drift is `/codebase-kg:refresh`; deeper drift is `/codebase-kg:validate`.
@@ -307,6 +308,13 @@ Show the output to the user and tell them to paste it into `~/.codex/config.toml
 file yourself. The path holds the plugin version. The user pastes the table once: after a plugin
 update, the Codex SessionStart hook moves the path to the new plugin folder and prints one line. The
 first session after an update may need a restart of Codex to load the tools.
+
+The output ends with a comment that says whether Codex trusts the plugin's hooks. When it says some
+are not trusted, tell the user to run `/hooks` in Codex and trust them, and that Codex asks again
+after every plugin update. Until then Codex skips the search gate, the push gate and the session
+notice without a message; the git pre-push hook still blocks a stale push. Do not edit Codex's
+config to trust a hook. When the comment is missing, Codex could not be asked; say nothing about
+trust beyond the `/hooks` step. The check can take 20 seconds; `--no-hooks` leaves it out.
 
 The table sets `url` and an `http_headers_helper` that runs `mcp/launch/kg_headers.py` with literal
 `--port`, `--cwd` and `--start` arguments. The helper prints the bearer token and the session's folder

@@ -1,4 +1,5 @@
-"""Print the Codex config entry for this plugin's MCP server: kg_cli.py codex-config [--port N] [--home DIR] [--stdio].
+"""Print the Codex config entry for this plugin's MCP server: kg_cli.py codex-config [--port N] [--home DIR] [--stdio]
+[--no-hooks].
 
 Codex starts no MCP server a plugin declares, so you paste one table into
 `~/.codex/config.toml`. The table connects Codex to the shared HTTP server
@@ -10,15 +11,19 @@ literal argument. `--stdio` prints the older table that runs the stdio shim
 (`mcp/launch/kg-shim`) instead, which needs no HTTP server. The path in both
 holds the plugin version. After an update, the Codex SessionStart hook moves it
 to the new plugin folder (`hooks/_codex_config.py`), so you paste the table once.
-Stdlib only.
+
+The last lines say whether Codex trusts the plugin's hooks (`codex_trust.py`),
+as TOML comments, so the output stays safe to paste. `--no-hooks` leaves the
+check out. Stdlib only.
 """
 
 from __future__ import annotations
 
 import sys
+import textwrap
 from pathlib import Path
 
-from . import shim
+from . import codex_trust, shim
 
 LAUNCH = Path(__file__).resolve().parents[2] / "launch"
 STARTUP_TIMEOUT = 30
@@ -69,10 +74,13 @@ def main(argv: list[str] | None = None) -> int:
     port: int | None = None
     home: str | None = None
     stdio = False
+    hooks = True
     words = iter(args)
     for word in words:
         if word == "--stdio":
             stdio = True
+        elif word == "--no-hooks":
+            hooks = False
         elif word in ("--port", "--home"):
             value = next(words, "")
             if word == "--home":
@@ -83,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"codex-config: --port needs a port number, not {value!r}", file=sys.stderr)
                 return 2
         else:
-            print("usage: kg_cli.py codex-config [--port N] [--home DIR] [--stdio]", file=sys.stderr)
+            print("usage: kg_cli.py codex-config [--port N] [--home DIR] [--stdio] [--no-hooks]", file=sys.stderr)
             return 2
     print("# Add to ~/.codex/config.toml, then restart Codex.")
     if stdio:
@@ -91,6 +99,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("# For the stdio shim instead, which needs no HTTP server, run codex-config with --stdio.")
         print(entry(port, home), end="")
+    trust = codex_trust.report() if hooks else None
+    if trust:
+        print()
+        for line in textwrap.wrap(trust, 100):
+            print(f"# {line}")
     return 0
 
 
