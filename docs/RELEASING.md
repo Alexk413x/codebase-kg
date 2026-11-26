@@ -80,9 +80,9 @@ nothing when a textconv command cannot resolve — it falls back silently.
 
 5. **Check the tag.** On a push to `main`, `.github/workflows/release.yml`
    tags the commit `codebase-kg--v<version>` from `plugin.json` when that tag is
-   missing, and only then rebuilds the `release` branch. A merge that keeps the
-   version releases nothing: `main` then holds changes that ship with the next
-   version. The annotation is the title of the version's changelog entry. Confirm
+   missing. It rebuilds the `release` branch only when that branch holds another
+   version than `main`, so a merge that keeps the version releases nothing:
+   `main` then holds changes that ship with the next version. The annotation is the title of the version's changelog entry. Confirm
    it with `git ls-remote --tags origin`. To tag by hand, use
    `claude plugin tag --push -m "codebase-kg %s — <one line>"` on a clean `main`.
 
