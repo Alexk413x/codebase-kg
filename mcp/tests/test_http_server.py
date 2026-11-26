@@ -752,12 +752,18 @@ def test_one_build_serves_two_ports_at_once(tmp_path: Path) -> None:
     repo, cache = _repo(tmp_path / "repo", "repo"), tmp_path / "cache"
     ports = [_free_port(), _free_port()]
     procs = [_start(cache, repo, CODEBASE_KG_PORT=str(port)) for port in ports]
+
+    def report() -> str:
+        return (f"ports {ports}, health {[shim.health(p)[0] for p in ports]}, "
+                f"exit codes {[proc.poll() for proc in procs]}, state files {sorted(f.name for f in cache.glob('server-*'))}")
+
     try:
         deadline = time.monotonic() + TIMEOUT
         while time.monotonic() < deadline and not all(shim.health(p)[0] == shim.OURS for p in ports):
             time.sleep(0.1)
+        assert all(shim.health(p)[0] == shim.OURS for p in ports), report()
         time.sleep(daemon.ORPHAN_CHECK_INTERVAL + 2.0)
-        assert [proc.poll() for proc in procs] == [None, None]
+        assert [proc.poll() for proc in procs] == [None, None], report()
         pids = [shim.health(port)[1].get("pid") for port in ports]
         assert pids[0] != pids[1] and all(pids)
         assert sorted(p.name for p in cache.glob(f"server-{BUILD}-p*.json")) == sorted(
