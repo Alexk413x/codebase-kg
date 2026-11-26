@@ -52,6 +52,7 @@ from _config import (
     project_dir,
     skip_kg,
 )
+from _shim_loader import load_shim
 
 DEFAULT_HOOKS_DIR = ".githooks"
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -130,6 +131,16 @@ def plugin_version() -> str:
         return str(json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8")).get("version") or "")
     except (OSError, ValueError, AttributeError):
         return ""
+
+
+def serves_installs() -> bool:
+    """True for a release build or a copy a client installed. A checkout or a scratch copy is neither,
+    and its version is not one a clone's diff driver should follow."""
+    try:
+        shim = load_shim()
+        return bool(shim.released() or shim.installed())
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def stale_pin(textconv: str, running: str) -> str | None:
@@ -235,13 +246,22 @@ def advice(proj: Path) -> str | None:
         if why is None:
             return None  # wired, and the driver is current
         if _PINNED_TAG.search(textconv):
+            pinned = _PINNED_TAG.search(textconv).group(1)  # type: ignore[union-attr]
+            if not serves_installs():
+                broken = unreadable_pin(graph, pinned)
+                if broken is None:
+                    return None
+                return (
+                    f"codebase-kg: this clone's graph diff driver pins codebase-kg {pinned}, which "
+                    f"cannot read {graph.name} ({broken}). git diff on the graph fails until the "
+                    "pin moves. Run /codebase-kg:setup to update it."
+                )
             moved = repin(proj, textconv, running)
             if moved:
                 return moved
             # The new tag could not be confirmed (offline, unpublished). An older
             # pin that still exports the graph needs no word; the next session
             # tries again. One that cannot read the graph breaks `git diff` now.
-            pinned = _PINNED_TAG.search(textconv).group(1)  # type: ignore[union-attr]
             broken = unreadable_pin(graph, pinned)
             if broken is None:
                 return None

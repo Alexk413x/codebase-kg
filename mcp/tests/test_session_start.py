@@ -70,6 +70,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # point every test at their own repo.
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     monkeypatch.delenv("SKIP_KG", raising=False)
+    monkeypatch.setattr(hook, "serves_installs", lambda: True)
 
 
 @pytest.fixture
@@ -253,6 +254,29 @@ def test_a_stale_pin_moves_to_the_installed_release(
     assert asked == [("https://github.com/Alexk413x/codebase-kg.git", "0.8.2")]
     assert _git(repo, "config", "--get", "diff.codegraph.textconv") == URL.format("0.8.2")
     assert hook.advice(repo) is None  # current now, so the next session is silent
+
+
+def test_a_development_copy_never_moves_a_pin(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A checkout's version is not a release: a session of it moved a clone's pin to a version it had
+    not released."""
+    monkeypatch.setattr(hook, "serves_installs", lambda: False)
+    monkeypatch.setattr(hook, "plugin_version", lambda: "0.8.2")
+    monkeypatch.setattr(hook, "tag_published", lambda url, v: pytest.fail("asked for the tag"))
+    _wire(repo, URL.format("0.7.0"))
+    assert hook.advice(repo) is None
+    assert _git(repo, "config", "--get", "diff.codegraph.textconv") == URL.format("0.7.0")
+
+    schema = int(hook.graph_meta(repo / "knowledge" / "code_graph.db", "schema_version"))
+    monkeypatch.setattr(hook, "SCHEMA_SINCE", {schema: "0.7.0"})
+    _wire(repo, URL.format("0.6.1"))
+    msg = hook.advice(repo)
+    assert msg is not None and "0.6.1" in msg and "/codebase-kg:setup" in msg and "moved" not in msg
+    assert _git(repo, "config", "--get", "diff.codegraph.textconv") == URL.format("0.6.1")
+
+
+def test_this_checkout_is_a_development_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.undo()
+    assert hook.serves_installs() is False
 
 
 def test_a_stale_pin_stays_when_the_new_tag_is_not_published(
