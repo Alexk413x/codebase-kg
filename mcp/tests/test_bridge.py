@@ -24,6 +24,7 @@ from test_shared_server import (
     Client,
     _client,
     _close,
+    _daemon_pids,
     _finish,
     _kill_daemon,
     _repo,
@@ -564,12 +565,31 @@ def test_a_server_restart_costs_the_session_nothing(bridged: Any, tmp_path: Path
     client.initialize()
     assert client.data("kg_search", query="widget")["count"] == 1
 
+    (first,) = _daemon_pids(bridged.cache)
     _kill_daemon(bridged.cache)
     deadline = time.monotonic() + 10
-    while shim.read_state(shim.server_build()) is not None and time.monotonic() < deadline:
+    while shim.pid_alive(first) and time.monotonic() < deadline:
         time.sleep(0.1)
+    assert not shim.pid_alive(first)
 
     assert client.data("kg_search", query="widget")["count"] == 1
+    assert first not in _daemon_pids(bridged.cache)
+
+
+def test_the_bridged_fixture_leaves_no_server(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    proc = _shim(_repo(tmp_path / "alpha", "alpha"), cache, CODEBASE_KG_BRIDGE="1",
+                 CODEBASE_KG_PORT=str(_free_port()), CODEBASE_KG_SESSION_GRACE="-1")
+    try:
+        _client(proc).initialize()
+        (pid,) = _daemon_pids(cache)
+    finally:
+        _finish(proc)
+        _kill_daemon(cache)
+    deadline = time.monotonic() + 10
+    while shim.pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not shim.pid_alive(pid)
 
 
 def test_end_of_input_stops_the_bridged_shim(bridged: Any, tmp_path: Path) -> None:

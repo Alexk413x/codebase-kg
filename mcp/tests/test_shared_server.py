@@ -376,15 +376,22 @@ def _finish(proc: subprocess.Popen[bytes]) -> str:
     return proc.stderr.read().decode("utf-8", "replace")
 
 
+def _daemon_pids(cache: Path) -> set[int]:
+    pids = set()
+    for state in (cache / f"server-{BUILD}.json", *cache.glob(f"server-{BUILD}-p*.json")):
+        try:
+            pids.add(json.loads(state.read_text(encoding="utf-8"))["pid"])
+        except (OSError, ValueError, KeyError):
+            continue
+    return pids
+
+
 def _kill_daemon(cache: Path) -> None:
-    try:
-        pid = json.loads((cache / f"server-{BUILD}.json").read_text(encoding="utf-8"))["pid"]
-    except (OSError, ValueError, KeyError):
-        return
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        pass
+    for pid in _daemon_pids(cache):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
 
 
 def test_the_shim_forwards_server_pushes_without_waiting_for_a_request(tmp_path: Path) -> None:
