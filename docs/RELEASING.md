@@ -14,13 +14,14 @@ nothing when a textconv command cannot resolve — it falls back silently.
 
 ## The checklist
 
-1. **Bump the version in all five places.** They must agree. `mcp/tests/test_install_sh.py`
-   asserts that the pin tracks the manifest.
+1. **Bump the version in all six places.** They must agree. `mcp/tests/test_install_sh.py`
+   fails when they do not.
 
    | file | field |
    |---|---|
    | `.claude-plugin/plugin.json` | `version` |
    | `.codex-plugin/plugin.json` | `version` |
+   | `.antigravity-plugin/plugin.json` | `version` |
    | `mcp/pyproject.toml` | `version` |
    | `git-hooks/install.sh` | `KG_VERSION` default |
    | `mcp/uv.lock` | the `codebase-kg` entry (uv rewrites it) |

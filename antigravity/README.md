@@ -82,9 +82,13 @@ to allow one.
   A repeated denied search passes. A push prefixed with `SKIP_KG=1` passes, as in
   Codex and Copilot CLI.
 - **Timeouts** in `hooks.json` are seconds.
+- **Relative script path.** Each command names `./hooks/kg_antigravity.py`. `agy` runs a plugin's
+  hook in the folder that holds `hooks.json`, which is the plugin folder, and substitutes no variable
+  into the command, so a relative path is the form its documentation gives. The path never resolves
+  in the project, so a repository cannot plant the script.
 
-`agy plugin validate --strict` reports two warnings for this plugin: the manifest
-has no `version`, and `hooks/hooks.json` is never loaded. Both are expected.
+`agy plugin validate --strict` reports one warning for this plugin: `hooks/hooks.json`
+is never loaded. That file is the Claude Code hook list, so the warning is expected.
 
 ## Support boundaries
 

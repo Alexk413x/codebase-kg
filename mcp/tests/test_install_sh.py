@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -198,6 +199,22 @@ def test_the_shipped_default_is_a_pinned_remote_not_a_local_path() -> None:
     assert "#subdirectory=mcp" in src
     # Without --quiet, uv prints resolution lines into the body of every diff.
     assert "uvx --quiet --from" in src
+
+
+def test_the_version_agrees_in_all_six_places() -> None:
+    def first(pattern: str, path: str) -> str:
+        found = re.search(pattern, (ROOT / path).read_text(encoding="utf-8"))
+        assert found is not None, path
+        return found.group(1)
+
+    versions = {
+        name: json.loads((ROOT / name).read_text(encoding="utf-8"))["version"]
+        for name in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json", ".antigravity-plugin/plugin.json")
+    }
+    versions["mcp/pyproject.toml"] = first(r'(?m)^version = "([^"]+)"$', "mcp/pyproject.toml")
+    versions["mcp/uv.lock"] = first(r'name = "codebase-kg"\nversion = "([^"]+)"', "mcp/uv.lock")
+    versions["git-hooks/install.sh"] = first(r'KG_VERSION="\$\{KG_VERSION:-([^}]+)\}"', "git-hooks/install.sh")
+    assert len(set(versions.values())) == 1, versions
 
 
 def test_the_pin_tracks_the_plugin_version() -> None:
