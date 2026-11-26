@@ -233,9 +233,13 @@ def build_info(package: Path = PACKAGE_DIR) -> dict[str, Any]:
     for path in sorted(package.rglob("*.py")):
         try:
             stat = path.stat()
+            content = path.read_bytes()
         except OSError:
             continue
-        digest.update(f"{path}|{stat.st_size}|{stat.st_mtime_ns}\n".encode())
+        # Contents, not file times: a client that installs the same files again must not make a
+        # new build, or the copy would replace its own running server.
+        digest.update(f"{path}|{len(content)}\n".encode())
+        digest.update(content)
         built = max(built, stat.st_mtime)
     version = package_version()
     return {"build": f"{version}+{digest.hexdigest()[:12]}", "version": version, "built": built,
