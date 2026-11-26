@@ -19,19 +19,23 @@ jobs:
         with:
           fetch-depth: 0
       - name: Tag the version if its tag is missing
+        id: version
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           version=$(python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['version'])")
           tag="codebase-kg--v$version"
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            echo "$tag exists"
+            echo "$tag exists, so main holds changes that are not released. Bump the version to release them."
+            echo "release=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           title=$(sed -n "s/^## \[$version\] — [0-9-]* — //p" CHANGELOG.md | head -n 1)
           git tag -a "$tag" -m "codebase-kg $version${title:+ — $title}"
           git push origin "$tag"
+          echo "release=true" >> "$GITHUB_OUTPUT"
       - name: Build the release branch without development files
+        if: steps.version.outputs.release == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
