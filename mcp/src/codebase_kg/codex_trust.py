@@ -16,9 +16,10 @@ from __future__ import annotations
 import json
 import os
 import queue
-import shutil
 import subprocess
+import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 PLUGIN = "codebase-kg@"
@@ -111,8 +112,35 @@ def message(found: list[str]) -> str | None:
     )
 
 
+def find_codex() -> str | None:
+    """The `codex` program on PATH, never one in the working folder.
+
+    `shutil.which` looks in the working folder first on Windows, and this command runs inside a
+    repository, which may hold a `codex.cmd` of its own. Only absolute PATH entries other than the
+    working folder count.
+    """
+    here = Path.cwd().resolve()
+    names = ["codex"]
+    if sys.platform == "win32":
+        names = [f"codex{ext}" for ext in (".exe", ".cmd", ".bat")]
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        folder = Path(entry.strip('"'))
+        if not entry or not folder.is_absolute():
+            continue
+        try:
+            if folder.resolve() == here:
+                continue
+        except OSError:
+            continue
+        for name in names:
+            candidate = folder / name
+            if candidate.is_file() and (sys.platform == "win32" or os.access(candidate, os.X_OK)):
+                return str(candidate)
+    return None
+
+
 def report(cwd: str | None = None, timeout: float = TIMEOUT) -> str | None:
-    codex = shutil.which("codex")
+    codex = find_codex()
     if codex is None:
         return None
     try:

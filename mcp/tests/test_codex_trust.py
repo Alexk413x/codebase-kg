@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import textwrap
 from pathlib import Path
@@ -86,7 +87,7 @@ def test_a_command_that_does_not_exist_gives_nothing(tmp_path: Path) -> None:
 
 
 def test_no_codex_on_path_gives_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr(codex_trust, "find_codex", lambda: None)
     assert codex_trust.report() is None
 
 
@@ -94,7 +95,7 @@ def test_a_raising_exchange_never_reaches_the_command(monkeypatch: pytest.Monkey
     def boom(*args: Any) -> Any:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("shutil.which", lambda name: "codex")
+    monkeypatch.setattr(codex_trust, "find_codex", lambda: "codex")
     monkeypatch.setattr(codex_trust, "_exchange", boom)
     assert codex_trust.report() is None
 
@@ -122,3 +123,24 @@ def test_codex_config_prints_nothing_extra_when_the_check_gives_nothing_or_is_of
 
     monkeypatch.setattr(codex_trust, "report", never)
     assert codex_config.main(["--no-hooks"]) == 0
+
+
+def _program(folder: Path) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / ("codex.cmd" if sys.platform == "win32" else "codex")
+    path.write_text("exit 0", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def test_codex_is_never_taken_from_the_working_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The command runs inside a repository, which may hold a `codex` of its own."""
+    repo = tmp_path / "repo"
+    _program(repo)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("PATH", os.pathsep.join([".", "", str(repo), "relative"]))
+    assert codex_trust.find_codex() is None
+
+    installed = _program(tmp_path / "bin")
+    monkeypatch.setenv("PATH", os.pathsep.join([".", str(repo), str(tmp_path / "bin")]))
+    assert codex_trust.find_codex() == str(installed)
