@@ -55,12 +55,17 @@ def _free_port() -> int:
 
 
 def _start(cache: Path, cwd: Path, **env: str) -> subprocess.Popen[bytes]:
+    return _start_logged(cache, cwd, Path(os.devnull), env)
+
+
+def _start_logged(cache: Path, cwd: Path, log: Path, env: dict[str, str]) -> subprocess.Popen[bytes]:
     full = {**os.environ, "CODEBASE_KG_CACHE_DIR": str(cache), "CODEBASE_KG_PORT": "0", **env}
-    return subprocess.Popen(
-        shim.server_command("--serve"),
-        cwd=cwd, env=full, stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    with open(log, "wb") as stderr:
+        return subprocess.Popen(
+            shim.server_command("--serve"),
+            cwd=cwd, env=full, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=stderr,
+        )
 
 
 def _state(cache: Path) -> dict[str, Any]:
@@ -530,6 +535,19 @@ def test_a_traversal_build_reads_no_file_outside_the_cache(
             shim.state_path(bad)
 
 
+def test_a_build_file_name_does_not_depend_on_the_cache_folder_existing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check resolved the folder twice. A second server that created the folder between the two
+    calls changed the answer on Windows, and the first server exited at start."""
+    new = tmp_path / "not-there-yet"
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(new))
+    monkeypatch.setattr(Path, "resolve", lambda *args, **kwargs: pytest.fail("resolved a path"))
+    assert shim.state_path(BUILD, 5) == new / f"server-{BUILD}-p5.json"
+    assert shim.lock_path(BUILD, 5) == new / f"server-{BUILD}-p5.lock"
+    assert shim.log_path(BUILD) == new / f"server-{BUILD}.log"
+
+
 def test_a_state_file_for_another_build_is_rejected(cache: Path) -> None:
     health = _older()
     holder = _Holder(health)
@@ -751,11 +769,12 @@ def test_one_build_serves_two_ports_at_once(tmp_path: Path) -> None:
 
     repo, cache = _repo(tmp_path / "repo", "repo"), tmp_path / "cache"
     ports = [_free_port(), _free_port()]
-    procs = [_start(cache, repo, CODEBASE_KG_PORT=str(port)) for port in ports]
+    logs = [tmp_path / f"server-{port}.log" for port in ports]
+    procs = [_start_logged(cache, repo, log, {"CODEBASE_KG_PORT": str(port)}) for port, log in zip(ports, logs)]
 
     def report() -> str:
-        return (f"ports {ports}, health {[shim.health(p)[0] for p in ports]}, "
-                f"exit codes {[proc.poll() for proc in procs]}, state files {sorted(f.name for f in cache.glob('server-*'))}")
+        state = f"ports {ports}, health {[shim.health(p)[0] for p in ports]}, exit codes {[p.poll() for p in procs]}"
+        return os.linesep.join([state, *(log.read_text(encoding="utf-8", errors="replace") for log in logs)])
 
     try:
         deadline = time.monotonic() + TIMEOUT

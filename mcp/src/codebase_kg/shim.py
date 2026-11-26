@@ -442,7 +442,9 @@ def _build_file(build: str, suffix: str, port: int | None = None) -> Path:
     base = cache_dir()
     tag = "" if port in (None, 0, DEFAULT_HTTP_PORT) else f"-p{int(port)}"
     path = base / f"server-{build}{tag}{suffix}"
-    if path.resolve().parent != base.resolve():
+    # Compared as written, not resolved: on Windows a folder resolves to another spelling once it
+    # exists, so two servers that started together in a new cache folder failed here.
+    if path.parent != base or path.name != f"server-{build}{tag}{suffix}":
         raise ValueError(f"not a codebase-kg build: {build!r}")
     return path
 

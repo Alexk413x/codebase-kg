@@ -156,6 +156,9 @@ All notable changes to the `codebase-kg` plugin.
   moves the pin.
 - `kg_node` and `kg_neighborhood` left out the id one letter away from a wrong id when five other ids
   shared a word with it. The closest spelling comes first in `did_you_mean`.
+- Two servers that started at the same moment in a cache folder that did not exist yet could lose one
+  of them: it exited with "not a codebase-kg build". The check of a state file's name resolved the
+  folder twice, and on Windows a folder resolves to another spelling once it exists.
 - A server that was killed left its state file in the cache folder for good, one for each build and
   port that ever ran. A starting server removes the state files of servers that no longer run.
 
