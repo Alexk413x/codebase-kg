@@ -36,6 +36,10 @@ For **GitHub Copilot CLI**, use the separate [Copilot setup](copilot/README.md).
 It adds a stdio transport configuration and hook adapter without changing the
 Claude Code or Codex setup.
 
+For **Antigravity CLI** (`agy`), use the separate [Antigravity setup](antigravity/README.md).
+It adds a manifest, a root `hooks.json` and a hook adapter. You add the stdio MCP server with
+`agy mcp add`.
+
 ## How it works
 
 Each repo gets a committed `knowledge/code_graph.db`. A node is a row:
@@ -278,6 +282,8 @@ A graph built before self-edges were allowed rejects a node that points at itsel
 codebase-kg/
 ├── .claude-plugin/
 │   └── plugin.json           # plugin manifest (name: codebase-kg)
+├── .antigravity-plugin/
+│   └── plugin.json           # Antigravity CLI manifest; agy reads hooks.json beside this folder
 ├── .codex-plugin/
 │   └── plugin.json           # Codex manifest; names hooks/codex-hooks.json
 ├── .codex/
@@ -285,7 +291,9 @@ codebase-kg/
 ├── .github/
 │   ├── plugin/plugin.json    # GitHub Copilot CLI manifest; names hooks/copilot-hooks.json
 │   └── workflows/release.yml # release automation
+├── antigravity/              # Antigravity CLI setup notes (README.md)
 ├── copilot/                  # Copilot CLI setup notes (README.md)
+├── hooks.json                # Antigravity CLI hooks (agy reads only a hooks.json at the plugin root)
 ├── evals/                    # eval cases for the skills (build, query, refresh, validate triggers), with fixtures and mocks
 ├── SCHEMA.md                 # ← the spec: node shape, anchors, parity, the description contract
 ├── README.md
@@ -305,7 +313,7 @@ codebase-kg/
 │   ├── src/codebase_kg/      # the server and the CLIs (module map in mcp/README.md)
 │   ├── launch/               # kg_cli.py (CLI runner), kg-shim and kg-shim.cmd (stdio relay), kg-hooks and kg-hooks.cmd (hook relay), kg_headers.py (HTTP headers helper), kg_copilot.py (Copilot CLI stdio configuration printer), run/ (one launcher per hook script and for kg_headers.py)
 │   └── claude.mcp.json       # registers the HTTP endpoint, with kg_headers.py as the headersHelper, and the hook relay
-├── hooks/                    # Claude Code, Codex and Copilot CLI hooks: the search gate, the push gate, the unwired-clone notice, the server start
+├── hooks/                    # Claude Code, Codex, Copilot CLI and Antigravity CLI hooks: the search gate, the push gate, the unwired-clone notice, the server start
 └── git-hooks/                # advisory pre-commit + pre-push staleness checks and install.sh, vendored into any repo (stdlib-only)
 ```
 
@@ -352,7 +360,7 @@ Three advisory layers, all pointing at the same fix (`/codebase-kg:refresh`):
   `/codebase-kg:refresh`, commit the graph and push again, without asking you. An agent cannot skip
   the check on its own in Claude Code: a push prefixed with `SKIP_KG=1` or a matching
   `KG_STALE_ACK=<n>` makes Claude Code ask you, in a permission prompt that lists the stale files, and
-  a session with no user is refused. In Codex and Copilot CLI those prefixes pass. A push that only deletes
+  a session with no user is refused. In Codex, Copilot CLI and Antigravity CLI those prefixes pass. A push that only deletes
   refs passes. `--no-verify` does not, because it skips git hooks and not this one. The hook fails
   open on any error. It uses the pre-push hook's
   comparison, so both agree on what is stale.

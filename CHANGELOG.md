@@ -6,6 +6,14 @@ All notable changes to the `codebase-kg` plugin.
 
 ### Added
 
+- Antigravity CLI support for the search gate, the push gate and the session notice. `agy` reads
+  `hooks.json` at the plugin root and `.antigravity-plugin/plugin.json`, both new. The hooks file holds
+  only `command` handlers, because `agy` skips the whole file for one `mcp_tool`, `http` or `agent`
+  handler. `hooks/kg_antigravity.py` turns `agy` payloads (`run_command`, `call_mcp_tool`) into the
+  shape the shared gates read and answers `{"decision": "deny", "reason": ...}`. It exits 0 on any
+  error, because `agy` blocks a tool call when a hook fails. A graph query through the `codebase-kg`
+  MCP server earns search credit. See `antigravity/README.md`. Tested on `agy` 1.5.18 on Windows.
+
 - A commit check for Claude Code. After a `Bash` or `PowerShell` command that made a commit, the
   agent receives the committed source no node covers, the deleted source the graph still anchors on
   and the mapped source that changed since the graph was updated, with the instruction to run

@@ -1,0 +1,4 @@
+{
+  "name": "codebase-kg",
+  "description": "Build, maintain, and query a per-repository code graph with Antigravity CLI."
+}

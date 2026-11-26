@@ -1,0 +1,23 @@
+{
+  "codebase-kg": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "py -3 -I -S ./hooks/kg_antigravity.py || python3 -I -S ./hooks/kg_antigravity.py || python -I -S ./hooks/kg_antigravity.py || exit 0",
+        "timeout": 10
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "run_command|call_mcp_tool",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "py -3 -I -S ./hooks/kg_antigravity.py || python3 -I -S ./hooks/kg_antigravity.py || python -I -S ./hooks/kg_antigravity.py || exit 0",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

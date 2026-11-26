@@ -10,6 +10,8 @@ no `knowledge/code_graph.db`. The server start runs in every session.
 | `codex-hooks.json` | The same hooks for Codex, named by `hooks` in `.codex-plugin/plugin.json`: the search gate and push gate on `Bash`, the credit hook on codebase-kg MCP calls, and the session notice. It has no `if`, `Grep`, `Glob` or `PowerShell` entry, because Codex ignores `if` and reports shell commands as `Bash`, so each script decides for itself whether a command is a search or a push. It has no server start hook: the `--start` option of `mcp/launch/kg_headers.py`, which the Codex config table runs as its headers helper, or the stdio shim starts the server. `commandWindows` runs `py -3` and names the script through `$env:PLUGIN_ROOT`, because Codex runs it in PowerShell, where `${CLAUDE_PLUGIN_ROOT}` is empty; `command` runs `python3`. |
 | `copilot-hooks.json` | The hooks for GitHub Copilot CLI, named by `hooks` in `.github/plugin/plugin.json`: `preToolUse` runs `kg_copilot.py` with `python`. |
 | `kg_copilot.py` | The Copilot CLI adapter. Turns Copilot's hook payloads into the shape the shared search gate and push gate read, so those scripts stay unchanged. |
+| `../hooks.json` | The hooks for Antigravity CLI, which reads only a `hooks.json` at the plugin root: `PreToolUse` on `run_command` and `call_mcp_tool`, and `SessionStart`. Every handler is a `command` that tries `py -3`, `python3` and `python` and ends in `|| exit 0`, because `agy` skips the whole file for one handler that is not a `command`, and blocks the tool call when a hook exits non-zero. |
+| `kg_antigravity.py` | The Antigravity CLI adapter. Turns `agy` payloads into the shape the shared gates read and answers `{"decision": "deny", "reason": ...}`. Sends the session notice as an injected system message. |
 | `kg_search_gate.py` | The gate. Denies a search aimed at mapped code with the instruction to query the graph, and keeps doing it — a query buys credit, a located search is free, a repeat always passes. |
 | `kg_push_gate.py` | The push gate. Denies an agent's `git push` while any mapped file is stale against `HEAD`. |
 | `kg_server_start.py` | The server start, and the session register. Starts the shared HTTP server when nothing answers on the `server_port` setting, or a server this copy may replace does, and registers the session. One line only when the port belongs to another program, the server does not come up, or this is a development copy and another build holds the port. |
@@ -205,7 +207,7 @@ One rule, two callers. The decision is `kg_search_gate.py` for every client.
   `unknown` and share one count, so a query always earns credit. A server
   restart clears the state: denied searches are asked once more and the credit starts from zero. A
   session that is older than the server is told so once.
-- **Codex and Copilot CLI** run the script as a process (`codex-hooks.json`, `kg_copilot.py`). There a
+- **Codex, Copilot CLI and Antigravity CLI** run the script as a process (`codex-hooks.json`, `kg_copilot.py`, `kg_antigravity.py`). There a
   second hook on the codebase-kg tools credits a query, state lives in the OS temp dir, and several
   matching handlers settle who decides through a claim file on the call's `tool_use_id`.
 
