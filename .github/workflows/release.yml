@@ -9,7 +9,7 @@ permissions:
 
 concurrency:
   group: release-branch
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -19,6 +19,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Tag the version if its tag is missing
+        id: version
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -26,12 +27,21 @@ jobs:
           tag="codebase-kg--v$version"
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
             echo "$tag exists"
-            exit 0
+          else
+            title=$(sed -n "s/^## \[$version\] — [0-9-]* — //p" CHANGELOG.md | head -n 1)
+            git tag -a "$tag" -m "codebase-kg $version${title:+ — $title}"
+            git push origin "$tag"
           fi
-          title=$(sed -n "s/^## \[$version\] — [0-9-]* — //p" CHANGELOG.md | head -n 1)
-          git tag -a "$tag" -m "codebase-kg $version${title:+ — $title}"
-          git push origin "$tag"
+          git fetch -q --depth=1 origin release:refs/remotes/origin/release || true
+          released=$(git show origin/release:.claude-plugin/plugin.json 2>/dev/null | python3 -c "import json, sys; print(json.load(sys.stdin)['version'])" 2>/dev/null || true)
+          if [ "$released" = "$version" ]; then
+            echo "The release branch holds $version, so main holds changes that are not released. Bump the version to release them."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Build the release branch without development files
+        if: steps.version.outputs.release == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
