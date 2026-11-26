@@ -63,14 +63,14 @@ nothing when a textconv command cannot resolve — it falls back silently.
    `claude plugin eval` refuses the hard links in `mcp/.venv`. Run it on a copy made with
    `git ls-files -co --exclude-standard`, which leaves `.venv` out.
 
-   Give the eval run its own server port. The copy is a newer build than the installed plugin, so
-   on the shared port its server replaces the one your other sessions use, and stays after the
-   copy is deleted. Set `CODEBASE_KG_PORT` to a free port for the run, and stop that server when
-   the run ends:
+   The eval run replaces the shared server. The copy is a newer build than the installed plugin, so
+   its server takes port 47821 from the one your other sessions use, and stays after the copy is
+   deleted. `CODEBASE_KG_PORT` in the shell does not reach the sessions the eval starts. After the
+   run, stop the copy's server and start the installed one:
 
    ```sh
-   CODEBASE_KG_PORT=47822 claude plugin eval <copy> --scaffold --trust-plugin
-   CODEBASE_KG_PORT=47822 python3 <copy>/mcp/launch/kg_cli.py server stop
+   python3 <copy>/mcp/launch/kg_cli.py server stop
+   python3 <installed plugin>/mcp/launch/kg_cli.py server start
    ```
 
 4. **Open a PR and merge to main.** Tags point at the *merge* commit, which does
