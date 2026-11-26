@@ -11,6 +11,7 @@ on, so a bug in a tool cannot mutate a committed artifact.
 
 from __future__ import annotations
 
+import difflib
 import re
 import sqlite3
 import threading
@@ -340,11 +341,13 @@ class CodeGraph:
     def similar_ids(self, text: str, limit: int = 5) -> list[str]:
         """Ids that look like `text` — the `did_you_mean` list for a bad id.
 
-        FTS first: it is indexed, and this is the path an agent hits whenever it
-        guesses an id wrong. The `LIKE` fallback scans every row, so it only
-        runs when the index found nothing.
+        Ids spelled almost like `text` come first: a search by words ranks a
+        one-letter slip below every id that shares a word with it. Then FTS. The
+        `LIKE` fallback only runs when both found nothing.
         """
-        hits = [nid for nid, _ in self.search_ids(text, limit)]
+        every = [r["id"] for r in self._q("SELECT id FROM node")]
+        near = difflib.get_close_matches(text.strip(), every, n=limit, cutoff=0.85)
+        hits = list(dict.fromkeys(near + [nid for nid, _ in self.search_ids(text, limit)]))[:limit]
         if hits:
             return hits
         rows = self._q(

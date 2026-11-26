@@ -210,6 +210,15 @@ def test_by_path_keeps_the_dot_in_a_dot_directory(tmp_path: Path) -> None:
         g.close()
 
 
+def test_similar_ids_puts_a_one_letter_slip_first(sample_db: Path) -> None:
+    g = CodeGraph(sample_db)
+    try:
+        assert g.similar_ids("feed_rankerr")[0] == "feed_ranker"
+        assert g.similar_ids("fed_ranker")[0] == "feed_ranker"
+    finally:
+        g.close()
+
+
 def test_similar_ids_suggests_on_a_partial(sample_db: Path) -> None:
     g = CodeGraph(sample_db)
     try:
