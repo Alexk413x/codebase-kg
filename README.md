@@ -190,10 +190,11 @@ in about 0.2 s and holds about 25 MB while idle.
   `.codex/config.toml.example` in the plugin folder holds this same table, to copy to a gitignored
   `.codex/config.toml` when you work on the plugin itself.
 - **Port.** The plugin setting `server_port` (default 47821) moves it. When another program holds
-  the port, the hook prints one line naming the setting. A release of a higher version takes the port
-  from an older server; at the same version the running server stays. A copy that is not a release (a
-  checkout, a worktree, a scratch copy) never takes the port from another copy: its session uses the
-  server that holds it and says so in one line. `CODEBASE_KG_TAKEOVER=1` lets such a copy take it.
+  the port, the hook prints one line naming the setting. A release or an installed copy of a higher
+  version takes the port from an older server; at the same version the running server stays. A
+  development copy (a checkout, a worktree, a scratch copy) never takes the port from another copy:
+  its session uses the server that holds it and says so in one line. The rule is in `mcp/README.md`,
+  "Which build holds the HTTP port".
 - **Security.** The server binds `127.0.0.1` only, refuses any `Host` but its own loopback address
   and any foreign `Origin`, and needs a bearer token that only your user account can read. The
   `headersHelper` (`mcp/launch/kg_headers.py`) sends that token only after the server on the port

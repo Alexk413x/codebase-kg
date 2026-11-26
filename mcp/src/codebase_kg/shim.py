@@ -73,7 +73,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 def env_float(names: str | tuple[str, ...], default: float) -> float:
@@ -159,6 +159,61 @@ def released(package: Path = PACKAGE_DIR) -> bool:
     return (package / RELEASE_MARKER).is_file()
 
 
+MOVES_A_ROOT = ("CLAUDE_CONFIG_DIR", "CODEX_HOME")
+
+
+def install_roots() -> list[tuple[Path, int]]:
+    """Where each client keeps the plugins it installed, and how many folders below it a plugin's root sits.
+
+    Claude Code and Codex: `<root>/<marketplace>/<plugin>/<version>`. Copilot CLI:
+    `<root>/<marketplace>/<plugin>`. Antigravity CLI, for every repository: `<root>/<plugin>`.
+    Antigravity's folder inside one repository (`.agents/plugins`) is not here: any copy can sit in a
+    repository, so such a copy counts only with the release marker.
+    """
+    try:
+        home: Path | None = Path.home()
+    except (RuntimeError, OSError):
+        home = None
+    claude, codex = os.environ.get("CLAUDE_CONFIG_DIR"), os.environ.get("CODEX_HOME")
+    roots: list[tuple[Path, int]] = []
+    if claude or home:
+        roots.append((Path(claude) if claude else cast(Path, home) / ".claude", 3))
+    if codex or home:
+        roots.append((Path(codex) if codex else cast(Path, home) / ".codex", 3))
+    roots = [(root / "plugins" / "cache", depth) for root, depth in roots]
+    if home:
+        roots += [(home / ".copilot" / "installed-plugins", 2), (home / ".gemini" / "config" / "plugins", 1)]
+    return roots
+
+
+def _both(path: Path) -> list[Path]:
+    """The path as written and with links followed: a cache can be a link, and so can a plugin in it."""
+    found = [Path(os.path.abspath(path))]
+    try:
+        found.append(path.resolve())
+    except OSError:
+        pass
+    return found
+
+
+def installed(package: Path | None = None) -> bool:
+    """True when a client installed this copy: its plugin folder sits in a client's install root, at
+    the depth that client puts a plugin. A marketplace install can hold the `main` tree, which has no
+    release marker, so the place decides too."""
+    packages = [package] if package is not None else [Path(os.path.abspath(__file__)).parent, PACKAGE_DIR]
+    for found in packages:
+        for plugin in _both(found.parents[2]):
+            for root, depth in install_roots():
+                for base in _both(root):
+                    try:
+                        below = Path(os.path.normcase(plugin)).relative_to(os.path.normcase(base))
+                    except ValueError:
+                        continue
+                    if len(below.parts) == depth:
+                        return True
+    return False
+
+
 def origin(package: Path = PACKAGE_DIR) -> str:
     """Names the folder this copy runs from, so a server can tell its own edited copy from another copy."""
     try:
@@ -169,7 +224,7 @@ def origin(package: Path = PACKAGE_DIR) -> str:
 
 
 def build_info(package: Path = PACKAGE_DIR) -> dict[str, Any]:
-    """The build, its package version, whether it is a release, and the folder it runs from.
+    """The build, its package version, whether it is a release or installed, and the folder it runs from.
 
     `built`, the newest source mtime, is reported for the log and decides nothing.
     """
@@ -184,7 +239,8 @@ def build_info(package: Path = PACKAGE_DIR) -> dict[str, Any]:
         built = max(built, stat.st_mtime)
     version = package_version()
     return {"build": f"{version}+{digest.hexdigest()[:12]}", "version": version, "built": built,
-            "released": released(package), "origin": origin(package)}
+            "released": released(package), "installed": installed(None if package == PACKAGE_DIR else package),
+            "origin": origin(package)}
 
 
 def _version_key(version: object) -> tuple[int, ...]:
@@ -194,11 +250,11 @@ def _version_key(version: object) -> tuple[int, ...]:
 def replaces(mine: dict[str, Any], theirs: dict[str, Any], takeover: bool | None = None) -> bool:
     """True when build `mine` may take the HTTP port from `theirs`.
 
-    A release replaces a lower version. A copy replaces the server that runs from its own
-    folder once its files changed. `CODEBASE_KG_TAKEOVER=1` lets a development copy replace
-    any other build. Nothing else does: at one version the holder stays, so two copies never
-    take the port from each other in turn, and a copy that is not a release serves nobody
-    who did not ask for it. File times decide nothing.
+    A release, or a copy a client installed, replaces a lower version. A copy replaces the
+    server that runs from its own folder once its files changed. `CODEBASE_KG_TAKEOVER=1` lets
+    a development copy replace any other build. Nothing else does: at one version the holder
+    stays, so two copies never take the port from each other in turn, and a development copy
+    serves nobody who did not ask for it. File times decide nothing.
     """
     if mine.get("build") == theirs.get("build"):
         return False
@@ -208,7 +264,8 @@ def replaces(mine: dict[str, Any], theirs: dict[str, Any], takeover: bool | None
         return True
     if mine.get("origin") and mine.get("origin") == theirs.get("origin"):
         return True
-    return bool(mine.get("released")) and _version_key(mine.get("version")) > _version_key(theirs.get("version"))
+    trusted = bool(mine.get("released") or mine.get("installed"))
+    return trusted and _version_key(mine.get("version")) > _version_key(theirs.get("version"))
 
 
 DEFAULT_HTTP_PORT = 47821
@@ -771,11 +828,12 @@ def spawn_server_outside_job(build: str) -> None:
     kills every descendant when the helper exits, so `spawn_server` leaves no server behind there.
     """
     # The WMI child inherits nothing from this process, so forward every setting the
-    # server reads: the CODEBASE_KG_* overrides and the plugin's CLAUDE_PLUGIN_OPTION_* settings
-    # (`server_port`, `max_workers`).
+    # server reads: the CODEBASE_KG_* overrides, the plugin's CLAUDE_PLUGIN_OPTION_* settings
+    # (`server_port`, `max_workers`), and the two variables that move a client's plugin folder,
+    # or the server would not find itself installed (`install_roots`) and leave the port.
     env = {
         k: v for k, v in os.environ.items()
-        if k.startswith(("CODEBASE_KG_", "CLAUDE_PLUGIN_OPTION_")) and k != "CODEBASE_KG_PATH"
+        if (k.startswith(("CODEBASE_KG_", "CLAUDE_PLUGIN_OPTION_")) and k != "CODEBASE_KG_PATH") or k in MOVES_A_ROOT
     }
     code = (
         f"import os,sys;sys.stderr=open({str(log_path(build))!r},'a',encoding='utf-8',buffering=1);"

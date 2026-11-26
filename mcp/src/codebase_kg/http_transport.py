@@ -583,5 +583,6 @@ def caller(headers: Any) -> str | None:
 
 def health_reply(info: dict[str, Any], pid: int) -> dict[str, Any]:
     return {"service": shim.OURS, "build": info["build"], "version": info["version"],
-            "built": info["built"], "released": bool(info.get("released")), "origin": info.get("origin"),
+            "built": info["built"], "released": bool(info.get("released")), "installed": bool(info.get("installed")),
+            "origin": info.get("origin"),
             "pid": pid, "max_workers": info.get("max_workers")}

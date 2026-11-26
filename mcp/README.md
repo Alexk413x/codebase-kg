@@ -87,6 +87,25 @@ rm .kg-export.json                                                        # a sn
 One server process per machine and server build serves every session. A build is the
 plugin version plus a short digest of the path, size and mtime of every `*.py` in the server package,
 so a dev checkout and an installed copy at the same version never share a server.
+
+**Which build holds the HTTP port** (`shim.replaces`). One port serves every session, so a build that
+starts must decide whether it may take the port from the build that holds it:
+
+- A copy that is a release, or that a client installed, replaces a lower version. At the same
+  version the running server stays. File times decide nothing.
+- A release holds the file `mcp/src/codebase_kg/RELEASE`, which only the release workflow writes.
+- An installed copy sits in a client's plugin folder, at the depth that client puts a plugin:
+  `<CLAUDE_CONFIG_DIR or ~/.claude>/plugins/cache/<marketplace>/<plugin>/<version>`,
+  `<CODEX_HOME or ~/.codex>/plugins/cache/<marketplace>/<plugin>/<version>`,
+  `~/.copilot/installed-plugins/<marketplace>/<plugin>` and `~/.gemini/config/plugins/<plugin>`.
+  The place counts because a marketplace install can hold the `main` tree, which has no marker.
+  Antigravity's folder inside one repository, `<repo>/.agents/plugins/<plugin>`, does not count:
+  a copy there replaces a lower version only with the marker.
+- A copy replaces the server that runs from its own folder after its files changed.
+- Anything else is a development copy: a checkout, a worktree, a scratch copy, the copy
+  `claude plugin eval` runs. It never takes the port from another build. Its session uses the server
+  that holds the port, and the SessionStart hook says so in one line. `CODEBASE_KG_TAKEOVER=1` lets
+  it take the port from any build; give it its own `server_port` instead when you can.
 Claude Code reaches it over HTTP, MCP 2026-07-28 (`mcp/claude.mcp.json`, named by `mcpServers` in `.claude-plugin/plugin.json`, and `http_transport.py`). That file names a second server, `codebase-kg-hooks`: a stdio relay with no tools that carries Claude Code's hook calls to the same endpoint and answers them itself when the server gives no answer (`hooks/README.md`, "The hook relay"). The plugin has no root `.mcp.json`: Codex reads that file, and cannot expand `${user_config.server_port}` in its HTTP entry.
 
 Codex reaches the same HTTP endpoint with a table in `~/.codex/config.toml`, which `kg_cli.py codex-config` prints. Codex opens with a classic `initialize` (protocol 2025-06-18), so `http_transport.py` answers a request that carries a classic protocol version, or an `initialize` with no version, through `core.classic`: plain JSON results with no `resultType` or `_meta`, no `Mcp-Session-Id`, and `notifications/initialized` answered with 202. The classic form has no server-to-client channel to ask for roots, so the session's folder comes from the `X-Codebase-KG-Cwd` header, and a `tools/call` without it returns a tool error. Codex runs `mcp/launch/kg_headers.py` once per connection, in the session's folder, with no environment of its own, so every setting is an argument:
@@ -185,7 +204,7 @@ Antigravity CLI.
 | `CODEBASE_KG_MAX_WORKERS` | Worker processes for tool calls, overriding the `max_workers` setting. Default 8; 0 runs calls in the server. |
 | `CODEBASE_KG_CALL_TIMEOUT` | Seconds a worker may take for one call before it is killed. Default 60. |
 | `CODEBASE_KG_PORT` | The HTTP port, overriding the `server_port` setting. 0 lets the OS pick. |
-| `CODEBASE_KG_TAKEOVER` | `1` lets a copy that is not a release take the HTTP port from another build. For a checkout that should serve the machine; a second copy with the switch takes it back. |
+| `CODEBASE_KG_TAKEOVER` | `1` lets a development copy take the HTTP port from another build ("Which build holds the HTTP port"). For a checkout that should serve the machine; a second copy with the switch takes it back. |
 | `CODEBASE_KG_CACHE_DIR` | Where the state, lock, token and log files live. |
 
 `kg_cli.py server status` prints the build, pid and `max_workers` of the server on the HTTP port. It

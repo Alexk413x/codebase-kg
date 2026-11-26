@@ -98,12 +98,13 @@ All notable changes to the `codebase-kg` plugin.
   that held the port gave it up to any copy of the same version whose files were newer, so a
   checkout, a worktree, a scratch copy, or another agent's cached copy replaced the installed server
   as soon as one of its sessions started, and every other session was then served by that copy. Now
-  only a release of a higher version replaces a running server. At the same version the running
-  server stays, and file times decide nothing. A copy that is not a release never takes the port
-  from another copy: its session uses the server that holds it, and one line names that server's
-  version and the `server_port` setting. `CODEBASE_KG_TAKEOVER=1` lets a development copy take the
-  port. The release workflow marks a release with the file `mcp/src/codebase_kg/RELEASE`; an install
-  from `main` has no marker and counts as a development copy.
+  only a release or an installed copy of a higher version replaces a running server. At the same
+  version the running server stays, and file times decide nothing. A development copy never takes
+  the port from another copy: its session uses the server that holds it, and one line names that
+  server's version and the `server_port` setting. `CODEBASE_KG_TAKEOVER=1` lets a development copy
+  take the port. A release holds the file `mcp/src/codebase_kg/RELEASE`, which the release workflow
+  writes. An installed copy sits in a client's plugin folder (Claude Code, Codex, Copilot CLI,
+  Antigravity CLI), so an install that holds the `main` tree counts too. `mcp/README.md` has the rule.
 - One build could not serve two ports. The state file was named by build alone, so a second server of
   the same build on another `server_port` replaced it and the first server exited. The file is named
   by build and port; on the default port the name is unchanged, so older versions still find it.

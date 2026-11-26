@@ -12,7 +12,7 @@ no `knowledge/code_graph.db`. The server start runs in every session.
 | `kg_copilot.py` | The Copilot CLI adapter. Turns Copilot's hook payloads into the shape the shared search gate and push gate read, so those scripts stay unchanged. |
 | `kg_search_gate.py` | The gate. Denies a search aimed at mapped code with the instruction to query the graph, and keeps doing it — a query buys credit, a located search is free, a repeat always passes. |
 | `kg_push_gate.py` | The push gate. Denies an agent's `git push` while any mapped file is stale against `HEAD`. |
-| `kg_server_start.py` | The server start, and the session register. Starts the shared HTTP server when nothing answers on the `server_port` setting, or a server this copy may replace does, and registers the session. One line only when the port belongs to another program, the server does not come up, or this copy is not a release and another build holds the port. |
+| `kg_server_start.py` | The server start, and the session register. Starts the shared HTTP server when nothing answers on the `server_port` setting, or a server this copy may replace does, and registers the session. One line only when the port belongs to another program, the server does not come up, or this is a development copy and another build holds the port. |
 | `kg_session_start.py` | The unwired-clone notice. One line when this clone has the committed checkers but no `core.hooksPath` or no `diff.codegraph.textconv`. It never wires a clone. In a wired clone it moves the release the diff driver pins to the installed plugin's, and with `--codex` it runs `_codex_config.py`. |
 | `_codex_config.py` | Moves the codebase-kg paths in Codex's `config.toml` to the installed plugin's folder after an update. |
 | `_config.py` | Reads `root`, `covers` and `exempt` from the committed graph's `meta` table (auto-discovers `knowledge/code_graph.db`); a gitignored `.claude/codebase-kg.local.md` may override. Decides whether a path reaches mapped code. Holds the helpers the hooks share: state files, the deny output, the `SKIP_KG` test. |
@@ -365,12 +365,10 @@ listening by then:
 
 - It asks `GET /health` on the port. When this build answers, or a build it may not replace, it
   starts nothing and the session uses that server.
-- Which server it may replace (`shim.replaces`): a release replaces a lower version; a copy replaces
-  the server that runs from its own folder after its files changed; `CODEBASE_KG_TAKEOVER=1` lets a
-  development copy replace any other build. At the same version the running server stays, and file
-  times decide nothing. A release is a copy that holds `mcp/src/codebase_kg/RELEASE`, which only
-  the release workflow writes. A copy without it that finds another build on the port prints one
-  line with that build's version and the `server_port` setting.
+- Which server it may replace is in `mcp/README.md`, "Which build holds the HTTP port": a release or
+  an installed copy replaces a lower version, and a development copy replaces nothing. A development
+  copy that finds another build on the port prints one line with that build's version and the
+  `server_port` setting.
 - When nothing answers, or a server it may replace does, it starts this plugin's server detached,
   under the same lock the shim uses, and waits up to 8 s for `/health` to answer. The new server
   takes the port from the old one itself. On Windows the hook starts the server through WMI so the

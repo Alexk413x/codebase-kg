@@ -63,7 +63,7 @@ nothing when a textconv command cannot resolve — it falls back silently.
    `claude plugin eval` refuses the hard links in `mcp/.venv`. Run it on a copy made with
    `git ls-files -co --exclude-standard`, which leaves `.venv` out.
 
-   Give the copy a port of its own. The copy is not a release, so it leaves port 47821 to the
+   Give the copy a port of its own. The copy is a development copy, so it leaves port 47821 to the
    installed plugin's server and its sessions use that server, which may be an older version with
    no hook endpoints: the gates are then off and the cases measure nothing. `CODEBASE_KG_PORT` in
    the shell does not reach the sessions the eval starts, so change the default of `server_port`
@@ -110,7 +110,7 @@ nothing when a textconv command cannot resolve — it falls back silently.
    loads the plugin cache, not the branch you merged.
 
 8. **Restart the server.** A running server keeps the build it started with.
-   A release of a higher version takes the port from an older server when it starts, so restart
+   A release or an installed copy of a higher version takes the port from an older server when it starts, so restart
    Claude Code, or stop the old server first:
 
    ```sh

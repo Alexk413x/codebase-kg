@@ -12,8 +12,8 @@ server drops a session whose pid has exited, so it can exit once its last
 session ends and nothing has to unregister one.
 
 It always exits 0 and prints one line only when something is wrong: the port
-belongs to another program, the server did not come up in time, or this copy is not
-a release and another build holds the port. Stdlib only.
+belongs to another program, the server did not come up in time, or this is a development
+copy (not a release, not installed by a client) and another build holds the port. Stdlib only.
 """
 
 from __future__ import annotations
@@ -40,13 +40,14 @@ def _serving(shim: Any, port: int, mine: dict[str, Any]) -> bool:
 
 
 def _held(port: int, mine: dict[str, Any], theirs: dict[str, Any]) -> str | None:
-    """The line for a copy that is not a release and leaves the port to another build."""
-    if mine.get("released") or theirs.get("build") == mine.get("build"):
+    """The line for a development copy, which leaves the port to another build."""
+    if mine.get("released") or mine.get("installed") or theirs.get("build") == mine.get("build"):
         return None
     return (
         f"codebase-kg: version {theirs.get('version')} ({theirs.get('build')}) holds port {port}. This copy "
-        f"is not a release, so it does not replace that server, and this session uses it. To run this "
-        f"copy's own server, set the plugin's server_port option to a free port."
+        f"is a development copy (not a release, and not in a client's plugin folder), so it does not "
+        f"replace that server, and this session uses it. To run this copy's own server, set the plugin's "
+        f"server_port option to a free port."
     )
 
 

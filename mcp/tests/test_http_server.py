@@ -607,6 +607,127 @@ def test_a_holder_from_before_the_marker_is_replaced_by_a_higher_release_only() 
     assert not shim.replaces(_build("0.17.1+d", "0.17.1"), legacy, takeover=False)
 
 
+def _tree(plugin: Path, marker: bool = False) -> Path:
+    """A plugin folder with a server package in it, as a copy of the `main` tree unless `marker`."""
+    package = plugin / "mcp" / "src" / "codebase_kg"
+    package.mkdir(parents=True)
+    (package / "shim.py").write_text("", encoding="utf-8")
+    if marker:
+        (package / shim.RELEASE_MARKER).write_text("9.9.9 test\n", encoding="utf-8")
+    return package
+
+
+@pytest.fixture
+def homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    for name in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "CODEBASE_KG_TAKEOVER"):
+        monkeypatch.delenv(name, raising=False)
+    return home
+
+
+def _info(package: Path, version: str) -> dict[str, Any]:
+    return {"build": f"{version}+{shim.origin(package)}", "version": version, "built": 1.0,
+            "released": shim.released(package), "installed": shim.installed(package), "origin": shim.origin(package)}
+
+
+HELD = {"build": "0.17.1+a", "version": "0.17.1", "built": 9e9}
+
+
+@pytest.mark.parametrize("below_home", [
+    ".claude/plugins/cache/alexk413x/codebase-kg/0.18.0-c0a92b89b510",  # Claude Code: marketplace/plugin/version
+    ".codex/plugins/cache/alexk413x/codebase-kg/0.18.0",               # Codex: marketplace/plugin/version
+    ".copilot/installed-plugins/alexk413x/codebase-kg",                # Copilot CLI: marketplace/plugin
+    ".gemini/config/plugins/codebase-kg",                              # Antigravity CLI, global: plugin
+])
+def test_a_main_tree_copy_at_a_clients_plugin_depth_is_installed_and_replaces_a_lower_version(
+    homes: Path, below_home: str,
+) -> None:
+    package = _tree(homes / below_home)
+    assert shim.installed(package) and not shim.released(package)
+    assert shim.replaces(_info(package, "0.18.0"), HELD)
+    assert not shim.replaces(_info(package, "0.17.1"), HELD), "the same version never displaces"
+
+
+@pytest.mark.parametrize("below_home", [
+    "Projects/codebase-kg",                                             # a checkout
+    "Projects/codebase-kg/.claude/worktrees/agy",                       # a worktree
+    "scratchpad/evalcopy",                                              # the copy `claude plugin eval` runs
+    ".claude/plugins/cache-old/alexk413x/codebase-kg/0.18.0",           # a name that only starts like the root
+    ".claude/plugins/cache/alexk413x/codebase-kg",                      # one folder too high
+    ".claude/plugins/cache/alexk413x/codebase-kg/0.18.0/evals/copy",    # a copy inside an installed plugin
+    ".copilot/installed-plugins/codebase-kg",                           # Copilot CLI needs marketplace/plugin
+    ".gemini/config/plugins/group/codebase-kg",                         # Antigravity CLI needs plugin alone
+])
+def test_the_same_tree_anywhere_else_is_a_development_copy_and_never_replaces(homes: Path, below_home: str) -> None:
+    package = _tree(homes / below_home)
+    assert not shim.installed(package)
+    assert not shim.replaces(_info(package, "0.18.0"), HELD)
+
+
+def test_a_workspace_copy_for_antigravity_counts_only_with_the_release_marker(homes: Path) -> None:
+    """`<repo>/.agents/plugins/<plugin>` is a folder inside a repository, where any copy can sit."""
+    plain = _tree(homes / "repo-a" / ".agents" / "plugins" / "codebase-kg")
+    marked = _tree(homes / "repo-b" / ".agents" / "plugins" / "codebase-kg", marker=True)
+    assert not shim.installed(plain) and not shim.installed(marked)
+    assert not shim.replaces(_info(plain, "0.18.0"), HELD)
+    assert shim.replaces(_info(marked, "0.18.0"), HELD)
+
+
+def test_the_roots_follow_claude_config_dir_and_codex_home(homes: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    claude, codex = homes / "elsewhere" / "claude", homes / "elsewhere" / "codex"
+    moved = [_tree(claude / "plugins" / "cache" / "m" / "codebase-kg" / "0.18.0"),
+             _tree(codex / "plugins" / "cache" / "m" / "codebase-kg" / "0.18.0")]
+    default = _tree(homes / ".claude" / "plugins" / "cache" / "m" / "codebase-kg" / "0.18.0")
+    assert [shim.installed(p) for p in moved] == [False, False] and shim.installed(default)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude))
+    monkeypatch.setenv("CODEX_HOME", str(codex))
+    assert [shim.installed(p) for p in moved] == [True, True] and not shim.installed(default)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the WMI start is the Windows path")
+def test_the_server_started_outside_the_job_learns_where_the_plugin_folders_are(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The WMI child inherits no environment. Without these two it would look under the default folders,
+    find itself not installed and leave the port to the older server."""
+    seen: dict[str, str] = {}
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "D:/claude")
+    monkeypatch.setenv("CODEX_HOME", "D:/codex")
+    monkeypatch.setenv("UNRELATED_SETTING", "1")
+
+    def run(command: list[str], **kwargs: Any) -> Any:
+        seen["command"] = kwargs["env"]["KG_COMMAND"]
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    shim.spawn_server_outside_job(shim.server_build())
+    assert "'CLAUDE_CONFIG_DIR': 'D:/claude'" in seen["command"] and "'CODEX_HOME': 'D:/codex'" in seen["command"]
+    assert "UNRELATED_SETTING" not in seen["command"]
+
+
+def test_a_cache_that_is_a_link_and_a_plugin_that_is_a_link_both_count(homes: Path) -> None:
+    real_cache = homes / "disk" / "cache"
+    package = _tree(real_cache / "m" / "codebase-kg" / "0.18.0")
+    (homes / ".claude" / "plugins").mkdir(parents=True)
+    try:
+        (homes / ".claude" / "plugins" / "cache").symlink_to(real_cache, target_is_directory=True)
+        elsewhere = _tree(homes / "disk" / "tree")
+        linked = homes / ".codex" / "plugins" / "cache" / "m" / "codebase-kg"
+        linked.mkdir(parents=True)
+        (linked / "0.18.0").symlink_to(homes / "disk" / "tree", target_is_directory=True)
+    except OSError:
+        pytest.skip("this platform or account cannot make a directory link")
+    assert shim.installed(package), "the copy's real path is under the link's target"
+    assert shim.installed(homes / ".claude" / "plugins" / "cache" / "m" / "codebase-kg" / "0.18.0" / "mcp" / "src" / "codebase_kg")
+    assert not shim.installed(elsewhere), "the link's target, named by its own path, is in no root"
+    assert shim.installed(linked / "0.18.0" / "mcp" / "src" / "codebase_kg"), "named through the root, it is"
+
+
+def test_this_checkout_is_not_installed() -> None:
+    info = shim.build_info()
+    assert info["installed"] is False and shim.installed() is False
+
+
 def test_this_checkout_is_not_a_release() -> None:
     """Only the release workflow writes the marker. A marker on `main` or a feature branch would let every
     checkout, worktree and scratch copy of a bumped version take the shared port."""
@@ -747,7 +868,18 @@ def test_a_copy_that_is_not_a_release_leaves_the_port_and_says_so_in_one_line(
     message = hook.ensure_server(fake)
     assert fake.spawned == []
     assert message is not None and "\n" not in message
-    assert "version 0.0.1" in message and "server_port" in message and "not a release" in message
+    assert "version 0.0.1" in message and "server_port" in message and "development copy" in message
+
+
+def test_an_installed_copy_from_main_gets_no_development_notice(
+    hook: Any, cache: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A marketplace install can hold the `main` tree: no marker, yet a client installed it."""
+    monkeypatch.delenv("CODEBASE_KG_TAKEOVER", raising=False)
+    fake = _fake_shim(hook, [("codebase-kg", {**_older(), "version": "9.9.9"})])
+    mine = {**fake.build_info(), "version": "9.9.9", "released": False, "installed": True}
+    fake.build_info = lambda: mine
+    assert hook.ensure_server(fake) is None and fake.spawned == []
 
 
 def test_the_switch_lets_a_copy_that_is_not_a_release_replace_the_holder(
