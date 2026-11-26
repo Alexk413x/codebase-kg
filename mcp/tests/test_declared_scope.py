@@ -34,7 +34,7 @@ import kg_pre_push
     (".githooks/*", ".githooks", True),
     (".githooks/", ".githooks", True),
     ("app/.generated/*", "app/.generated", True),
-    ("hooks/kg_post_edit_check.py", "hooks", True),
+    ("hooks/kg_search_gate.py", "hooks", True),
     ("app/src/**/*.kt", "app/src/main/kotlin/com/acme/build", True),
     ("app/src/**/*.kt", "app/build", False),
     ("app/src/**/*.kt", "other/src/build", False),

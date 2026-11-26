@@ -1,8 +1,8 @@
-"""Config + path helpers for the codebase-kg advisory hook. Stdlib only.
+"""Config + path helpers for the codebase-kg hooks. Stdlib only.
 
 Reads optional per-repo config from `.claude/codebase-kg.local.md` (YAML-ish
 frontmatter). Everything here is best-effort: callers must treat failures as
-"no nudge", never as an error (an advisory hook must never break an edit).
+"nothing found", never as an error (a hook must never break a tool call).
 """
 
 from __future__ import annotations
@@ -23,8 +23,6 @@ DEFAULTS: dict[str, object] = {
     # The graph always lives here; a .local.md may override via `graph_path`
     # (`kg_path` is still honored for checkouts predating the rename).
     "graph_path": "knowledge/code_graph.db",
-    "post_edit_nudge": True,  # master off-switch for the hook
-    "nudge_every": 5,  # nudge once per this many source edits since the graph was touched
     # The PreToolUse search gate: block | warn | off. See kg_search_gate.py.
     "search_gate": "block",
     "gate_shell_search": True,  # also gate grep/rg/find -name run through a shell
@@ -294,18 +292,6 @@ def graph_meta(graph_file: Path, key: str) -> str:
     return str(rows[0][0]) if rows else ""
 
 
-def is_anchored(graph_file: Path, rel_path: str) -> bool:
-    """Does any node anchor on this path? An indexed probe, not a full scan.
-
-    This runs on every source edit, so it has to be a probe: pulling every
-    anchor path into a set to answer one boolean cost ~83 ms at 100k anchors
-    against ~0.5 ms here.
-    """
-    return bool(
-        _rows(graph_file, "SELECT 1 FROM anchor WHERE path = ? LIMIT 1", (rel_path,))
-    )
-
-
 # --- declared coverage (verbatim copy of codebase_kg/coverage.py) -------------
 # Copied rather than imported: the hooks run without the package on sys.path.
 # tests/test_hook_parity.py asserts the copies stay identical.
@@ -437,56 +423,6 @@ def parse_patterns(raw: str | None) -> list[str]:
             out.append(item)
     return out
 # --- end verbatim copy --------------------------------------------------------
-
-
-def is_source_file(path: Path, proj: Path, cfg: dict[str, object]) -> bool:
-    """True when an edit to `path` plausibly affects the graph (a code unit under
-    `root`, not a doc/config, not in an ignored dir). The caller checks whether
-    the file *is* the graph.
-
-    A `covers` declaration in `cfg` decides alone: the extension deny-list and
-    the ignored directories apply only when none is declared.
-    """
-    try:
-        rel = path.relative_to(proj)
-    except ValueError:
-        return False  # outside the project
-    root = str(cfg.get("root") or "")
-    key = rel.as_posix()
-    if root:
-        try:
-            key = path.relative_to((proj / root).resolve()).as_posix()
-        except ValueError:
-            return False
-    covers = declared_patterns(cfg, "covers")
-    if covers:
-        return matches_any(key, compile_patterns(covers)) and not matches_any(
-            key, compile_patterns(declared_patterns(cfg, "exempt"))
-        )
-    if {p.lower() for p in rel.parts[:-1]} & _IGNORE_LOWER:
-        return False
-    excl = {e.lower() for e in cfg.get("exclude_ext", [])}  # type: ignore[union-attr]
-    # Match the pre-push gate's suffix logic so dotfiles work: Path(".gitignore")
-    # has no .suffix, but ".gitignore" itself is the extension to exclude.
-    name = path.name.lower()
-    suffix = ("." + name.rsplit(".", 1)[1]) if "." in name else ""
-    return suffix not in excl
-
-
-def declared_patterns(cfg: Mapping[str, object], key: str) -> list[str]:
-    value = cfg.get(key)
-    if isinstance(value, str):
-        return parse_patterns(value)
-    if isinstance(value, (list, tuple)):
-        return [str(v) for v in value]
-    return []
-
-
-def load_declared_coverage(graph_file: Path, cfg: dict[str, object]) -> None:
-    """Add the graph's `covers` and `exempt` to `cfg` unless `cfg` already sets them."""
-    for key in ("covers", "exempt"):
-        if not cfg.get(key):
-            cfg[key] = parse_patterns(graph_meta(graph_file, key))
 
 
 def root_relative(candidate: Path, proj: Path, root: str) -> str | None:

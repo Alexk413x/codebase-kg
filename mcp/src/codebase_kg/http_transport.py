@@ -442,6 +442,9 @@ class Handler(BaseHTTPRequestHandler):
         if method in core.EMPTY_LISTS:
             return {core.EMPTY_LISTS[method]: [], **LISTED}
         if method == "tools/call":
+            hooked = core.hook_result(params.get("name"), params.get("arguments"))
+            if hooked is not None:
+                return hooked
             headers = {h: self.headers.get(h) for h in (GRAPH_HEADER, CWD_HEADER, CLIENT_HEADER)}
             found = self.srv.clients.connection(headers, params)
             if not isinstance(found, resolve.Connection):

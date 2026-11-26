@@ -27,9 +27,9 @@ Ask whether to go ahead, and continue only if the user says yes.
 
 ## What is already handled without this command
 
-The **search gate** and the **post-edit nudge** ship inside the plugin (`hooks/hooks.json`) and need
-no per-repo install. They activate on their own in any repo that has a `knowledge/code_graph.db`,
-and stay silent in any repo that does not. Mention this so the user knows the behavior is already
+The **search gate** ships inside the plugin (`hooks/hooks.json`) and needs
+no per-repo install. It activates on its own in any repo that has a `knowledge/code_graph.db`,
+and stays silent in any repo that does not. Mention this so the user knows the behavior is already
 live; do not try to install it.
 
 ## Steps
@@ -272,7 +272,8 @@ Then tell the user what is now live:
 - **Search gate** (from the plugin, no install): a `Grep`/`Glob` or shell `grep`/`rg`/`git grep`/`find -name`
   aimed at mapped code is denied with the instruction to query the graph first. A codebase-kg query
   clears the next `gate_credit` searches (default 3), and a repeat of a denied search always passes.
-- **Post-edit nudge** (from the plugin, no install): advisory, points at `/codebase-kg:refresh`.
+- **Commit-time check** (from the plugin, no install): a hook on `git commit` that asks the codebase-kg
+  server. It lists unmapped and changed files to the agent and points at `/codebase-kg:refresh`.
 - **Unwired-clone notice** (from the plugin, no install): at session start, a clone of this repo with
   no `core.hooksPath` or no `diff.codegraph.textconv` gets one line naming `sh <hooks dir>/install.sh`.
   It never wires a clone, because git leaves `.git/config` out of a clone precisely so that cloning

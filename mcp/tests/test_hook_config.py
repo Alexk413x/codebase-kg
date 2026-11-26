@@ -1,14 +1,13 @@
-"""`hooks/_config.py` — the resolution layer under the post-edit nudge.
+"""`hooks/_config.py` — the resolution layer under the hooks.
 
 `test_hook_parity.py` covers the constants and the frontmatter parser, because
 those are the halves that had drifted from the pre-push gate. Everything the
-hook actually *calls* at runtime — `load_config`, `find_graph`, `_rows`,
-`graph_meta`, `is_anchored`, `is_source_file` — was uncovered, which is how a
-file that runs after every edit sat at 64%.
+hooks actually *call* at runtime — `load_config`, `find_graph`, `_rows`,
+`graph_meta` — is covered here.
 
 The theme throughout is that this module is best-effort by contract: every
-failure has to read as "no nudge", never as an exception, because the caller is
-a hook that must not break an edit.
+failure has to read as "nothing found", never as an exception, because the
+caller is a hook that must not break a tool call.
 """
 
 from __future__ import annotations
@@ -68,12 +67,24 @@ def test_load_config_returns_defaults_without_a_local_md(tmp_path: Path) -> None
 def test_load_config_overlays_only_the_declared_keys(tmp_path: Path) -> None:
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude" / "codebase-kg.local.md").write_text(
-        "---\nroot: app/src\nnudge_every: 9\n---\n", encoding="utf-8"
+        "---\nroot: app/src\ngate_credit: 9\n---\n", encoding="utf-8"
     )
     cfg = c.load_config(tmp_path)
     assert cfg["root"] == "app/src"
-    assert cfg["nudge_every"] == 9
+    assert cfg["gate_credit"] == 9
     assert cfg["exclude_ext"] == c.DEFAULTS["exclude_ext"]  # untouched
+
+
+def test_a_local_md_with_keys_the_plugin_no_longer_reads_still_loads(tmp_path: Path) -> None:
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "codebase-kg.local.md").write_text(
+        "---\npost_edit_nudge: true\nnudge_every: 5\ngate_credit: 9\n---\n", encoding="utf-8"
+    )
+    cfg = c.load_config(tmp_path)
+    assert cfg["gate_credit"] == 9
+    assert {k: cfg[k] for k in c.DEFAULTS if k != "gate_credit"} == {
+        k: v for k, v in c.DEFAULTS.items() if k != "gate_credit"
+    }
 
 
 def test_load_config_does_not_mutate_the_shared_defaults(tmp_path: Path) -> None:
@@ -147,18 +158,13 @@ def test_find_graph_returns_none_when_absent(tmp_path: Path) -> None:
     assert c.find_graph(tmp_path, dict(c.DEFAULTS)) is None
 
 
-# --- _rows / graph_meta / is_anchored ----------------------------------------
+# --- _rows / graph_meta ----------------------------------------
 def test_graph_meta_reads_a_committed_key(graph_db: Path) -> None:
     assert c.graph_meta(graph_db, "root") == "app/src"
 
 
 def test_graph_meta_of_an_unknown_key_is_empty(graph_db: Path) -> None:
     assert c.graph_meta(graph_db, "no_such_key") == ""
-
-
-def test_is_anchored_is_true_only_for_anchored_paths(graph_db: Path) -> None:
-    assert c.is_anchored(graph_db, "domain/FeedRanker.kt")
-    assert not c.is_anchored(graph_db, "domain/Unmapped.kt")
 
 
 @pytest.mark.parametrize("make", [
@@ -172,11 +178,10 @@ def test_a_broken_graph_reads_as_no_rows_rather_than_raising(
     db = tmp_path / "broken.db"
     make(db)  # type: ignore[operator]
     assert c.graph_meta(db, "root") == ""
-    assert c.is_anchored(db, "anything") is False
 
 
 def test_rows_does_not_leave_the_connection_open(graph_db: Path) -> None:
-    """The hook runs per edit; a leaked handle per edit would be a real leak."""
+    """A hook runs per tool call; a leaked handle per call would be a real leak."""
     for _ in range(50):
         c.graph_meta(graph_db, "root")
     # A leaked read handle on Windows blocks this; on POSIX it would not.
@@ -185,78 +190,6 @@ def test_rows_does_not_leave_the_connection_open(graph_db: Path) -> None:
         conn.execute("SELECT 1").fetchone()
     finally:
         conn.close()
-
-
-# --- is_source_file ----------------------------------------------------------
-def test_a_file_outside_the_project_is_not_source(tmp_path: Path) -> None:
-    outside = tmp_path.parent / "elsewhere.kt"
-    assert not c.is_source_file(outside, tmp_path, dict(c.DEFAULTS))
-
-
-@pytest.mark.parametrize("rel", [
-    "node_modules/dep/index.js",
-    ".git/COMMIT_EDITMSG",
-    "build/generated/X.kt",
-    "Pods/Thing.swift",            # case-folded: the set is not all-lowercase
-    "DerivedData/Y.swift",
-])
-def test_ignored_directories_are_not_source(tmp_path: Path, rel: str) -> None:
-    assert not c.is_source_file(tmp_path / rel, tmp_path, dict(c.DEFAULTS))
-
-
-@pytest.mark.parametrize("name", [
-    "NOTES.md", "data.json", "uv.lock", "config.yaml", "setup.cfg",
-    ".gitignore", ".gitattributes", "rules.pro",
-])
-def test_docs_and_config_are_not_source(tmp_path: Path, name: str) -> None:
-    assert not c.is_source_file(tmp_path / name, tmp_path, dict(c.DEFAULTS))
-
-
-def test_a_dotfile_extension_is_matched_by_name_not_suffix(tmp_path: Path) -> None:
-    # Path(".gitignore").suffix is "", so a naive suffix check would call it
-    # source. The pre-push gate has the same carve-out.
-    assert not c.is_source_file(tmp_path / ".gitignore", tmp_path, dict(c.DEFAULTS))
-
-
-def test_code_under_the_root_is_source(tmp_path: Path) -> None:
-    cfg = {**c.DEFAULTS, "root": "app/src"}
-    assert c.is_source_file(tmp_path / "app" / "src" / "A.kt", tmp_path, cfg)
-
-
-def test_code_outside_the_root_is_not_source(tmp_path: Path) -> None:
-    cfg = {**c.DEFAULTS, "root": "app/src"}
-    assert not c.is_source_file(tmp_path / "other" / "A.kt", tmp_path, cfg)
-
-
-def test_an_empty_root_means_the_whole_project(tmp_path: Path) -> None:
-    assert c.is_source_file(tmp_path / "anywhere" / "A.kt", tmp_path, dict(c.DEFAULTS))
-
-
-def test_is_source_file_without_covers_prunes_ignored_dirs(tmp_path: Path) -> None:
-    assert not c.is_source_file(
-        tmp_path / ".githooks" / "pre-push", tmp_path, dict(c.DEFAULTS)
-    )
-
-
-def test_is_source_file_lets_covers_outrank_the_prune_and_the_extension_list(
-    tmp_path: Path,
-) -> None:
-    cfg = {**c.DEFAULTS, "covers": [".githooks/*", "app/src/**/*.kt", "docs/*.md"]}
-    assert c.is_source_file(tmp_path / ".githooks" / "pre-push", tmp_path, cfg)
-    assert c.is_source_file(
-        tmp_path / "app" / "src" / "main" / "build" / "Config.kt", tmp_path, cfg
-    )
-    assert c.is_source_file(tmp_path / "docs" / "a.md", tmp_path, cfg)
-    assert not c.is_source_file(tmp_path / "app" / "build" / "Skip.kt", tmp_path, cfg)
-
-
-def test_is_source_file_honours_exempt_and_root_with_covers(tmp_path: Path) -> None:
-    cfg = {
-        **c.DEFAULTS, "root": "app", "covers": ["src/**/*.kt"], "exempt": ["src/gen/*"],
-    }
-    assert c.is_source_file(tmp_path / "app" / "src" / "build" / "A.kt", tmp_path, cfg)
-    assert not c.is_source_file(tmp_path / "app" / "src" / "gen" / "A.kt", tmp_path, cfg)
-    assert not c.is_source_file(tmp_path / "other" / "src" / "A.kt", tmp_path, cfg)
 
 
 # --- hooks.json --------------------------------------------------------------
@@ -314,7 +247,7 @@ def _launch_commands() -> list[tuple[str, str]]:
     return [
         ("hooks.json", str(h["command"]))
         for groups in json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))["hooks"].values()
-        for group in groups for h in group["hooks"]
+        for group in groups for h in group["hooks"] if h["type"] == "command"
     ]
 
 
@@ -325,7 +258,7 @@ def test_every_command_sources_one_launcher_that_runs_in_sh_and_powershell() -> 
     PowerShell 5.1 has no `&&`, and the interpreter is chosen inside the launcher. The tail hands
     the script's exit code to PowerShell."""
     commands = _launch_commands()
-    assert len(commands) == 33
+    assert len(commands) == 32
     for source, command in commands:
         assert command.startswith(LAUNCH_PREFIX) and command.endswith(LAUNCH_TAIL), (source, command)
         name = command[len(LAUNCH_PREFIX):-len(LAUNCH_TAIL)] + ".cmd"
@@ -336,9 +269,8 @@ def test_every_command_sources_one_launcher_that_runs_in_sh_and_powershell() -> 
 def test_the_launchers_are_one_template_with_the_script_swapped() -> None:
     template = (RUN / "kg_search_gate.cmd").read_bytes().decode("utf-8")
     scripts = {
-        "kg_search_gate": "hooks", "kg_push_gate": "hooks", "kg_post_edit_check": "hooks",
-        "kg_session_end": "hooks", "kg_server_start": "hooks", "kg_session_start": "hooks",
-        "kg_headers": "mcp/launch",
+        "kg_search_gate": "hooks", "kg_push_gate": "hooks", "kg_session_end": "hooks", "kg_server_start": "hooks",
+        "kg_session_start": "hooks", "kg_headers": "mcp/launch",
     }
     assert sorted(p.stem for p in RUN.glob("*.cmd")) == sorted(scripts)
     back = chr(92)

@@ -2,6 +2,28 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## Unreleased — The agent hears about an out-of-date graph at commit time
+
+### Added
+
+- A commit check for Claude Code. After a `Bash` or `PowerShell` command that made a commit, the
+  agent receives the committed source no node covers, the deleted source the graph still anchors on
+  and the mapped source that changed since the graph was updated, with the instruction to run
+  `/codebase-kg:refresh` and commit the graph in a follow-up commit before pushing. The hook calls
+  the codebase-kg server directly (type `mcp_tool`, tool `kg_hook_commit_check`), so it starts no
+  process. It is advisory and says nothing when the server is unreachable. `commit_check: false` in
+  `.claude/codebase-kg.local.md` turns it off for a clone. Tested on Claude Code 2.1.332.
+- `GIT_CWD` in `git-hooks/kg_pre_push.py`, which the server sets to run the shared staleness rule in
+  a session's repository. The git hooks leave it unset and behave as before. The file is vendored
+  into repos, so a wired clone receives this change the next time `git-hooks/install.sh` runs.
+
+### Removed
+
+- The post-edit nudge (`hooks/kg_post_edit_check.py`) for Claude Code, Codex and Copilot CLI. It
+  printed a message the model never received, and it started Python on every edit. The
+  `post_edit_nudge` and `nudge_every` keys are no longer read; a per-clone file that still has them
+  loads as before.
+
 ## [0.17.1] — 2026-11-21 — The manifest drops a key the plugin schema does not define
 
 ### Removed

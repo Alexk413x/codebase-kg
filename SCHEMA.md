@@ -309,7 +309,8 @@ Staleness is answered by comparing the graph to the code:
   the pushed tips). `pre-commit` reports and exits 0. `pre-push` exits non-zero for one thing: any
   drifted mapped file, released by `KG_STALE_ACK=<count>`, `SKIP_KG=1` or
   `--no-verify`.
-- **the post-edit hook** — says so the first time you edit a file no node anchors on.
+- **the commit-time check** — a hook on `git commit` that asks the codebase-kg server. It lists
+  unmapped and changed files to the agent.
 
 The rule for an update is unchanged and still matters: **update all affected nodes** — add nodes for
 new files/features, edit nodes whose code changed, remove nodes for deleted code. What is gone is
@@ -369,8 +370,8 @@ needed**.
 
 A `.claude/codebase-kg.local.md` is an **optional, per-developer override** — by the `.local`
 convention it is gitignored, never committed. Use it only when one clone differs. It carries the
-YAML front-matter keys `graph_path` and `root`, plus the hook settings (`post_edit_nudge`,
-`nudge_every`, `search_gate`, `gate_shell_search`, `gate_credit`, `exclude_ext`). `exclude_ext` is
+YAML front-matter keys `graph_path` and `root`, plus the hook settings (`search_gate`,
+`gate_shell_search`, `gate_credit`, `commit_check`, `exclude_ext`). `exclude_ext` is
 the list of file extensions that never count as source when the graph declares no `covers`; setting
 it replaces the default list (`templates/codebase-kg.local.md.example` shows it). The older key name `kg_path` is
 still read. Nothing reads `codebase`, `counterpart` or `language` from this file: set those in the

@@ -188,6 +188,32 @@ def test_the_cwd_header_needs_no_roots(front: dict[str, Any]) -> None:
     assert data["count"] == 1
 
 
+def test_a_hook_endpoint_answers_an_unseen_client_without_asking_for_roots(front: dict[str, Any]) -> None:
+    reply = _call(front, "kg_hook_commit_check", {"command": "git status", "cwd": str(front["repo"])},
+                  client="hook-only", roots=False)
+    result = _complete(reply)
+    assert result["isError"] is False and json.loads(result["content"][0]["text"]) == {}
+    listed = [tool["name"] for tool in _complete(_req(front, "tools/list"))["tools"]]
+    assert "kg_hook_commit_check" not in listed
+
+
+@pytest.mark.parametrize("version", [V, "2025-06-18"])
+@pytest.mark.parametrize("authorization", [None, "Bearer wrong-token", "Basic abc"])
+def test_a_hook_endpoint_is_refused_without_the_token_before_it_runs(
+    front: dict[str, Any], tmp_path: Path, version: str, authorization: str | None,
+) -> None:
+    """The endpoint runs git in a folder the caller names. A caller without the token must not reach it:
+    a `git commit` in `tmp_path` would raise if the server ran git there, and the reply would not be 403."""
+    params: dict[str, Any] = {"name": "kg_hook_commit_check",
+                              "arguments": {"command": "git commit -m x", "cwd": str(tmp_path)}}
+    if version == V:
+        params["_meta"] = META
+    reply = _post(front, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params},
+                  headers={"Authorization": authorization, "mcp-protocol-version": version})
+    assert reply.status == 403
+    assert reply.body == {"error": "missing or wrong bearer token"}
+
+
 def test_a_root_that_is_not_a_file_is_refused(front: dict[str, Any]) -> None:
     reply = _req(front, "tools/call", {"name": "kg_search", "arguments": {"query": "x"},
                                        "inputResponses": {ROOTS_KEY: {"roots": [{"uri": "https://x/"}]}}},

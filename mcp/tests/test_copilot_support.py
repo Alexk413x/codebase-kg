@@ -78,7 +78,7 @@ def test_stdio_config_uses_direct_python_args_without_pinning_a_repo():
 def test_hooks_use_native_events_and_shell_free_launches():
     config = setup.hooks_config("python with spaces")
     assert config["version"] == 1
-    assert set(config["hooks"]) == {"preToolUse", "postToolUse"}
+    assert set(config["hooks"]) == {"preToolUse"}
     for hooks in config["hooks"].values():
         assert hooks[0]["exec"] == "python with spaces"
         assert hooks[0]["args"][0] == str(ROOT / "hooks" / "kg_copilot.py")
@@ -143,27 +143,9 @@ def test_copilot_repo_wins_over_leftover_claude_environment(
     assert run("pre", payload(repo, "rg", {"pattern": "Missing"}), capsys)["permissionDecision"] == "deny"
 
 
-@pytest.mark.parametrize("tool,key", [
-    ("apply_patch", "input"), ("Edit", "input"), ("apply_patch", "command")
-])
-def test_patch_payload_nudges_in_session_repo(
-    repo: Path, tool: str, key: str, capsys: pytest.CaptureFixture[str]
-):
+def test_post_mode_stays_accepted_and_does_nothing(repo: Path, capsys: pytest.CaptureFixture[str]):
     patch = "*** Begin Patch\n*** Add File: src/Added.py\n+pass\n*** End Patch"
-    result = run("post", payload(repo, tool, {key: patch}), capsys)
-    assert "Added.py" in result["additionalContext"]
-    assert "systemMessage" not in result
-
-
-def test_patch_paths_include_deletions_and_both_sides_of_moves(repo: Path):
-    patch = "*** Delete File: src/Deleted.py\n*** Update File: src/A.py\n*** Move to: src/B.py\n"
-    result = copilot.edited_paths(copilot.normalize(payload(repo, "apply_patch", {"input": patch})))
-    assert result == [str(repo / "src" / name) for name in ("Deleted.py", "A.py", "B.py")]
-
-
-def test_relative_edit_paths_and_json_string_args(repo: Path, capsys: pytest.CaptureFixture[str]):
-    result = run("post", payload(repo, "edit", json.dumps({"path": "src/Added.py"})), capsys)
-    assert "Added.py" in result["additionalContext"]
+    assert run("post", payload(repo, "apply_patch", {"input": patch}), capsys) == {}
 
 
 def test_powershell_keeps_its_identity_for_push_and_search_parsing(repo: Path):
@@ -180,12 +162,6 @@ def test_native_push_denial_is_translated(
     assert result["permissionDecision"] == "deny"
     assert "Known.py" in result["permissionDecisionReason"]
     assert "hookSpecificOutput" not in result
-
-
-def test_freeform_patch_input_is_adapted(repo: Path, capsys: pytest.CaptureFixture[str]):
-    patch = "*** Begin Patch\n*** Add File: src/Added.py\n+pass\n*** End Patch"
-    result = run("post", payload(repo, "apply_patch", patch), capsys)
-    assert "Added.py" in result["additionalContext"]
 
 
 def test_generated_config_routes_two_repos_concurrently(tmp_path: Path):

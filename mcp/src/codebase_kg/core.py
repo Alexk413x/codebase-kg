@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, cast
 
-from . import cli, resolve, shim, worker
+from . import cli, commit_check, resolve, shim, worker
 from .pool import CallError, Pool, Refused, WorkerError
 
 CATALOG: dict[str, Any] = json.loads((Path(__file__).with_name("catalog.json")).read_text(encoding="utf-8"))
@@ -149,6 +149,17 @@ def error_result(text: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": text}], "isError": True}
 
 
+def hook_result(name: Any, args: Any) -> dict[str, Any] | None:
+    """The result of a hook endpoint, or None when `name` is not one.
+
+    Hook endpoints are tools a hook calls and the catalog does not list. They take
+    the session's folder as an argument, so they need no session.
+    """
+    if name == commit_check.TOOL:
+        return commit_check.call(args)
+    return None
+
+
 class Core:
     """Thread-safe: each transport thread calls `call_tool` for its own session."""
 
@@ -225,7 +236,10 @@ def classic(core: Core, conn: resolve.Connection | None, msg: dict[str, Any]) ->
     elif method in EMPTY_LISTS:
         result = {EMPTY_LISTS[method]: []}
     elif method == "tools/call":
-        if conn is None:
+        hooked = hook_result(params.get("name"), params.get("arguments"))
+        if hooked is not None:
+            result = hooked
+        elif conn is None:
             result = error_result(NO_CWD)
         else:
             result = core.call_tool(conn, params.get("name"), params.get("arguments"))

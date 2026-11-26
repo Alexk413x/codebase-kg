@@ -181,9 +181,7 @@ def test_every_codex_hook_script_exists_and_hooks_json_runs_it_too():
 
 def test_codex_matchers_name_only_tools_codex_reports():
     matchers = {matcher for matcher, _ in _codex_commands()}
-    assert matchers == {
-        "Bash", "mcp__.*codebase[-_]?kg.*", "apply_patch|Edit|Write", "startup|resume|clear"
-    }
+    assert matchers == {"Bash", "mcp__.*codebase[-_]?kg.*", "startup|resume|clear"}
     # Codex has no Grep, Glob or PowerShell tool name, and ignores a per-hook `if`.
     assert not any("Grep" in m or "PowerShell" in m for m in matchers)
 

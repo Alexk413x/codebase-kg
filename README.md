@@ -294,7 +294,7 @@ codebase-kg/
 │   ├── src/codebase_kg/      # the server and the CLIs (module map in mcp/README.md)
 │   ├── launch/               # kg_cli.py (CLI runner), kg-shim and kg-shim.cmd (stdio relay), kg_headers.py (HTTP headers helper), kg_copilot.py (Copilot CLI stdio configuration printer), run/ (one launcher per hook script and for kg_headers.py)
 │   └── claude.mcp.json       # registers the HTTP endpoint, with kg_headers.py as the headersHelper
-├── hooks/                    # Claude Code, Codex and Copilot CLI hooks: the search gate, the push gate, the post-edit nudge, the unwired-clone notice, the server start, the session end
+├── hooks/                    # Claude Code, Codex and Copilot CLI hooks: the search gate, the push gate, the unwired-clone notice, the server start, the session end
 └── git-hooks/                # advisory pre-commit + pre-push staleness checks and install.sh, vendored into any repo (stdlib-only)
 ```
 
@@ -330,11 +330,11 @@ the anchored files to confirm behavior.
 
 ## Keeping the graph in sync with commits
 
-Two advisory layers, both pointing at the same fix (`/codebase-kg:refresh`):
+Three advisory layers, all pointing at the same fix (`/codebase-kg:refresh`):
 
-- **In-session nudge** (`hooks/`): while Claude edits source, it says so the first time you touch a
-  file no node covers, and periodically once enough mapped files have changed. It reads the graph's
-  `covers` and `exempt` patterns. The edit counter resets when the graph file changes.
+- **Commit check** (Claude Code; a hook that asks the codebase-kg server after a commit): lists the
+  committed files the graph does not describe to the agent, which then refreshes the graph and
+  commits it before pushing.
 - **Push gate for agents** (`hooks/kg_push_gate.py`, a `PreToolUse` hook on Bash): when an agent runs
   `git push` (also `git -C <dir> push`, chained, or env-prefixed) while any mapped file is stale
   against `HEAD`, the hook denies the call. The reason lists the stale files and tells the agent to run

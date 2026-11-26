@@ -1,8 +1,7 @@
 """The PreToolUse search gate — the hook that makes the graph get used at all.
 
 `hooks/kg_search_gate.py` is the only piece of the plugin that can *deny* a tool
-call, so it carries a heavier burden than the advisory nudge beside it. Three
-properties dominate, in this order:
+call, so it carries a heavy burden. Three properties dominate, in this order:
 
 1. **It can never strand an agent.** An immediate repeat of the same search is
    always allowed, a malformed payload is silent, and a state file it cannot
@@ -316,7 +315,7 @@ def test_gate_credit_zero_means_a_query_buys_nothing(
 ])
 def test_gate_credit_parsing(raw: dict[str, Any], expected: int) -> None:
     """A typo costs the setting, never the feature — the same posture as
-    `nudge_every` and `search_gate`."""
+    `search_gate`."""
     assert gate.gate_credit(raw) == expected
 
 
@@ -428,8 +427,7 @@ def test_warn_mode_advises_instead_of_denying(
 
 @pytest.mark.parametrize("raw", ["block", "BLOCK", "nonsense", "true"])
 def test_an_unknown_mode_keeps_the_gate_on(raw: str) -> None:
-    """A typo should cost the setting, not the feature — the same posture as
-    `nudge_every`."""
+    """A typo should cost the setting, not the feature."""
     assert gate.gate_mode({"search_gate": raw}) == "block"
 
 
