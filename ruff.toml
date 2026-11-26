@@ -1,9 +1,9 @@
-required-version = ">=0.16.10,<0.17"
+required-version = ">=0.17.6,<0.18"
 # Python 3.9 is the floor for the hooks, launchers, git-hooks and mcp/ (pyproject.toml, pyright).
 target-version = "py39"
 
 [lint]
-# The default rule set of ruff 0.16.10, listed explicitly so a ruff upgrade cannot change it.
+# The default rule set of ruff 0.17.6, listed explicitly so a ruff upgrade cannot change it.
 select = [
     "ASYNC100", "ASYNC105", "ASYNC115", "ASYNC116", "ASYNC210", "ASYNC220",
     "ASYNC221", "ASYNC222", "ASYNC230", "ASYNC251", "B002", "B003", "B004", "B005",
@@ -12,7 +12,7 @@ select = [
     "B031", "B032", "B033", "B035", "B039", "BLE", "C400", "C401", "C402", "C403",
     "C404", "C405", "C406", "C408", "C409", "C410", "C411", "C413", "C414", "C415",
     "C417", "C418", "C419", "D419", "DTZ", "E722", "E902", "EXE001", "EXE002",
-    "EXE004", "EXE005", "F401", "F402", "F404", "F407", "F5", "F6", "F701", "F702",
+    "EXE004", "EXE005", "F401", "F402", "F404", "F406", "F407", "F5", "F6", "F701", "F702",
     "F704", "F706", "F707", "F8", "F9", "FA", "FLY", "FURB105", "FURB122",
     "FURB129", "FURB132", "FURB136", "FURB157", "FURB161", "FURB162", "FURB163",
     "FURB166", "FURB167", "FURB168", "FURB169", "FURB177", "FURB181", "FURB188",
