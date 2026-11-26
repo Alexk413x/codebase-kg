@@ -678,7 +678,10 @@ def test_a_subagent_is_informed_instead_of_denied(
     result = json.loads(capsys.readouterr().out)
     assert decision(result) is None
     assert "systemMessage" not in result
-    assert "kg_search" in result["hookSpecificOutput"]["additionalContext"]
+    context = result["hookSpecificOutput"]["additionalContext"]
+    assert "kg_search" in context
+    assert context.startswith("codebase-kg: this search of app/src ran, but query the graph")
+    assert "denied a search" not in context
 
 
 def test_the_main_agent_is_still_denied(
