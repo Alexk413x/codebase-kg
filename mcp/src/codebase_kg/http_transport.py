@@ -519,7 +519,7 @@ def bind(port: int) -> socket.socket:
 
 
 def claim_port(port: int, mine: dict[str, Any]) -> socket.socket | None:
-    """Bind the HTTP port, taking it from an older codebase-kg build. None leaves it to its holder.
+    """Bind the HTTP port, taking it from a build `shim.replaces` allows. None leaves it to its holder.
 
     The stop request goes only to a holder `shim.verified_holder` confirms, with
     that holder's own state-file token, so an unverified peer never gets a credential.
@@ -541,7 +541,7 @@ def claim_port(port: int, mine: dict[str, Any]) -> socket.socket | None:
     if kind == shim.UNRESPONSIVE:
         logger.warning("port %d accepts connections but did not answer /health; serving the shims only", port)
         return None
-    if not shim.outranks(mine, theirs):
+    if not shim.replaces(mine, theirs):
         logger.info("codebase-kg %s holds port %d; serving the shims only", theirs.get("build"), port)
         return None
     holder = shim.verified_holder(port)
@@ -568,4 +568,5 @@ def claim_port(port: int, mine: dict[str, Any]) -> socket.socket | None:
 
 def health_reply(info: dict[str, Any], pid: int) -> dict[str, Any]:
     return {"service": shim.OURS, "build": info["build"], "version": info["version"],
-            "built": info["built"], "pid": pid, "max_workers": info.get("max_workers")}
+            "built": info["built"], "released": bool(info.get("released")), "origin": info.get("origin"),
+            "pid": pid, "max_workers": info.get("max_workers")}

@@ -185,6 +185,7 @@ Antigravity CLI.
 | `CODEBASE_KG_MAX_WORKERS` | Worker processes for tool calls, overriding the `max_workers` setting. Default 8; 0 runs calls in the server. |
 | `CODEBASE_KG_CALL_TIMEOUT` | Seconds a worker may take for one call before it is killed. Default 60. |
 | `CODEBASE_KG_PORT` | The HTTP port, overriding the `server_port` setting. 0 lets the OS pick. |
+| `CODEBASE_KG_TAKEOVER` | `1` lets a copy that is not a release take the HTTP port from another build. For a checkout that should serve the machine; a second copy with the switch takes it back. |
 | `CODEBASE_KG_CACHE_DIR` | Where the state, lock, token and log files live. |
 
 `kg_cli.py server status` prints the build, pid and `max_workers` of the server on the HTTP port. It

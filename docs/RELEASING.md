@@ -109,7 +109,7 @@ nothing when a textconv command cannot resolve — it falls back silently.
    loads the plugin cache, not the branch you merged.
 
 8. **Restart the server.** A running server keeps the build it started with.
-   A newer build takes the port from an older one when it starts, so restart
+   A release of a higher version takes the port from an older server when it starts, so restart
    Claude Code, or stop the old server first:
 
    ```sh

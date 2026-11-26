@@ -150,8 +150,29 @@ def server_build(package: Path = PACKAGE_DIR) -> str:
     return build_info(package)["build"]
 
 
+RELEASE_MARKER = "RELEASE"
+TAKEOVER_ENV = "CODEBASE_KG_TAKEOVER"
+
+
+def released(package: Path = PACKAGE_DIR) -> bool:
+    """True for a copy the release workflow built: only that workflow writes the marker file."""
+    return (package / RELEASE_MARKER).is_file()
+
+
+def origin(package: Path = PACKAGE_DIR) -> str:
+    """Names the folder this copy runs from, so a server can tell its own edited copy from another copy."""
+    try:
+        where = package.resolve()
+    except OSError:
+        where = package
+    return hashlib.sha256(os.path.normcase(str(where)).encode()).hexdigest()[:12]
+
+
 def build_info(package: Path = PACKAGE_DIR) -> dict[str, Any]:
-    """The build, its package version, and the newest source mtime, which orders two builds."""
+    """The build, its package version, whether it is a release, and the folder it runs from.
+
+    `built`, the newest source mtime, is reported for the log and decides nothing.
+    """
     digest = hashlib.sha256()
     built = 0.0
     for path in sorted(package.rglob("*.py")):
@@ -162,27 +183,32 @@ def build_info(package: Path = PACKAGE_DIR) -> dict[str, Any]:
         digest.update(f"{path}|{stat.st_size}|{stat.st_mtime_ns}\n".encode())
         built = max(built, stat.st_mtime)
     version = package_version()
-    return {"build": f"{version}+{digest.hexdigest()[:12]}", "version": version, "built": built}
+    return {"build": f"{version}+{digest.hexdigest()[:12]}", "version": version, "built": built,
+            "released": released(package), "origin": origin(package)}
 
 
 def _version_key(version: object) -> tuple[int, ...]:
     return tuple(int(p) for p in re.findall(r"\d+", str(version))[:3])
 
 
-def outranks(mine: dict[str, Any], theirs: dict[str, Any]) -> bool:
-    """True when build `mine` should replace `theirs` on the HTTP port.
+def replaces(mine: dict[str, Any], theirs: dict[str, Any], takeover: bool | None = None) -> bool:
+    """True when build `mine` may take the HTTP port from `theirs`.
 
-    A higher package version wins; at the same version, the newer source wins.
-    The order is total, so two builds never take the port from each other in turn.
+    A release replaces a lower version. A copy replaces the server that runs from its own
+    folder once its files changed. `CODEBASE_KG_TAKEOVER=1` lets a development copy replace
+    any other build. Nothing else does: at one version the holder stays, so two copies never
+    take the port from each other in turn, and a copy that is not a release serves nobody
+    who did not ask for it. File times decide nothing.
     """
     if mine.get("build") == theirs.get("build"):
         return False
-    try:
-        their_built = float(theirs.get("built") or 0.0)
-    except (TypeError, ValueError):
-        their_built = 0.0
-    return (_version_key(mine.get("version")), float(mine.get("built") or 0.0)) > (
-        _version_key(theirs.get("version")), their_built)
+    if takeover is None:
+        takeover = os.environ.get(TAKEOVER_ENV, "").strip() == "1"
+    if takeover:
+        return True
+    if mine.get("origin") and mine.get("origin") == theirs.get("origin"):
+        return True
+    return bool(mine.get("released")) and _version_key(mine.get("version")) > _version_key(theirs.get("version"))
 
 
 DEFAULT_HTTP_PORT = 47821
@@ -317,7 +343,7 @@ def verified_holder(port: int) -> tuple[dict[str, Any], dict[str, Any]] | None:
     kind, reply = health(port)
     if kind != OURS or not isinstance(reply.get("build"), str):
         return None
-    state = read_state(reply["build"])
+    state = read_state(reply["build"], port)
     if state is None or state.get("pid") != reply.get("pid") or state.get("http_port") != port:
         return None
     if not pid_alive(state["pid"]):
@@ -345,38 +371,55 @@ def request_shutdown(port: int, token: str) -> None:
 _BUILD = re.compile(r"[0-9A-Za-z][0-9A-Za-z.\-]{0,63}\+[0-9a-f]{12}")
 
 
-def _build_file(build: str, suffix: str) -> Path:
+def _build_file(build: str, suffix: str, port: int | None = None) -> Path:
     """`server-<build><suffix>` in the cache dir, for a build `server_build()` could have made.
 
     A build can arrive from an untrusted `/health` reply, so anything else, such as
     one with a path separator or `..`, raises ValueError instead of naming a file.
+    With `port`, the name also holds the HTTP port, unless it is the default one or 0
+    (the OS picks): builds before 0.18 look for the name without a port, and they share
+    the default port.
     """
     if not isinstance(build, str) or not _BUILD.fullmatch(build) or ".." in build:
         raise ValueError(f"not a codebase-kg build: {build!r}")
     base = cache_dir()
-    path = base / f"server-{build}{suffix}"
+    tag = "" if port in (None, 0, DEFAULT_HTTP_PORT) else f"-p{int(port)}"
+    path = base / f"server-{build}{tag}{suffix}"
     if path.resolve().parent != base.resolve():
         raise ValueError(f"not a codebase-kg build: {build!r}")
     return path
 
 
-def state_path(build: str) -> Path:
-    return _build_file(build, ".json")
+def state_path(build: str, port: int | None = None) -> Path:
+    """One state file per build and HTTP port, so one build can serve two ports at once."""
+    return _build_file(build, ".json", http_port() if port is None else port)
 
 
-def lock_path(build: str) -> Path:
-    return _build_file(build, ".lock")
+def lock_path(build: str, port: int | None = None) -> Path:
+    return _build_file(build, ".lock", http_port() if port is None else port)
 
 
 def log_path(build: str) -> Path:
     return _build_file(build, ".log")
 
 
-def read_state(build: str) -> dict[str, Any] | None:
+def read_state(build: str, port: int | None = None) -> dict[str, Any] | None:
+    """The state file of `build` on the port, else the one named without a port.
+
+    A build before 0.18 writes only the second name on any port. A caller that needs
+    the server of one port checks `http_port` in what it gets (`verified_holder`).
+    """
+    state = None
     try:
-        state = json.loads(state_path(build).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        paths = dict.fromkeys((state_path(build, port), _build_file(build, ".json")))
+    except ValueError:
         return None
+    for path in paths:
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+            break
+        except (OSError, ValueError):
+            continue
     if not isinstance(state, dict) or state.get("version") != build:
         return None
     if not all(isinstance(state.get(k), t) for k, t in (("port", int), ("pid", int), ("token", str))):
@@ -1138,13 +1181,13 @@ CLIENT_HEADER, CWD_HEADER, GRAPH_HEADER = "X-Codebase-KG-Client", "X-Codebase-KG
 
 
 def ensure_http_server(wait: float = BRIDGE_START_WAIT) -> bool:
-    """True once the HTTP port holds this build or one that outranks it, starting this build when it does not."""
+    """True once the HTTP port holds this build or one it may not replace, starting this build when it does not."""
     port = http_port()
     mine = build_info()
 
     def serving() -> bool:
         kind, theirs = health(port, timeout=0.5)
-        return kind == OURS and not outranks(mine, theirs)
+        return kind == OURS and not replaces(mine, theirs)
 
     if serving():
         return True

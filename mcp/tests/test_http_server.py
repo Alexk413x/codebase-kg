@@ -67,12 +67,14 @@ def _state(cache: Path) -> dict[str, Any]:
     deadline = time.monotonic() + TIMEOUT
     path = cache / f"server-{BUILD}.json"
     while time.monotonic() < deadline:
-        try:
-            state = json.loads(path.read_text(encoding="utf-8"))
-            if state.get("http_port"):
-                return state
-        except (OSError, ValueError):
-            pass
+        # A server on a port of its own names its state file by build and port.
+        for found in [path, *cache.glob(f"server-{BUILD}-p*.json")]:
+            try:
+                state = json.loads(found.read_text(encoding="utf-8"))
+                if state.get("http_port"):
+                    return state
+            except (OSError, ValueError):
+                pass
         time.sleep(0.05)
     raise AssertionError(f"no state with an HTTP port at {path}")
 
@@ -441,7 +443,7 @@ class _Holder:
         return [h.get("Authorization", "") for _, _, h in self.requests if "Authorization" in h]
 
 
-MINE = {"build": "9.9.9+mine", "version": "9.9.9", "built": 100.0}
+MINE = {"build": "9.9.9+mine", "version": "9.9.9", "built": 100.0, "released": True, "origin": "mine"}
 
 
 def _older() -> dict[str, Any]:
@@ -554,13 +556,122 @@ def test_a_newer_build_keeps_the_port(cache: Path) -> None:
         holder.close()
 
 
-def test_builds_order_by_version_then_source_time() -> None:
-    old = {"build": "0.11.0+a", "version": "0.11.0", "built": 50.0}
-    new = {"build": "0.12.0+b", "version": "0.12.0", "built": 10.0}
-    edited = {"build": "0.12.0+c", "version": "0.12.0", "built": 20.0}
-    assert shim.outranks(new, old) and not shim.outranks(old, new)
-    assert shim.outranks(edited, new) and not shim.outranks(new, edited)
-    assert not shim.outranks(new, dict(new))
+def _build(build: str, version: str, released: bool = True, origin: str = "", built: float = 1.0) -> dict[str, Any]:
+    return {"build": build, "version": version, "built": built, "released": released, "origin": origin or build}
+
+
+def test_a_release_replaces_a_lower_version_and_nothing_else() -> None:
+    old = _build("0.11.0+a", "0.11.0", built=50.0)
+    new = _build("0.12.0+b", "0.12.0", built=10.0)
+    assert shim.replaces(new, old, takeover=False) and not shim.replaces(old, new, takeover=False)
+    assert not shim.replaces(new, dict(new), takeover=False)
+
+
+def test_the_same_version_never_displaces_whatever_the_file_times() -> None:
+    held = _build("0.12.0+b", "0.12.0", built=10.0)
+    copy = _build("0.12.0+c", "0.12.0", built=99999.0)
+    assert not shim.replaces(copy, held, takeover=False) and not shim.replaces(held, copy, takeover=False)
+
+
+def test_a_copy_that_is_not_a_release_never_displaces_without_the_switch() -> None:
+    held = _build("0.12.0+b", "0.12.0")
+    checkout = _build("0.13.0+c", "0.13.0", released=False, built=99999.0)
+    assert not shim.replaces(checkout, held, takeover=False)
+    assert shim.replaces(checkout, held, takeover=True)
+    assert not shim.replaces(checkout, dict(checkout), takeover=True)
+
+
+def test_the_switch_is_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    held = _build("0.12.0+b", "0.12.0")
+    checkout = _build("0.12.0+c", "0.12.0", released=False)
+    monkeypatch.delenv("CODEBASE_KG_TAKEOVER", raising=False)
+    assert not shim.replaces(checkout, held)
+    monkeypatch.setenv("CODEBASE_KG_TAKEOVER", "1")
+    assert shim.replaces(checkout, held)
+    monkeypatch.setenv("CODEBASE_KG_TAKEOVER", "0")
+    assert not shim.replaces(checkout, held)
+
+
+def test_a_copy_replaces_the_server_that_runs_from_its_own_folder() -> None:
+    before = _build("0.12.0+b", "0.12.0", released=False, origin="checkout")
+    edited = _build("0.12.0+c", "0.12.0", released=False, origin="checkout")
+    elsewhere = _build("0.12.0+d", "0.12.0", released=False, origin="scratch")
+    assert shim.replaces(edited, before, takeover=False)
+    assert not shim.replaces(elsewhere, before, takeover=False)
+
+
+def test_a_holder_from_before_the_marker_is_replaced_by_a_higher_release_only() -> None:
+    legacy = {"build": "0.17.1+a", "version": "0.17.1", "built": 9e9}
+    assert shim.replaces(_build("0.18.0+b", "0.18.0"), legacy, takeover=False)
+    assert not shim.replaces(_build("0.18.0+c", "0.18.0", released=False), legacy, takeover=False)
+    assert not shim.replaces(_build("0.17.1+d", "0.17.1"), legacy, takeover=False)
+
+
+def test_this_checkout_is_not_a_release() -> None:
+    """Only the release workflow writes the marker. A marker on `main` or a feature branch would let every
+    checkout, worktree and scratch copy of a bumped version take the shared port."""
+    assert not (shim.PACKAGE_DIR / shim.RELEASE_MARKER).exists()
+    info = shim.build_info()
+    assert info["released"] is False and len(info["origin"]) == 12
+    root = shim.MCP_DIR.parent
+    marker = "mcp/src/codebase_kg/" + shim.RELEASE_MARKER
+    assert marker in (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+    workflow = root / ".github" / "workflows" / "release.yml"
+    if workflow.is_file():
+        text = workflow.read_text(encoding="utf-8")
+        assert f"> {marker}" in text and f"git add -f {marker}" in text
+        assert f"git cat-file -e HEAD:{marker}" in text
+
+
+def test_one_build_serves_two_ports_at_once(tmp_path: Path) -> None:
+    """The state file was named by build alone, so a second instance on another port replaced it and the
+    first one exited within ORPHAN_CHECK_INTERVAL."""
+    from codebase_kg import daemon
+
+    repo, cache = _repo(tmp_path / "repo", "repo"), tmp_path / "cache"
+    ports = [_free_port(), _free_port()]
+    procs = [_start(cache, repo, CODEBASE_KG_PORT=str(port)) for port in ports]
+    try:
+        deadline = time.monotonic() + TIMEOUT
+        while time.monotonic() < deadline and not all(shim.health(p)[0] == shim.OURS for p in ports):
+            time.sleep(0.1)
+        time.sleep(daemon.ORPHAN_CHECK_INTERVAL + 2.0)
+        assert [proc.poll() for proc in procs] == [None, None]
+        pids = [shim.health(port)[1].get("pid") for port in ports]
+        assert pids[0] != pids[1] and all(pids)
+        assert sorted(p.name for p in cache.glob(f"server-{BUILD}-p*.json")) == sorted(
+            f"server-{BUILD}-p{port}.json" for port in ports)
+    finally:
+        for proc in procs:
+            _stop(proc)
+
+
+def test_server_start_gives_its_port_to_the_server_it_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`--port` chose only the port to look at: the server took its port from the setting, which could be
+    the shared one."""
+    from codebase_kg import control
+
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("CODEBASE_KG_PORT", "47821")
+    port, seen = _free_port(), []
+    monkeypatch.setattr(control, "START_WAIT", 0.3)
+    monkeypatch.setattr(shim, "spawn_server_detached", lambda build: seen.append(
+        (os.environ.get("CODEBASE_KG_PORT"), shim.lock_path(build).name)))
+    result = control.start(port)
+    assert result["ok"] is False and seen == [(str(port), f"server-{BUILD}-p{port}.lock")]
+    assert os.environ["CODEBASE_KG_PORT"] == "47821"
+
+
+def test_the_state_file_is_named_by_build_and_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("CODEBASE_KG_PORT", "47999")
+    build = "0.18.0+0123456789ab"
+    assert shim.state_path(build).name == f"server-{build}-p47999.json"
+    assert shim.state_path(build, 48000) != shim.state_path(build)
+    assert shim.lock_path(build, 48000).name == f"server-{build}-p48000.lock"
+    # Builds before 0.18 read the name without a port, and they share the default port.
+    assert shim.state_path(build, shim.DEFAULT_HTTP_PORT).name == f"server-{build}.json"
+    assert shim.log_path(build).name == f"server-{build}.log"
 
 
 def test_the_port_setting_falls_back_to_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -615,13 +726,51 @@ def test_the_hook_starts_the_server_when_nothing_answers(hook: Any, cache: Path)
     assert not shim.lock_path(mine["build"]).exists()
 
 
-def test_the_hook_replaces_an_older_build(hook: Any, cache: Path) -> None:
+def test_the_hook_replaces_an_older_build(hook: Any, cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CODEBASE_KG_TAKEOVER", raising=False)
     fake = _fake_shim(hook, [])
-    mine = fake.build_info()
+    mine = {**fake.build_info(), "version": "9.9.9", "released": True}
+    fake.build_info = lambda: mine
     answers = iter([("codebase-kg", _older())])
     fake.health = lambda port, timeout=1.0: next(answers, ("codebase-kg", {**mine, "service": "codebase-kg"}))
     assert hook.ensure_server(fake) is None
     assert fake.spawned == [mine["build"]]
+
+
+def test_a_copy_that_is_not_a_release_leaves_the_port_and_says_so_in_one_line(
+    hook: Any, cache: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CODEBASE_KG_TAKEOVER", raising=False)
+    fake = _fake_shim(hook, [("codebase-kg", _older())])
+    mine = {**fake.build_info(), "version": "9.9.9", "released": False}
+    fake.build_info = lambda: mine
+    message = hook.ensure_server(fake)
+    assert fake.spawned == []
+    assert message is not None and "\n" not in message
+    assert "version 0.0.1" in message and "server_port" in message and "not a release" in message
+
+
+def test_the_switch_lets_a_copy_that_is_not_a_release_replace_the_holder(
+    hook: Any, cache: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODEBASE_KG_TAKEOVER", "1")
+    fake = _fake_shim(hook, [])
+    mine = {**fake.build_info(), "released": False}
+    fake.build_info = lambda: mine
+    answers = iter([("codebase-kg", _older())])
+    fake.health = lambda port, timeout=1.0: next(answers, ("codebase-kg", {**mine, "service": "codebase-kg"}))
+    assert hook.ensure_server(fake) is None
+    assert fake.spawned == [mine["build"]]
+
+
+def test_a_release_that_finds_a_higher_or_equal_version_says_nothing(
+    hook: Any, cache: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CODEBASE_KG_TAKEOVER", raising=False)
+    fake = _fake_shim(hook, [("codebase-kg", _older())])
+    mine = {**fake.build_info(), "version": "0.0.1", "released": True}
+    fake.build_info = lambda: mine
+    assert hook.ensure_server(fake) is None and fake.spawned == []
 
 
 def test_the_hook_prints_one_line_when_the_server_does_not_come_up(hook: Any, cache: Path) -> None:

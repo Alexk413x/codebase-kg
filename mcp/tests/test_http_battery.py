@@ -501,7 +501,7 @@ def test_a_refused_post_is_answered_after_its_body_is_read(front: dict[str, Any]
 def test_health_needs_no_token(front: dict[str, Any]) -> None:
     reply = _post(front, method="GET", path="/health", headers={"Authorization": None})
     assert reply.status == 200
-    assert set(reply.body) == {"service", "build", "version", "built", "pid", "max_workers"}
+    assert set(reply.body) == {"service", "build", "version", "built", "released", "origin", "pid", "max_workers"}
     assert reply.body["service"] == "codebase-kg" and reply.body["build"] == shim.server_build()
 
 

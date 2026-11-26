@@ -317,7 +317,7 @@ def test_claim_port_asks_the_holder_to_stop_and_goes_on_when_it_cannot_reach_it(
     monkeypatch.setattr(shim, "verified_holder", lambda port: ({}, {"token": "theirs"}))
     monkeypatch.setattr(shim, "request_shutdown", refuse)
     monkeypatch.setattr(http_transport, "HANDOVER_TIMEOUT", 0.2)
-    mine = {"build": "0.0.2+b", "version": "0.0.2", "built": 2.0}
+    mine = {"build": "0.0.2+b", "version": "0.0.2", "built": 2.0, "released": True, "origin": "b"}
     assert http_transport.claim_port(4321, mine) is None
     assert asked == [(4321, "theirs")]
 
