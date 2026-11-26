@@ -2,7 +2,7 @@
 
 All notable changes to the `codebase-kg` plugin.
 
-## Unreleased — The agent hears about an out-of-date graph at commit time
+## [0.18.0] — 2026-11-26 — Hooks answered by the server through a quiet local relay, and a server no copy can take over
 
 ### Added
 
