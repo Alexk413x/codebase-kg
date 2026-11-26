@@ -69,6 +69,8 @@ CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities"
 CLIENT_INFO_KEY = "io.modelcontextprotocol/clientInfo"
 SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo"
 MODERN_ONLY_RESULT_KEYS = ("resultType", "ttlMs", "cacheScope")
+# In a tool result's `_meta`: the server took the call and has nothing behind that tool name.
+NOT_ANSWERED_KEY = "slipspace/notAnswered"
 NAMED_BY = {"tools/call": "name", "prompts/get": "name", "resources/read": "uri"}
 UNAVAILABLE = -32000
 INTERNAL = -32603
@@ -471,7 +473,7 @@ class HookRelay:
     A tool call whose name starts with `prefix` goes to the endpoint, with `budget(name, arguments)`
     seconds to answer. The answer must be a tool result whose text is a JSON object: the hook's output.
     Anything else is a failure: no listener, a refused token, an error, a tool the server does not
-    know, no answer in time. On a failure the relay answers `{}`, which lets the client go on, and
+    know (an error, or a result marked `NOT_ANSWERED_KEY`), no answer in time. On a failure the relay answers `{}`, which lets the client go on, and
     sends nothing to the endpoint for `pause` seconds, so an endpoint that hangs costs one wait.
     The first failure carries `off` as `systemMessage`, and the first answer after it carries `on`:
     one line for the user each time, and nothing while the endpoint keeps failing.
@@ -480,17 +482,21 @@ class HookRelay:
     it returns True the pause ends at once, unless the failure was an answer that did not come in
     time: asking a server that fails at once costs milliseconds, asking one that hangs costs the
     whole allowance.
+
+    A call `always(name, arguments)` is true for is sent during a pause too. The owner names the
+    calls that guard something: one failed call must not open that guard for the length of the pause.
     """
 
     def __init__(
         self, port: int, headers: Headers, start: Callable[[], bool], off: str, on: str,
         budget: Callable[[str, Any], float], prefix: str, info: dict[str, str],
         reader: BinaryIO | None = None, writer: BinaryIO | None = None, pause: float = 30.0,
-        host: str = "127.0.0.1", path: str = "/mcp",
+        host: str = "127.0.0.1", path: str = "/mcp", always: Callable[[str, Any], bool] | None = None,
     ) -> None:
         self._bridge = Bridge(port, headers, lambda: False, reader=_NOTHING, writer=_NOTHING, host=host, path=path)
         self._start, self._off, self._on = start, off, on
         self._budget, self._prefix, self._info, self._pause = budget, prefix, info, pause
+        self._always = always or (lambda name, arguments: False)
         self._reader = reader if reader is not None else sys.stdin.buffer
         self._writer = writer if writer is not None else sys.stdout.buffer
         self._write_lock = threading.Lock()
@@ -566,8 +572,9 @@ class HookRelay:
 
     def _ask(self, request_id: Any, name: str, arguments: Any) -> dict[str, Any]:
         with self._lock:
-            if time.monotonic() < self._retry_at:
-                return {}
+            paused = time.monotonic() < self._retry_at
+        if paused and not self._always(name, arguments):
+            return {}
         message = {"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": {
             "name": name, "arguments": arguments if isinstance(arguments, dict) else {},
             "_meta": {VERSION_KEY: MODERN, CAPABILITIES_KEY: {}, CLIENT_INFO_KEY: self._info},
@@ -623,6 +630,9 @@ def _hook_output(reply: dict[str, Any]) -> dict[str, Any]:
     result = reply.get("result")
     if not isinstance(result, dict) or result.get("isError"):
         raise Unavailable("no hook result")
+    meta = result.get("_meta")
+    if isinstance(meta, dict) and meta.get(NOT_ANSWERED_KEY):
+        raise Unavailable("the server does not know this hook")
     try:
         out = json.loads(result["content"][0]["text"])
     except (KeyError, IndexError, TypeError, ValueError) as exc:

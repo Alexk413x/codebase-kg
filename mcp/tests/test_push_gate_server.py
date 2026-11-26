@@ -152,3 +152,55 @@ def test_both_endpoints_are_unlisted_and_reachable_on_every_path(stale: Path) ->
     assert older is not None and _decision(older["result"])[0] == "ask"
     allowed = core.hook_result(push_gate.ALLOW_WRITE_TOOL, {}, "client")
     assert allowed is not None and _hook(allowed)["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+def _codex(repo: Path, command: str) -> dict[str, Any]:
+    return push_gate.call({"tool_name": "Bash", "command": command, "cwd": str(repo), "prompts": False})
+
+
+@pytest.mark.parametrize("command", ["git push", "SKIP_KG=1 git push", "KG_STALE_ACK=2 git push origin main"])
+def test_a_client_that_cannot_prompt_gets_a_deny_for_a_skip_too(stale: Path, command: str) -> None:
+    """Codex does not honor `ask`: it runs the command. There a skip prefix is denied, and the text does
+    not offer one, or the agent would retry it for nothing."""
+    decision, reason = _decision(_codex(stale, command))
+    assert decision == "deny"
+    assert "KG_STALE_ACK" not in reason and "SKIP_KG" not in reason
+    assert "/codebase-kg:refresh" in reason and "run git push themselves" in reason
+
+
+@pytest.mark.parametrize("value", [False, "false", "False", 0, "0"])
+def test_no_prompts_is_understood_as_text_too(stale: Path, value: Any) -> None:
+    """A hook template may hand the flag over as text. Read as true it would make the gate answer
+    `ask`, which Codex does not honor: the push would run."""
+    out = push_gate.call({"tool_name": "Bash", "command": "KG_STALE_ACK=2 git push", "cwd": str(stale), "prompts": value})
+    assert _decision(out)[0] == "deny"
+
+
+@pytest.mark.parametrize("value", [True, "true", None, 1])
+def test_any_other_value_keeps_the_prompt(stale: Path, value: Any) -> None:
+    args = {"tool_name": "Bash", "command": "KG_STALE_ACK=1 git push", "cwd": str(stale)}
+    if value is not None:
+        args["prompts"] = value
+    assert _decision(push_gate.call(args))[0] in ("ask", "deny")
+    assert push_gate._prompts(args) is True
+
+
+def test_a_client_that_cannot_prompt_passes_a_current_graph(tmp_path: Path) -> None:
+    assert _hook(_codex(_make_repo(tmp_path), "SKIP_KG=1 git push")) == {}
+
+
+def test_a_failure_after_a_stale_push_denies_without_the_prefix_for_such_a_client(
+    stale: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    original = push_gate._pre
+
+    def fails_once(decision: str, reason: str) -> dict[str, Any]:
+        calls.append(decision)
+        if len(calls) == 1:
+            raise ValueError("boom")
+        return original(decision, reason)
+
+    monkeypatch.setattr(push_gate, "_pre", fails_once)
+    decision, reason = _decision(_codex(stale, "git push"))
+    assert calls == ["deny", "deny"] and decision == "deny" and "KG_STALE_ACK" not in reason

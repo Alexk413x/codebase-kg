@@ -107,7 +107,16 @@ def _listed(stale: list[str]) -> str:
     return shown + (f"\n  ... and {len(stale) - LIST_CAP} more" if len(stale) > LIST_CAP else "")
 
 
-def deny_reason(stale: list[str], graph_rel: str) -> str:
+def deny_reason(stale: list[str], graph_rel: str, prompts: bool = True) -> str:
+    """What the agent is told. `prompts` is False for a client that shows no permission prompt: there the
+    skip prefix would only be denied again, so the text does not offer it."""
+    way_out = (
+        f"If they asked you to push without the update, prefix the push: "
+        f"KG_STALE_ACK={len(stale)} git push ... and they are asked to approve it. "
+        if prompts else
+        "This client cannot ask them, so no prefix skips the check here. If they want to push without the "
+        "update, tell them to run git push themselves in a terminal. "
+    )
     return (
         f"codebase-kg: push blocked. {len(stale)} mapped file(s) no longer match {graph_rel}:\n"
         f"{_listed(stale)}\n\n"
@@ -115,8 +124,7 @@ def deny_reason(stale: list[str], graph_rel: str) -> str:
         "1. Run /codebase-kg:refresh.\n"
         f"2. Commit {graph_rel}.\n"
         "3. Run git push again.\n\n"
-        f"Only the user can accept this drift. If they asked you to push without the update, prefix the push: "
-        f"KG_STALE_ACK={len(stale)} git push ... and they are asked to approve it. "
+        f"Only the user can accept this drift. {way_out}"
         "--no-verify does not skip this check."
     )
 
@@ -149,12 +157,22 @@ def _pre(decision: str, reason: str) -> dict[str, Any]:
         "hookEventName": "PreToolUse", "permissionDecision": decision, "permissionDecisionReason": reason}}
 
 
+def _prompts(args: Any) -> bool:
+    """False for a client that said it shows no permission prompt. A hook template can deliver the
+    value as text, and reading `"false"` as true would turn a deny into an `ask` that such a client runs."""
+    value = args.get("prompts") if isinstance(args, dict) else None
+    return not (value is False or value == 0 or (isinstance(value, str) and value.strip().lower() in ("false", "0", "no")))
+
+
 def decide(args: dict[str, Any], seen: list[Found] | None = None) -> dict[str, Any]:
     """The hook's JSON for one shell command: `{}`, a deny, or an ask.
 
-    Each stale push found is appended to `seen`, so the caller knows one exists if this raises.
+    `prompts: false` in the arguments names a client that does not honor `ask` (Codex runs the command):
+    there a skip is a deny. Each stale push found is appended to `seen`, so the caller knows one exists
+    if this raises.
     """
     tool, command, cwd = args.get("tool_name"), args.get("command"), args.get("cwd")
+    prompts = _prompts(args)
     if tool not in ("Bash", "PowerShell") or not isinstance(command, str) or not isinstance(cwd, str):
         return {}
     if "git" not in command or "push" not in command or not Path(cwd).is_absolute():
@@ -179,8 +197,8 @@ def decide(args: dict[str, Any], seen: list[Found] | None = None) -> dict[str, A
             continue
         if seen is not None:
             seen.append((repo, *found))
-        if not _wants_skip(script, push.env, len(found[0])):
-            return _pre("deny", deny_reason(*found))
+        if not prompts or not _wants_skip(script, push.env, len(found[0])):
+            return _pre("deny", deny_reason(*found, prompts))
         if not any(repo == listed for listed, _, _ in skips):
             skips.append((repo, *found))
     # A push with no skip is denied above before anyone is asked: one command can hold both.
@@ -202,7 +220,7 @@ def call(args: Any) -> dict[str, Any]:
         logger.exception("push gate failed")
         if seen:
             _, stale, graph_rel = seen[0]
-            out = _pre("deny", deny_reason(stale, graph_rel))
+            out = _pre("deny", deny_reason(stale, graph_rel, _prompts(args)))
     return _as_text(out)
 
 

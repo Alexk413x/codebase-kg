@@ -1278,16 +1278,25 @@ HOOK_PREFIX = "kg_hook_"
 SEARCH_BUDGET, GIT_BUDGET = 1.5, 20.0
 
 
+def hook_is_push(name: str, arguments: Any) -> bool:
+    """True for the gate call of a command that may hold a `git push`.
+
+    The relay sends these while it leaves the server alone after a failure: a search that got no
+    answer in time must not let the next push through unchecked.
+    """
+    if name != "kg_hook_pre":
+        return False
+    tool_input = arguments.get("tool_input") if isinstance(arguments, dict) else None
+    text = tool_input if isinstance(tool_input, str) else json.dumps(tool_input or "")
+    return "git" in text and "push" in text
+
+
 def hook_budget(name: str, arguments: Any) -> float:
     """Seconds the server gets for one hook call. A search decision takes milliseconds; a push or a
     commit runs git in the repository."""
-    if name == "kg_hook_commit_check":
+    if name == "kg_hook_commit_check" or hook_is_push(name, arguments):
         return GIT_BUDGET
-    if name != "kg_hook_pre":
-        return SEARCH_BUDGET
-    tool_input = arguments.get("tool_input") if isinstance(arguments, dict) else None
-    text = tool_input if isinstance(tool_input, str) else json.dumps(tool_input or "")
-    return GIT_BUDGET if "git" in text and "push" in text else SEARCH_BUDGET
+    return SEARCH_BUDGET
 
 
 def run_hooks() -> int:
@@ -1307,7 +1316,9 @@ def run_hooks() -> int:
            f"check and the push gate are off. They return when it does.")
     on = "codebase-kg: the server answers its hooks again. The search gate, the commit check and the push gate are back on."
     info = {"name": "codebase-kg-hooks", "version": package_version()}
-    return _load_bridge().HookRelay(port, headers, ensure_http_server, off, on, hook_budget, HOOK_PREFIX, info).run()
+    return _load_bridge().HookRelay(
+        port, headers, ensure_http_server, off, on, hook_budget, HOOK_PREFIX, info, always=hook_is_push,
+    ).run()
 
 
 def main(argv: list[str] | None = None) -> int:

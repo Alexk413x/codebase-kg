@@ -43,7 +43,16 @@ All notable changes to the `codebase-kg` plugin.
   because hook calls and model calls arrive on two connections. A subagent's query earns credit for
   its session as before.
 - The server answers a hook tool it does not know (`kg_hook_*`) with an empty result, so a session
-  whose hook list is newer than the server gets no error from it.
+  whose hook list is newer than the server gets no error from it. The result carries a mark, and the
+  hook relay does not report the gates as back on for it.
+- The push gate takes `prompts: false` from a client that shows no permission prompt. It then denies
+  a skip prefix too and offers none in its reason. Codex does not honor a hook's `ask`: it runs the
+  command. Codex's own hooks still run the gate scripts in this release; `hooks/README.md`
+  ("Codex: gates answered by the server") holds the managed-hooks text for a machine you manage.
+- A graph query from Codex over HTTP earns search credit on the server. The older handshake path
+  passed no caller, so a gate answered by the server there never saw the query before it.
+- The hook relay always sends a command that may hold a `git push`, also while it leaves the server
+  alone after a failed call, so a search that got no answer does not let the next push through.
 - In Claude Code the search gate runs in the server. `hooks.json` has one hook of type `mcp_tool`
   (`kg_hook_pre` on `Grep|Glob|Bash|PowerShell`, shared with the push gate) where it had 27 command hooks, one per search word, so a search
   starts no Python process. The rule is unchanged: the server loads `hooks/kg_search_gate.py`, the script

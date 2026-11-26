@@ -170,7 +170,8 @@ in about 0.2 s and holds about 25 MB while idle.
   "Hooks need review" start screen. Codex's trust covers every file in the plugin, so each update
   asks again. Until you do, Codex skips the hooks without a message: no search gate, no push gate, no
   session notice, and no move of the config paths after an update. The git pre-push hook still blocks
-  a stale push, and the graph tools still work. `codex-config` ends with a line that says whether
+  a stale push, and the graph tools still work. The gates in Codex also fail open: Codex runs the
+  command when a hook fails or times out. `codex-config` ends with a line that says whether
   Codex trusts the hooks; it asks Codex itself and writes nothing. If
   the HTTP table does not work on your machine, run `codex-config --stdio` and paste that table
   instead: it starts one small relay process per session and needs no HTTP server or `py`.

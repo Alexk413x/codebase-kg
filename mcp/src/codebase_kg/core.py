@@ -165,12 +165,13 @@ def hook_result(name: Any, args: Any, client: str | None = None) -> dict[str, An
         return push_gate.allow_write()
     if isinstance(name, str) and name.startswith(HOOK_PREFIX):
         # A hook list from a newer version than this server: an error here would show the user a
-        # failure notice on every tool call.
-        return {"content": [{"type": "text", "text": "{}"}], "isError": False}
+        # failure notice on every tool call. The mark tells the hook relay that no gate ran.
+        return {"content": [{"type": "text", "text": "{}"}], "isError": False, "_meta": {NOT_ANSWERED_KEY: True}}
     return None
 
 
 HOOK_PREFIX = "kg_hook_"
+NOT_ANSWERED_KEY = "slipspace/notAnswered"
 PRE_TOOL = "kg_hook_pre"
 
 
@@ -186,7 +187,10 @@ def pre_tool(args: Any, client: str | None = None) -> dict[str, Any]:
                 tool_input = None
         command = tool_input.get("command") if isinstance(tool_input, dict) else None
         if isinstance(command, str) and "git" in command and "push" in command:
-            pushed = push_gate.call({"tool_name": args.get("tool_name"), "command": command, "cwd": args.get("cwd")})
+            push_args = {"tool_name": args.get("tool_name"), "command": command, "cwd": args.get("cwd")}
+            if "prompts" in args:
+                push_args["prompts"] = args["prompts"]
+            pushed = push_gate.call(push_args)
             if pushed["content"][0]["text"] != "{}":
                 return pushed
     return search_gate.call(args, client)

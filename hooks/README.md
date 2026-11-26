@@ -106,13 +106,22 @@ second MCP server in `mcp/claude.mcp.json` that Claude Code starts on stdio with
   between. A healthy session shows nothing.
 - **Allowances.** 1.5 s for a search decision, 20 s for a push or a commit check, which run git.
   After a call that got no answer in time, the relay sends nothing for 30 s, so a server that hangs
-  costs one wait. After any other failure it starts the server on another thread, the way the
+  costs one wait. A command that may hold a `git push` is the exception: it is always sent, so a
+  search that timed out does not let the next push through unchecked. After any other failure it starts the server on another thread, the way the
   SessionStart hook does, and asks again as soon as one runs. That is also what brings the gates
   back after a plugin update: `/reload-plugins` runs no SessionStart hook, and the relay of the new
   version replaces the old server.
 - **Launch.** `claude.mcp.json` names `mcp/launch/kg-hooks` with no extension: Claude Code runs the
   `sh` script on macOS and Linux and `kg-hooks.cmd` on Windows. Both run the base interpreter with
   `-I -S`.
+- **A hook the server does not know.** A server from this version on answers an unknown
+  `kg_hook_*` tool with an empty result and a mark in `_meta`. The relay counts that as a failure,
+  so it never reports the gates as back on while the server runs none of them.
+- **Sessions that share a credit count.** A client that cannot find its agent process sends
+  `unknown`, and all such sessions of one user share one count: a graph query in one of them can
+  clear the next gated search in another. It happens where the process table cannot be read or
+  the agent sits more than 12 processes above the helper; no client is known to hit it on Windows,
+  macOS or Linux as tested. The count is lenient by design, so a query always earns credit.
 - **No Python.** The relay cannot start, and Claude Code prints its notice for every hook call, as
   it does for every hook of every plugin that needs an interpreter.
 
@@ -243,6 +252,10 @@ files with the total count.
   command. The permission prompt has no timeout.
 - **Ways through (Codex, Copilot CLI).** The script lets the same prefixes through without asking, and
   reads them from the environment of its own process too.
+- **A client with no permission prompt.** The gate takes `prompts: false` in its arguments
+  (`kg_hook_push_gate`, and `kg_hook_pre`, which hands it on). It then answers `deny` for a skip
+  prefix too and the reason offers no prefix, because a client that does not honor `ask` runs the
+  command. Codex is such a client; see "Codex: gates answered by the server".
 - **Never a way through.** `--no-verify`: it skips git hooks, and the point is that an agent cannot skip
   the check silently. A push that only deletes refs (`git push --delete`, `git push origin :branch`)
   passes, because it publishes no commits.
@@ -383,6 +396,53 @@ with no pid stays for a fixed time. `mcp/launch/kg_headers.py` registers each Co
 
 It exits 0 every time and prints nothing when all is well. Stdlib only; it imports
 `mcp/src/codebase_kg/shim.py` by path (`_shim_loader.py`) for the port, the build and the start routine.
+
+## Codex: gates answered by the server (not the default)
+
+`codex-hooks.json` runs the gate scripts, as in 0.17. The server can answer Codex's gates too,
+through `mcp_tool` hooks on the server named `codebase-kg` in `config.toml`. That path is tested
+with hooks passed as session flags (Codex 0.167.2, Windows): a gated search is blocked, a graph
+query clears the next one, a stale push is blocked with or without a skip prefix, and every
+failure of the hook lets the command run. It is not the plugin's default, because a plugin's
+`mcp_tool` hooks need the same trust as its script hooks and Codex has no relay: a server that is
+away shows as a failed hook on every command.
+
+To use it on a machine you manage, declare the hooks as managed hooks, which Codex trusts by
+policy and keeps across plugin updates. On Windows the file is
+`%ProgramData%\OpenAI\Codex\requirements.toml` (administrator rights); on macOS and Linux
+`/etc/codex/requirements.toml`. This text is not run as a managed file here:
+
+```toml
+[[hooks.PreToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PreToolUse.hooks]]
+type = "mcp_tool"
+server = "codebase-kg"
+tool = "kg_hook_pre"
+timeout = 25
+input = { tool_name = "Bash", tool_input = "${tool_input}", cwd = "${cwd}", session_id = "${session_id}", prompts = false }
+
+[[hooks.PostToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PostToolUse.hooks]]
+type = "mcp_tool"
+server = "codebase-kg"
+tool = "kg_hook_commit_check"
+timeout = 25
+input = { command = "${tool_input.command}", cwd = "${cwd}" }
+```
+
+- **A file Codex cannot read stops Codex.** Keep a copy of the previous file, and start Codex
+  right after you save.
+- **Do not also trust the plugin's own hooks.** Managed hooks add to plugin hooks, so with both
+  trusted each gate runs twice, once as a script and once on the server.
+- **Check.** In a repository with a graph, `codex exec "run the shell command: grep -rn x src"`
+  prints `Command blocked by PreToolUse hook: codebase-kg: denied a search`.
+- Each `input` holds only fields every event has. A placeholder for a missing field fails the hook,
+  and a failed hook lets the command run. `prompts = false` must stay: without it a skip prefix
+  gets `ask`, which Codex does not honor.
 
 ## Config — optional per-dev override only (gitignored `.claude/codebase-kg.local.md`)
 

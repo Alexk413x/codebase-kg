@@ -50,13 +50,14 @@ def _free_port() -> int:
 class Relay:
     """A relay fed one line at a time, so each answer is read before the next request goes in."""
 
-    def __init__(self, port: int, budget: float = 5.0, pause: float = 30.0, start: Any = None) -> None:
+    def __init__(self, port: int, budget: float = 5.0, pause: float = 30.0, start: Any = None, always: Any = None) -> None:
         self.started = 0
         self._start = start
         self.out = io.BytesIO()
         self.relay = bridge.HookRelay(
             port, lambda refresh: {"Authorization": "Bearer t", "X-Test-Agent": "7"}, self._started, OFF, ON,
             lambda name, arguments: budget, "kg_hook_", INFO, reader=io.BytesIO(), writer=self.out, pause=pause,
+            always=always,
         )
 
     def _started(self) -> bool:
@@ -151,6 +152,27 @@ def test_nothing_is_sent_to_a_server_that_just_failed(endpoint: Any) -> None:
     assert len(server.seen) == 1
 
 
+def test_a_push_is_sent_to_the_server_while_it_is_left_alone_for_searches(endpoint: Any) -> None:
+    """One search that got no answer must not let the next push through unchecked for the length of the pause."""
+    state = {"fail": True}
+
+    def answer(body: dict[str, Any], headers: dict[str, str]) -> Any:
+        if state["fail"]:
+            return 500, None
+        return 200, {"jsonrpc": "2.0", "id": body["id"], "result": _tool_result(DENY)}
+
+    server = endpoint(answer)
+    relay = Relay(server.port, always=shim.hook_is_push)
+    push = {"tool_name": "Bash", "tool_input": json.dumps({"command": "git push origin main"})}
+    assert relay.hook(tool_name="Grep") == {"systemMessage": OFF}
+    relay.settle()
+    state["fail"] = False
+    assert relay.hook(tool_name="Grep") == {} and len(server.seen) == 1
+    assert relay.hook(**push) == {**DENY, "systemMessage": ON} and len(server.seen) == 2
+    assert shim.hook_is_push("kg_hook_pre", push) and not shim.hook_is_push("kg_hook_commit_check", push)
+    assert not shim.hook_is_push("kg_hook_pre", {"tool_name": "Bash", "tool_input": json.dumps({"command": "git status"})})
+
+
 def test_a_server_that_does_not_answer_in_time_costs_one_short_wait(endpoint: Any) -> None:
     server = endpoint(lambda body, headers: lambda handler: time.sleep(1.5))
     relay = Relay(server.port, budget=0.3)
@@ -173,6 +195,17 @@ def test_anything_but_a_hook_result_is_a_failure_and_not_an_error_for_the_hook(e
     """An older server that does not know the tool, a refused token: the client's hook must still get a result."""
     relay = Relay(endpoint(lambda body, headers: reply).port)
     assert relay.hook() == {"systemMessage": OFF}
+
+
+def test_an_empty_answer_for_a_hook_the_server_does_not_know_is_not_the_gates_coming_back(endpoint: Any) -> None:
+    """A server newer than 0.17 answers an unknown hook tool with `{}` and a mark. The relay must not
+    take that for a gate that ran, or it would tell the user the gates are back while none runs."""
+    marked = {"content": [{"type": "text", "text": "{}"}], "isError": False, "_meta": {bridge.NOT_ANSWERED_KEY: True}}
+    server = endpoint(lambda body, headers: (200, {"jsonrpc": "2.0", "id": body["id"], "result": marked}))
+    relay = Relay(server.port, start=lambda: True)
+    assert relay.hook() == {"systemMessage": OFF}
+    relay.settle()
+    assert relay.hook() == {} and relay.hook() == {}
 
 
 def test_the_first_answer_after_a_failure_says_the_gates_are_back_and_then_nothing_more(endpoint: Any) -> None:
@@ -308,10 +341,24 @@ def test_the_push_gate_answers_first_and_only_for_a_push(repo: Path, monkeypatch
     assert _denied(_pre(repo, "agent:1", session="s9")) and len(asked) == 2
 
 
+def test_the_one_endpoint_hands_the_no_prompt_flag_to_the_push_gate(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Codex does not honor `ask`. Without the flag a skip prefix would get `ask` there and the push would run."""
+    asked: list[dict[str, Any]] = []
+    monkeypatch.setattr(push_gate, "call", lambda args: asked.append(args) or {"content": [{"type": "text", "text": "{}"}], "isError": False})
+    for extra in ({"prompts": False}, {}):
+        core.hook_result(core.PRE_TOOL, {
+            "tool_name": "Bash", "tool_input": json.dumps({"command": "SKIP_KG=1 git push"}), "cwd": str(repo),
+            "session_id": "cx", **extra,
+        }, "agent:1")
+    assert asked[0]["prompts"] is False and "prompts" not in asked[1]
+
+
 def test_a_hook_tool_this_server_does_not_know_gets_an_empty_answer() -> None:
     """A session whose hook list is newer than the server: an error would be a notice on every tool call."""
     result = core.hook_result("kg_hook_from_a_later_version", {"anything": 1}, "client")
-    assert result == {"content": [{"type": "text", "text": "{}"}], "isError": False}
+    assert result == {"content": [{"type": "text", "text": "{}"}], "isError": False,
+                      "_meta": {bridge.NOT_ANSWERED_KEY: True}}
+    assert core.NOT_ANSWERED_KEY == bridge.NOT_ANSWERED_KEY
     assert core.hook_result("kg_search", {}, "client") is None
     assert core.hook_result(None, {}, "client") is None
 
