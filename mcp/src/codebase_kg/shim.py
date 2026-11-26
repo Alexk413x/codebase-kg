@@ -1133,10 +1133,96 @@ def run_private(args: list[str]) -> int:
         return 1
 
 
+BRIDGE_START_WAIT = 10.0
+CLIENT_HEADER, CWD_HEADER, GRAPH_HEADER = "X-Codebase-KG-Client", "X-Codebase-KG-Cwd", "X-Codebase-KG-Graph"
+
+
+def ensure_http_server(wait: float = BRIDGE_START_WAIT) -> bool:
+    """True once the HTTP port holds this build or one that outranks it, starting this build when it does not."""
+    port = http_port()
+    mine = build_info()
+
+    def serving() -> bool:
+        kind, theirs = health(port, timeout=0.5)
+        return kind == OURS and not outranks(mine, theirs)
+
+    if serving():
+        return True
+    if health(port, timeout=0.5)[0] == OTHER:
+        return False
+    cache_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
+    with spawn_lock(mine["build"]) as locked:
+        if locked:
+            spawn_server_detached(mine["build"])
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if serving():
+                return True
+            time.sleep(_POLL)
+    return False
+
+
+def _load_bridge() -> Any:
+    """`slipspace/bridge.py`, loaded by path: this file runs outside the package when a launcher starts it."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("codebase_kg_bridge", PACKAGE_DIR / "slipspace" / "bridge.py")
+    if spec is None or spec.loader is None:
+        raise ImportError("cannot load the bridge")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_bridge(args: list[str]) -> int:
+    """Serve this session's stdio from the shared server's HTTP endpoint.
+
+    The session's folder and explicit graph path travel as request headers on every
+    call, so the server keeps nothing for the session and a restart loses nothing.
+    """
+    from urllib.parse import quote
+
+    explicit = args[0] if args and args[0].strip() else os.environ.get("CODEBASE_KG_PATH")
+    if not ensure_http_server():
+        print("codebase-kg: shared server unavailable; running a private one", file=sys.stderr)
+        return run_private(args)
+    port = http_port()
+    fixed = {CLIENT_HEADER: f"bridge-{secrets.token_hex(8)}", CWD_HEADER: quote(os.getcwd(), safe="/\\:")}
+    if explicit:
+        fixed[GRAPH_HEADER] = quote(str(Path(explicit).resolve()), safe="/\\:")
+    token: list[str | None] = [verified_token(port)]
+
+    def headers(refresh: bool) -> dict[str, str]:
+        if refresh or not token[0]:
+            token[0] = verified_token(port)
+        return {**fixed, "Authorization": f"Bearer {token[0]}"} if token[0] else dict(fixed)
+
+    session = f"bridge-{os.getpid()}"
+
+    def register() -> None:
+        try:
+            register_session(session, agent_pid() or os.getpid())
+        except OSError:
+            pass
+
+    # On its own thread: reading the process table for the agent's pid takes longer than the first request.
+    threading.Thread(target=register, daemon=True).start()
+    print(f"codebase-kg: bridging to the shared server on port {port}", file=sys.stderr)
+    try:
+        return _load_bridge().Bridge(port, headers, ensure_http_server, name="the codebase-kg server").run()
+    finally:
+        try:
+            unregister_session(session)
+        except OSError:
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if os.environ.get("CODEBASE_KG_SHARED", "").strip() == "0":
         return run_private(args)
+    if os.environ.get("CODEBASE_KG_BRIDGE", "").strip() == "1":
+        return run_bridge(args)
     explicit = args[0] if args and args[0].strip() else os.environ.get("CODEBASE_KG_PATH")
     build = server_build()
     hello = {

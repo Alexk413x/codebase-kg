@@ -17,6 +17,13 @@ All notable changes to the `codebase-kg` plugin.
   a session's repository. The git hooks leave it unset and behave as before. The file is vendored
   into repos, so a wired clone receives this change the next time `git-hooks/install.sh` runs.
 
+- A stdio-to-HTTP bridge for stdio clients, opt-in with `CODEBASE_KG_BRIDGE=1`
+  (`mcp/src/codebase_kg/slipspace/bridge.py`). The shim then serves the session from the shared
+  server's HTTP endpoint and not through the TCP relay, so every client reaches one dispatcher and a
+  stdio client can use MCP 2026-07-28, `server/discover` included. A client that opens with
+  `initialize` is translated in the bridge, which also delivers the server's input requests
+  (`roots/list`, `elicitation/create`) to it. The TCP relay stays the default.
+
 ### Fixed
 
 - Four answers of the 2026-07-28 HTTP front that the official conformance suite

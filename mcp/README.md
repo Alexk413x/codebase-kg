@@ -142,8 +142,36 @@ while the session is open, the shim:
 If no shared server comes back, the rest of the session runs on a private server with the same replay.
 When the session closes its stdin, the shim exits and does not reconnect.
 
+### Bridge mode (opt-in)
+
+With `CODEBASE_KG_BRIDGE=1` the shim does not use the TCP relay. It serves the session's stdio from
+the shared server's HTTP endpoint (`slipspace/bridge.py`), so every client reaches one dispatcher.
+
+- The bridge always speaks MCP 2026-07-28 to the server. A stdio client that speaks it too passes
+  through, and so gets `server/discover` on stdio.
+- For a client that opens with `initialize`, the bridge answers `initialize` from `server/discover`,
+  absorbs `notifications/initialized`, answers `ping`, and adds the 2026-07-28 envelope to each request.
+  A result of type `input_required` becomes a request to the client (`roots/list`,
+  `elicitation/create`), and the bridge repeats the call with the client's answer.
+- The session's folder and explicit graph path travel as `X-Codebase-KG-Cwd` and
+  `X-Codebase-KG-Graph` on every request, with a per-process `X-Codebase-KG-Client` id. The server keeps
+  nothing for the session, so a server restart needs no replay.
+- Requests overlap: each runs on its own connection. `notifications/cancelled` closes the matching
+  connection and the bridge writes no answer for that request.
+- When nothing answers on the port, the bridge starts the server and tries once more. When the server
+  refuses the token, the bridge reads the token again and tries once more. A connection that fails after
+  the request was sent is not retried, because the server may have run the call: the client gets a
+  JSON-RPC error.
+- When no shared server can start at launch, the session runs on a private stdio server, as in relay mode.
+- The bridge talks to whichever build holds the HTTP port, as Claude Code does. The relay talks only to
+  a server of its own build.
+
+The relay stays the default until the bridge passes real-client checks on Codex, Copilot CLI and
+Antigravity CLI.
+
 | Variable | Effect |
 |---|---|
+| `CODEBASE_KG_BRIDGE=1` | Serve the session through the stdio-to-HTTP bridge and not the TCP relay. |
 | `CODEBASE_KG_SHARED=0` | Skip the shared server; run a private stdio server for this session. |
 | `CODEBASE_KG_SHARED_TIMEOUT` | Seconds the shim waits for the shared server before it falls back. Default 10. |
 | `CODEBASE_KG_IDLE_TIMEOUT` | Seconds the shared server stays up with no connections. Default 600. |
@@ -250,6 +278,8 @@ server was running.
 | `resolve.py` | Which graph a session's calls use. |
 | `control.py` | `kg_cli.py server status`, `start`, `stop`, `sessions`, `register` and `unregister`. |
 | `shim.py` | What stdio clients launch: finds or starts the shared server and relays the session to it. Stdlib only. It also holds the HTTP port, token and `/health` helpers that the hooks and `kg_headers.py` load by path. |
+| `slipspace/bridge.py` | The stdio-to-HTTP bridge, and the translation for stdio clients that open with `initialize`. It imports nothing from the package, so it can move to a shared repository. |
+| `commit_check.py` | The hook endpoint `kg_hook_commit_check`: what the commits a command just made left out of the graph. |
 | `tools.py` | The read-only queries the MCP tools wrap. |
 | `edits.py` | The targeted-write facade. It re-exports the tools from the `edit_*.py` modules. |
 | `edit_core.py` | The edit engine: copy, mutate in one transaction, validate, rebuild canonically through `writer.build` — or discard, leaving the committed file byte-identical. |
