@@ -622,11 +622,14 @@ def test_the_build_changes_when_a_source_file_changes(tmp_path: Path) -> None:
     source = package / "tools.py"
     stat = source.stat()
     os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
-    touched = shim.server_build(package)
-    assert touched != before
-    source.write_bytes(source.read_bytes() + b"\n")
-    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
-    assert shim.server_build(package) not in {before, touched}
+    assert shim.server_build(package) == before
+    content = source.read_bytes()
+    source.write_bytes(content + b"\n")
+    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    changed = shim.server_build(package)
+    assert changed != before
+    source.write_bytes(content)
+    assert shim.server_build(package) == before
 
 
 def test_a_shim_of_another_build_does_not_reuse_a_running_daemon(

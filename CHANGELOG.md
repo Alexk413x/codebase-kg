@@ -2,6 +2,15 @@
 
 All notable changes to the `codebase-kg` plugin.
 
+## [0.18.1] — 2026-11-26 — Installing the same version again no longer restarts the server
+
+### Fixed
+
+- A build was named from its files' sizes and times. A client that installed the same version
+  again wrote the same files with new times, the copy read as changed, and the next session
+  replaced the shared server that every open session used. A build is named from the files'
+  contents.
+
 ## [0.18.0] — 2026-11-26 — Hooks answered by the server through a quiet local relay, and a server no copy can take over
 
 ### Added
