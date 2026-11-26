@@ -32,7 +32,9 @@ dev = [
     # The tool definitions in server.py, the catalog generator, the tests and the benchmarks.
     # fastmcp needs Python 3.10+; on 3.9 the server tests that import it are skipped.
     "fastmcp>=4.0.3,<5; python_full_version >= '3.10'",
-    "pytest>=8,<10",
+    # pytest 9.2 needs Python 3.10+. The 3.9 run keeps the last 8.x.
+    "pytest>=9.2,<10; python_full_version >= '3.10'",
+    "pytest>=8,<9; python_full_version < '3.10'",
     "pyright>=1.1.400",
     # The same range as required-version in ruff.toml, so `uv run ruff` is the ruff the config expects.
     "ruff>=0.17.6,<0.18",
