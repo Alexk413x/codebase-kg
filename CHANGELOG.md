@@ -24,6 +24,13 @@ All notable changes to the `codebase-kg` plugin.
   `initialize` is translated in the bridge, which also delivers the server's input requests
   (`roots/list`, `elicitation/create`) to it. The TCP relay stays the default.
 
+- `kg_cli.py codex-config` ends with a line that says whether Codex trusts the plugin's hooks. Codex
+  skips an untrusted hook without a message, and its trust covers every file in the plugin, so the
+  gates stop in Codex after each plugin update until you run `/hooks` there. No hook can report
+  that, because the session-start hook is skipped too. The command asks Codex itself and writes
+  nothing; when Codex cannot be asked it prints nothing. `--no-hooks` leaves the check out. The
+  README and the setup skill say to run `/hooks` after the install and after every update.
+
 ### Changed
 
 - In Claude Code the search gate runs in the server. `hooks.json` has three hooks of type `mcp_tool`

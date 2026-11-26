@@ -309,6 +309,13 @@ file yourself. The path holds the plugin version. The user pastes the table once
 update, the Codex SessionStart hook moves the path to the new plugin folder and prints one line. The
 first session after an update may need a restart of Codex to load the tools.
 
+The output ends with a comment that says whether Codex trusts the plugin's hooks. When it says some
+are not trusted, tell the user to run `/hooks` in Codex and trust them, and that Codex asks again
+after every plugin update. Until then Codex skips the search gate, the push gate and the session
+notice without a message; the git pre-push hook still blocks a stale push. Do not edit Codex's
+config to trust a hook. When the comment is missing, Codex could not be asked; say nothing about
+trust beyond the `/hooks` step. The check can take 20 seconds; `--no-hooks` leaves it out.
+
 The table sets `url` and an `http_headers_helper` that runs `mcp/launch/kg_headers.py` with literal
 `--port`, `--cwd` and `--start` arguments. The helper prints the bearer token and the session's folder
 and starts the server when nothing serves the port. It needs the `py` launcher on Windows or `python3`

@@ -278,6 +278,11 @@ It makes two writes, both to wiring someone already installed, and prints one li
   read the graph's schema (`SCHEMA_SINCE` in the hook), it prints one line saying that `git diff`
   on the graph fails until the pin moves. The committed `install.sh` keeps
   its own pin until someone re-runs `/codebase-kg:setup`.
+- **Codex hook trust.** Codex runs none of the hooks in `codex-hooks.json` until the user trusts them
+  with `/hooks`, and its trust covers a hash of every file in the plugin, so each plugin update asks
+  again. An untrusted hook is skipped without a message, this SessionStart hook included, so no hook
+  can report it. `kg_cli.py codex-config` asks Codex (`codex app-server`, `hooks/list`) and prints
+  the status (`mcp/src/codebase_kg/codex_trust.py`). Nothing in the plugin writes Codex's trust state.
 - **Codex's config.** `codex-hooks.json` runs the hook with `--codex`. `_codex_config.py` then moves
   the launcher path in `[mcp_servers.codebase-kg]`, and a codebase-kg `CLAUDE_PLUGIN_ROOT` in
   `[shell_environment_policy.set]`, to this plugin's folder in `~/.codex/config.toml` (or

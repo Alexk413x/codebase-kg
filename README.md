@@ -164,7 +164,14 @@ in about 0.2 s and holds about 25 MB while idle.
   The path in the table holds the plugin version. You paste the table once: after an update, the
   Codex SessionStart hook moves the path, and a codebase-kg `CLAUDE_PLUGIN_ROOT` set as below, to
   the new plugin folder and prints one line. It moves a path only when its folder is missing or
-  holds an older release. If
+  holds an older release.
+  **Trust the hooks in Codex, after the install and after every update.** Codex runs a plugin's hooks
+  only after you reviewed them: run `/hooks` in Codex, or choose "Trust all and continue" on the
+  "Hooks need review" start screen. Codex's trust covers every file in the plugin, so each update
+  asks again. Until you do, Codex skips the hooks without a message: no search gate, no push gate, no
+  session notice, and no move of the config paths after an update. The git pre-push hook still blocks
+  a stale push, and the graph tools still work. `codex-config` ends with a line that says whether
+  Codex trusts the hooks; it asks Codex itself and writes nothing. If
   the HTTP table does not work on your machine, run `codex-config --stdio` and paste that table
   instead: it starts one small relay process per session and needs no HTTP server or `py`.
   Codex sets `CLAUDE_PLUGIN_ROOT` for plugin hooks but not for the commands an agent runs, and the

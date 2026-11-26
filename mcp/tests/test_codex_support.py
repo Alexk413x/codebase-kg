@@ -95,7 +95,7 @@ def test_the_port_defaults_to_the_servers_port(monkeypatch: pytest.MonkeyPatch):
 
 
 def _config(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, str(RUNNER), "codex-config", *args], capture_output=True, text=True,
+    return subprocess.run([sys.executable, str(RUNNER), "codex-config", "--no-hooks", *args], capture_output=True, text=True,
                           check=False)
 
 
