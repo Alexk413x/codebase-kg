@@ -19,7 +19,7 @@ graph_path: knowledge/code_graph.db
 
 # The search gate: a Grep/Glob aimed at mapped code is denied with instructions to query the graph
 # first, and it keeps asking rather than standing down after one nudge. `warn` sends the message
-# without denying; `off` disables it. SKIP_KG=1 in front of a search command skips it for that command.
+# without denying; `off` disables it. In Claude Code this key is the only off switch: SKIP_KG does not apply.
 search_gate: block
 
 # Also treat a shell `grep`/`rg`/`git grep`/`find -name` as a search. Set false to gate only the search tools.

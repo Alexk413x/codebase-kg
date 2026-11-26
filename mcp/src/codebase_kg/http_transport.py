@@ -482,7 +482,7 @@ class Handler(BaseHTTPRequestHandler):
         if method == "tools/call":
             name = params.get("name")
             client = _decoded(self.headers.get(CLIENT_HEADER))
-            hooked = core.hook_result(name, params.get("arguments"), client)
+            hooked = core.hook_result(name, params.get("arguments"), client, params)
             if hooked is not None:
                 return hooked
             if not isinstance(name, str) or name not in core.TOOLS:

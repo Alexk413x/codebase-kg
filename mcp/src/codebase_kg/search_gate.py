@@ -18,8 +18,10 @@ server, so this module replaces the parts that assumed a process of its own:
   matching handlers from acting twice are not used.
 - The environment belongs to the server, not to a session. `SKIP_KG` and
   `CLAUDE_PROJECT_DIR` are removed from it, and the project is found from the
-  session folder the hook sends. `SKIP_KG=<value>` written in front of a shell
-  search still skips the gate for that command.
+  session folder the hook sends. Nothing else in the server reads either. So
+  `SKIP_KG` does not reach this gate, in the environment or written in front of
+  a command: turning the gate off is the user's choice, made with `search_gate`
+  in the per-clone file. An agent's own way through is to repeat the search.
 
 The script reads module state while it decides, so calls run one at a time.
 
@@ -31,7 +33,9 @@ client id.
 
 When the server started after the session did, searches made before were not
 checked and the credit count is gone. The first gate call of such a session, in a
-repo with a graph, says so once to the user and the agent.
+repo with a graph, says so once to the user and the agent. The session's start is
+the transcript's creation time where the platform records one, else the time on
+the transcript's first line; with neither, nothing is said.
 """
 
 from __future__ import annotations
@@ -40,11 +44,11 @@ import importlib.util
 import json
 import logging
 import os
-import re
 import sys
 import threading
 import time
 from collections import OrderedDict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -62,14 +66,10 @@ RESTARTED = (
     "codebase-kg: its server started after this session did. Searches made before that were not "
     "checked against the code graph, and the count of searches a graph query clears starts again."
 )
-_SKIP_IN_COMMAND = re.compile(
-    r"""(?:^|[;&|(]\s*|\bexport\s+|\benv\s+)SKIP_KG=["']?[^\s"';&|)]"""
-    r"""|\$env:SKIP_KG\s*=\s*["']?[^\s"';]""",
-    re.IGNORECASE,
-)
 
 _lock = threading.Lock()
 _script: Any = None
+_unusable = False
 _states: OrderedDict[tuple[str, str], dict[str, object]] = OrderedDict()
 _queried: OrderedDict[str, None] = OrderedDict()
 _sessions: OrderedDict[str, None] = OrderedDict()
@@ -102,8 +102,24 @@ def _deny(reason: str) -> None:
         "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}})
 
 
+class Unusable(Exception):
+    """The gate script could not be loaded. Logged once; every later call is silent."""
+
+
 def _load() -> Any:
     """The gate script as a module of this server, with its process-bound parts replaced."""
+    global _unusable
+    if _unusable:
+        raise Unusable
+    try:
+        return _loaded()
+    except Exception as exc:
+        _unusable = True
+        logger.exception("the search gate is off for this server: %s could not be loaded", SCRIPT)
+        raise Unusable from exc
+
+
+def _loaded() -> Any:
     global _script
     if _script is None:
         for name in ("SKIP_KG", "CLAUDE_PROJECT_DIR"):
@@ -151,21 +167,47 @@ def _tool_input(raw: Any) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def _session_predates_server(transcript: Any) -> bool:
-    if not isinstance(transcript, str) or not transcript:
-        return False
+def _created(path: str) -> float | None:
+    """When the file was created, or None on a platform that does not record it.
+
+    `st_ctime` is the creation time on Windows only. Elsewhere it is the last
+    change of the file's metadata, which moves with every line appended.
+    """
     try:
-        return os.path.getctime(transcript) < STARTED - RESTART_SLACK
+        stat = os.stat(path)
     except OSError:
-        return False
+        return None
+    born = getattr(stat, "st_birthtime", None)
+    if born:
+        return float(born)
+    return stat.st_ctime if sys.platform == "win32" else None
+
+
+def _first_line_time(path: str) -> float | None:
+    """The `timestamp` of the transcript's first line, which does not move as the file grows."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            stamp = json.loads(handle.readline()).get("timestamp")
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
+
+
+def session_started(transcript: Any) -> float | None:
+    if not isinstance(transcript, str) or not transcript:
+        return None
+    created = _created(transcript)
+    return created if created is not None else _first_line_time(transcript)
+
+
+def _session_predates_server(transcript: Any) -> bool:
+    started = session_started(transcript)
+    return started is not None and started < STARTED - RESTART_SLACK
 
 
 def decide(args: dict[str, Any], client: str | None = None) -> dict[str, Any]:
     """The hook's JSON for one search-shaped tool call: a deny, context, or `{}`."""
     tool_input = _tool_input(args.get("tool_input"))
-    command = tool_input.get("command")
-    if isinstance(command, str) and _SKIP_IN_COMMAND.search(command):
-        return {}
     data: dict[str, object] = {
         "tool_name": args.get("tool_name"), "tool_input": tool_input, "cwd": args.get("cwd"),
         "session_id": args.get("session_id") or "-",
@@ -204,6 +246,8 @@ def call(args: Any, client: str | None = None) -> dict[str, Any]:
     try:
         if isinstance(args, dict):
             out = decide(args, client)
+    except Unusable:
+        pass
     except Exception:
         logger.exception("search gate failed")
     return {"content": [{"type": "text", "text": json.dumps(out)}], "isError": False}

@@ -149,8 +149,8 @@ Two rules follow from Claude Code's behaviour, measured against Claude Code 2.1.
   tries. The `SessionStart` hook starts the server; Claude Code retries as the hooks finish.
 - **The server must outlive the sessions.** Claude Code sends each call to whatever holds the port
   and never re-runs anything that could start a server mid-session. So a server that holds the HTTP
-  port exits after 8 hours with no request, with one exception. The `SessionStart` and `SessionEnd`
-  hooks register each session. Once the server has seen a registered session, it exits when no
+  port exits after 8 hours with no request, with one exception. The `SessionStart`
+  hook registers each session with its process id, and the server drops one whose process has exited. Once the server has seen a registered session, it exits when no
   session has been live, and nothing has used the server, for 300 s (`CODEBASE_KG_SESSION_GRACE`; a
   negative value turns this off). A server that never saw a registered session, such as one only
   Codex uses, keeps the 8-hour limit. `kg_cli.py server register`, `unregister` and `sessions`

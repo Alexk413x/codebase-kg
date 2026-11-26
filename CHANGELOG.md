@@ -30,15 +30,25 @@ All notable changes to the `codebase-kg` plugin.
   (`Grep|Glob`, `Bash`, `PowerShell`) where it had 27 command hooks, one per search word, so a search
   starts no Python process. The rule is unchanged: the server loads `hooks/kg_search_gate.py`, the script
   Codex and Copilot CLI still run. Behavior changes for Claude Code:
-  - `SKIP_KG` in the agent's environment no longer reaches the search gate, because a direct hook
-    passes no environment. `SKIP_KG=1` written in front of a shell search (`SKIP_KG=1 grep -rn x src`)
-    skips the gate for that command, and `search_gate: off` in `.claude/codebase-kg.local.md` turns it
-    off for a clone. The push gate, the git hooks, Codex and Copilot CLI read `SKIP_KG` as before.
+  - `SKIP_KG` no longer applies to the search gate in Claude Code. A direct hook passes no
+    environment, and a skip is the user's choice: `search_gate: off` in `.claude/codebase-kg.local.md`
+    replaces it. An agent's own way through is unchanged: repeat the search. The git hooks, Codex and
+    Copilot CLI read `SKIP_KG` as before.
   - The server counts graph queries itself and holds the count in memory, per session. The hook that
     started a process on every codebase-kg tool call to record the query is gone. A server restart
     resets the count and the list of denied searches; a session older than the server is told once.
   - With the server unreachable a search is allowed with no message. The script printed one.
   - Every `Bash` and `PowerShell` call reaches the server, not only the ones an `if` rule named.
+- In Claude Code the push gate runs in the server too (`kg_hook_push_gate`), and an agent can no longer
+  skip it on its own. A stale push whose prefix carries `SKIP_KG=1` or a matching `KG_STALE_ACK=<n>`
+  makes the server ask the user, through an MCP elicitation that lists the stale files. The push runs
+  only when the user accepts with the box ticked; a decline, a cancel or a run with no user leaves it
+  denied. A client without elicitation gets the question in its permission prompt. `SKIP_KG` and
+  `KG_STALE_ACK` in the environment of the Claude Code process no longer open the gate. The deny tells
+  the agent to refresh the graph, commit it and push again without asking the user. Codex and Copilot
+  CLI run the script as before.
+- A hook answers `allow` for the six graph write tools in Claude Code, so a graph refresh does not stop
+  at a permission prompt. A graph update changes no code, and the graph file is in git.
 - Every tool has a written title, and `kg_add_link` and `kg_add_reference` carry `idempotentHint`: a
   repeat of either changes nothing, so a client may send the call again after a dropped connection.
 - `kg_search` carries `_meta["anthropic/alwaysLoad"]`, so Claude Code does not put the entry point
@@ -68,6 +78,8 @@ All notable changes to the `codebase-kg` plugin.
 
 ### Removed
 
+- The `SessionEnd` hook (`hooks/kg_session_end.py`). The server already drops a session whose process
+  has exited, which covers Claude Code, Codex and the stdio bridge, so nothing has to unregister one.
 - The post-edit nudge (`hooks/kg_post_edit_check.py`) for Claude Code, Codex and Copilot CLI. It
   printed a message the model never received, and it started Python on every edit. The
   `post_edit_nudge` and `nudge_every` keys are no longer read; a per-clone file that still has them

@@ -19,7 +19,6 @@ ROOT = Path(__file__).resolve().parents[2]
 START_HOOK = ROOT / "hooks" / "kg_server_start.py"
 HEADERS = ROOT / "mcp" / "launch" / "kg_headers.py"
 LAUNCHER = '. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/'
-END_HOOK = ROOT / "hooks" / "kg_session_end.py"
 
 
 def _load(path: Path, name: str) -> Any:
@@ -120,27 +119,19 @@ def test_the_start_hook_ignores_a_payload_with_no_session(cache: Path, raw: str)
     assert not shim.sessions_dir().exists()
 
 
-def test_the_end_hook_unregisters_the_session(cache: Path) -> None:
-    hook = _load(END_HOOK, "kg_session_end_under_test")
-    shim.register_session("sess-9", os.getpid())
-    assert hook.unregister(hook.load_shim(), json.dumps({"session_id": "sess-9", "reason": "other"}))
-    assert shim.live_sessions() == []
-    assert not hook.unregister(hook.load_shim(), "not json")
-
-
-def test_the_end_hook_prints_nothing_and_exits_zero(cache: Path) -> None:
-    shim.register_session("sess-9", os.getpid())
-    proc = subprocess.run([sys.executable, str(END_HOOK)], input=json.dumps({"session_id": "sess-9"}),
-                          capture_output=True, text=True, env={**os.environ}, timeout=TIMEOUT, check=False)
-    assert (proc.returncode, proc.stdout, proc.stderr) == (0, "", "")
-    assert shim.live_sessions() == []
-
-
-def test_the_hooks_are_registered() -> None:
+def test_no_hook_unregisters_a_session_and_a_dead_agent_ends_it(cache: Path) -> None:
+    """The server drops a session whose process has exited, so a closed, killed or crashed agent ends
+    its session the same way, with no SessionEnd hook to cut short."""
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
-    commands = [h["command"] for entry in hooks["SessionEnd"] for h in entry["hooks"]]
-    assert commands == [f'{LAUNCHER}kg_session_end.cmd"; exit $LASTEXITCODE']
-    assert all(h["timeout"] <= 5 for entry in hooks["SessionEnd"] for h in entry["hooks"])
+    assert "SessionEnd" not in hooks
+    assert not (ROOT / "hooks" / "kg_session_end.py").exists()
+
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait(timeout=TIMEOUT)
+    shim.register_session("ended", gone.pid)
+    shim.register_session("running", os.getpid())
+    assert shim.live_sessions() == ["running"]
+    assert not (shim.sessions_dir() / "ended.json").exists()
 
 
 def test_the_headers_helper_registers_a_codex_session_by_its_pid(cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:

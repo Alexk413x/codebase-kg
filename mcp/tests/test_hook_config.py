@@ -228,9 +228,29 @@ def test_the_search_gate_is_one_direct_call_to_the_server_per_tool(tool: str) ->
     assert not _handlers(tool), "no search gate process starts for Claude Code"
 
 
-def test_the_push_gate_starts_only_for_git_commands() -> None:
-    handlers = _handlers("Bash", "kg_push_gate.py")
-    assert [h["if"] for h in handlers] == ["Bash(git *)"]
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+def test_the_push_gate_is_asked_only_for_git_commands(tool: str) -> None:
+    (handler,) = _direct(tool, "kg_hook_push_gate")
+    assert handler["if"] == f"{tool}(git *)"
+    assert not _handlers(tool, "kg_push_gate.py"), "no push gate process starts for Claude Code"
+
+
+def test_the_graph_write_tools_are_allowed_without_a_prompt() -> None:
+    """The push gate tells the agent to refresh the graph without asking the user. A permission prompt on
+    a graph write would stop that refresh, and a graph update changes no code."""
+    import json
+    import re
+
+    config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
+    (group,) = [g for g in config["hooks"]["PreToolUse"] if "kg_hook_allow_write" in json.dumps(g)]
+    from codebase_kg import worker
+
+    for name in worker.WRITE_TOOLS:
+        assert re.fullmatch(group["matcher"], f"mcp__plugin_codebase-kg_codebase-kg__{name}"), name
+        assert re.fullmatch(group["matcher"], f"mcp__codebase-kg__{name}"), name
+    for name in ("kg_search", "kg_node", "kg_find_by_path"):
+        assert not re.fullmatch(group["matcher"], f"mcp__plugin_codebase-kg_codebase-kg__{name}"), name
+    assert not re.fullmatch(group["matcher"], "mcp__plugin_other_other__kg_upsert_node")
 
 
 
@@ -261,7 +281,7 @@ def test_every_command_sources_one_launcher_that_runs_in_sh_and_powershell() -> 
     PowerShell 5.1 has no `&&`, and the interpreter is chosen inside the launcher. The tail hands
     the script's exit code to PowerShell."""
     commands = _launch_commands()
-    assert len(commands) == 5
+    assert len(commands) == 2
     for source, command in commands:
         assert command.startswith(LAUNCH_PREFIX) and command.endswith(LAUNCH_TAIL), (source, command)
         name = command[len(LAUNCH_PREFIX):-len(LAUNCH_TAIL)] + ".cmd"
@@ -270,9 +290,9 @@ def test_every_command_sources_one_launcher_that_runs_in_sh_and_powershell() -> 
 
 
 def test_the_launchers_are_one_template_with_the_script_swapped() -> None:
-    template = (RUN / "kg_push_gate.cmd").read_bytes().decode("utf-8")
+    template = (RUN / "kg_server_start.cmd").read_bytes().decode("utf-8")
     scripts = {
-        "kg_push_gate": "hooks", "kg_session_end": "hooks", "kg_server_start": "hooks",
+        "kg_server_start": "hooks",
         "kg_session_start": "hooks", "kg_headers": "mcp/launch",
     }
     assert sorted(p.stem for p in RUN.glob("*.cmd")) == sorted(scripts)
@@ -281,8 +301,8 @@ def test_the_launchers_are_one_template_with_the_script_swapped() -> None:
         text = (RUN / f"{stem}.cmd").read_bytes().decode("utf-8")
         assert chr(13) not in text, f"{stem}: sh cannot read a CR"
         assert (ROOT / folder / f"{stem}.py").is_file()
-        want = template.replace("hooks/kg_push_gate.py", f"{folder}/{stem}.py")
-        want = want.replace(f"hooks{back}kg_push_gate.py", f"{folder}/{stem}.py".replace("/", back))
+        want = template.replace("hooks/kg_server_start.py", f"{folder}/{stem}.py")
+        want = want.replace(f"hooks{back}kg_server_start.py", f"{folder}/{stem}.py".replace("/", back))
         assert text == want, stem
     assert template.startswith(':<<"::KG_CMD"' + chr(10))
     code = [ln.lower() for ln in template.splitlines() if not ln.startswith("rem ")]
@@ -343,8 +363,8 @@ def test_a_failing_hook_script_runs_once_and_reads_the_payload_in_sh(tmp_path: P
     exe = shutil.which(shell)
     if exe is None:
         pytest.skip(f"no {shell}")
-    runs, env = _plugin_with(tmp_path, "kg_session_end", _interpreter_stubs())
-    command = LAUNCH_PREFIX + "kg_session_end" + LAUNCH_TAIL
+    runs, env = _plugin_with(tmp_path, "kg_session_start", _interpreter_stubs())
+    command = LAUNCH_PREFIX + "kg_session_start" + LAUNCH_TAIL
     done = subprocess.run([exe, "-c", command], input=b'{"k": 1}', env=env, capture_output=True,
                           timeout=30, check=False)
     assert done.returncode == 3, done.stderr
@@ -360,8 +380,8 @@ def test_the_launcher_says_so_when_no_interpreter_starts_in_sh(tmp_path: Path) -
     if sh is None:
         pytest.skip("no POSIX shell")
     fail = "#!/bin/sh\nexit 9\n"
-    runs, env = _plugin_with(tmp_path, "kg_session_end", {"py": fail, "python3": fail, "python": fail})
-    done = subprocess.run([sh, "-c", LAUNCH_PREFIX + "kg_session_end" + LAUNCH_TAIL], env=env, capture_output=True,
+    runs, env = _plugin_with(tmp_path, "kg_session_start", {"py": fail, "python3": fail, "python": fail})
+    done = subprocess.run([sh, "-c", LAUNCH_PREFIX + "kg_session_start" + LAUNCH_TAIL], env=env, capture_output=True,
                           timeout=30, check=False)
     assert done.returncode == 127 and b"no working Python" in done.stderr
     assert not runs.exists()
@@ -382,7 +402,7 @@ def _powershell(shell: str, command: str, env: dict[str, str], payload: bytes = 
                           env=env, cwd=cwd, capture_output=True, timeout=60, check=False)
 
 
-def _powershell_command(stem: str = "kg_session_end") -> str:
+def _powershell_command(stem: str = "kg_session_start") -> str:
     """Claude Code rewrites the placeholder to `${env:CLAUDE_PLUGIN_ROOT}` for PowerShell."""
     return LAUNCH_PREFIX.replace("${CLAUDE_PLUGIN_ROOT}", "${env:CLAUDE_PLUGIN_ROOT}") + stem + LAUNCH_TAIL
 
@@ -394,7 +414,7 @@ def test_the_hook_command_runs_once_in_powershell_and_returns_the_exit_code(
 ) -> None:
     """PowerShell is the shell on Windows without Git Bash. The script reads the payload from
     stdin, runs once, and its exit code reaches the caller, as it does through sh."""
-    runs, env = _plugin_with(tmp_path, "kg_session_end", folder=folder)
+    runs, env = _plugin_with(tmp_path, "kg_session_start", folder=folder)
     done = _powershell(shell, _powershell_command(), env, b'{"k": 2}')
     assert done.stdout.decode().strip() == 'got:{"k": 2}', done.stderr
     assert done.returncode == 3
@@ -407,7 +427,7 @@ def test_the_launcher_finds_the_script_in_powershell_without_the_variable(
 ) -> None:
     """The batch half locates the script from its own folder, so a caller that expands the
     placeholder in the command text but exports no variable still works."""
-    _, env = _plugin_with(tmp_path, "kg_session_end")
+    _, env = _plugin_with(tmp_path, "kg_session_start")
     root = env.pop("CLAUDE_PLUGIN_ROOT")
     command = _powershell_command().replace("${env:CLAUDE_PLUGIN_ROOT}", root)
     done = _powershell(shell, command, env, b'{"k": 3}')
@@ -423,7 +443,7 @@ def test_the_launcher_says_so_when_no_interpreter_starts_in_powershell(
     import shutil
 
     exe = shutil.which(shell)
-    runs, env = _plugin_with(tmp_path, "kg_session_end")
+    runs, env = _plugin_with(tmp_path, "kg_session_start")
     # cmd.exe stays reachable; py, python3 and python do not.
     env["PATH"] = os.path.join(os.environ.get("SystemRoot", "C:/Windows"), "System32")
     done = _powershell(exe or shell, _powershell_command(), env)
@@ -435,7 +455,7 @@ def _planted_project(tmp_path: Path) -> Path:
     """A project folder holding look-alike interpreters and plugin scripts. Each one that runs
     creates `ran` in the folder and prints `planted`."""
     project = tmp_path / "project"
-    for rel in ("hooks/kg_session_end.py", "mcp/launch/kg_headers.py"):
+    for rel in ("hooks/kg_session_start.py", "mcp/launch/kg_headers.py"):
         (project / rel).parent.mkdir(parents=True, exist_ok=True)
         (project / rel).write_bytes(f"open({str(project / 'ran')!r}, 'w')\nprint('planted')\n".encode())
     for name in ("py", "python3", "python"):
@@ -452,7 +472,7 @@ def _without_cwd_guard(env: dict[str, str]) -> dict[str, str]:
 
 
 def test_the_launchers_turn_off_the_working_folder_lookup_before_any_interpreter() -> None:
-    text = (RUN / "kg_push_gate.cmd").read_bytes().decode("utf-8")
+    text = (RUN / "kg_server_start.cmd").read_bytes().decode("utf-8")
     assert text.index("set NoDefaultCurrentDirectoryInExePath=1\n") < text.index("py -3")
     assert "kg_root=." not in text
 
@@ -467,9 +487,9 @@ def test_the_launcher_never_runs_a_script_from_the_working_folder_in_sh(tmp_path
     exe = shutil.which(shell)
     if exe is None:
         pytest.skip(f"no {shell}")
-    _, env = _plugin_with(tmp_path, "kg_session_end", _interpreter_stubs())
+    _, env = _plugin_with(tmp_path, "kg_session_start", _interpreter_stubs())
     root = env.pop("CLAUDE_PLUGIN_ROOT")
-    command = (LAUNCH_PREFIX + "kg_session_end" + LAUNCH_TAIL).replace("${CLAUDE_PLUGIN_ROOT}", root)
+    command = (LAUNCH_PREFIX + "kg_session_start" + LAUNCH_TAIL).replace("${CLAUDE_PLUGIN_ROOT}", root)
     project = _planted_project(tmp_path)
     done = subprocess.run([exe, "-c", command], input=b'{"k": 4}', env=env, cwd=project,
                           capture_output=True, timeout=30, check=False)
@@ -487,7 +507,7 @@ def test_the_launcher_never_runs_a_script_from_the_working_folder_in_sh(tmp_path
 def test_the_hook_command_ignores_interpreters_in_the_working_folder_in_powershell(
     tmp_path: Path, shell: str
 ) -> None:
-    runs, env = _plugin_with(tmp_path, "kg_session_end")
+    runs, env = _plugin_with(tmp_path, "kg_session_start")
     project = _planted_project(tmp_path)
     done = _powershell(shell, _powershell_command(), _without_cwd_guard(env), b'{"k": 5}', cwd=project)
     assert not (project / "ran").exists()
@@ -647,7 +667,8 @@ def test_no_hook_reports_graph_queries_to_the_gate() -> None:
     import json
 
     config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
-    assert [g["matcher"] for g in config["hooks"]["PreToolUse"]] == ["Grep|Glob", "Bash", "PowerShell"]
+    reporting = [g for g in config["hooks"]["PreToolUse"] if "search_gate" in json.dumps(g)]
+    assert [g["matcher"] for g in reporting] == ["Grep|Glob", "Bash", "PowerShell"]
     assert "async" not in json.dumps(config["hooks"])
 
 

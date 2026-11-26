@@ -25,8 +25,9 @@ exit within `ORPHAN_CHECK_INTERVAL` seconds once their state file is gone or
 names another server, and at once on `POST /shutdown` with the state-file token.
 Each removes its state file if it is still its own.
 
-Agents also register their sessions (`shim.register_session`, called by the
-SessionStart and SessionEnd hooks). Once a server has seen a registered session,
+Agents also register their sessions with their process id (`shim.register_session`,
+called by the SessionStart hook, the Codex headers helper and the stdio bridge). A
+session whose process has exited is dropped. Once a server has seen a registered session,
 it exits when none has been live for `CODEBASE_KG_SESSION_GRACE` seconds (default
 300; negative turns this off) and nothing has used it for as long. A server that
 never saw a registered session, such as one only Codex uses, keeps the idle limits above.

@@ -7,8 +7,9 @@ then gives up for the session. So this hook checks `GET /health` on the
 answers, starts this plugin's build detached and waits up to 8 s for it. A cold
 Python start takes 2 to 5 s on a loaded Windows machine.
 
-It also registers the session (`shim.register_session`), so the server can exit
-once its last session ends; `kg_session_end.py` unregisters it.
+It also registers the session with the agent's pid (`shim.register_session`). The
+server drops a session whose pid has exited, so it can exit once its last
+session ends and nothing has to unregister one.
 
 It always exits 0 and prints one line only when something is wrong: the port
 belongs to another program, or the server did not come up in time. Stdlib only.

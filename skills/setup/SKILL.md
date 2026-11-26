@@ -286,8 +286,8 @@ Then tell the user what is now live:
   `pre-push` blocks on one thing only — any mapped file that has drifted, including the files this
   push touches. That is zero in a repo kept current; release it with `KG_STALE_ACK=<count>` (the count is
   in the message and the ack expires when it moves), `SKIP_KG=1`, or `git push --no-verify`.
-  `SKIP_KG=1` silences either hook when a change deliberately outruns the graph. In front of a search
-  command it also skips the search gate for that command.
+  `SKIP_KG=1` silences either hook when a change deliberately outruns the graph. It does not apply to
+  the search gate in Claude Code; `search_gate: off` in `.claude/codebase-kg.local.md` turns that off.
 - **One command per clone**: everyone else who clones this repo runs `sh <hooks dir>/install.sh` once.
   It needs plain git, POSIX sh and `uv` — no Claude Code and no plugin install.
 - The fix for drift is `/codebase-kg:refresh`; deeper drift is `/codebase-kg:validate`.

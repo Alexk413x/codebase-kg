@@ -173,8 +173,8 @@ def test_codex_windows_hooks_read_plugin_root_from_the_powershell_environment():
 
 def test_every_codex_hook_script_exists_and_hooks_json_runs_it_too():
     claude = (ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
-    # Claude Code asks the server for the search gate's decision; the server loads the same script.
-    answered_by_the_server = {"kg_search_gate.py": "kg_hook_search_gate"}
+    # Claude Code asks the server for both gates' decisions; the server loads the same scripts.
+    answered_by_the_server = {"kg_search_gate.py": "kg_hook_search_gate", "kg_push_gate.py": "kg_hook_push_gate"}
     for _, hook in _codex_commands():
         script = str(hook["command"]).split("/hooks/")[1].split('"')[0]
         assert (ROOT / "hooks" / script).is_file(), script

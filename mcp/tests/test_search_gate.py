@@ -447,20 +447,16 @@ def test_skip_kg_in_the_servers_environment_does_not_reach_its_gate(
 
 
 @pytest.mark.parametrize("command", [
-    "SKIP_KG=1 grep -rn Known .",
-    "cd app && SKIP_KG=yes rg Known",
     "export SKIP_KG=1; grep -rn Known .",
-    "env SKIP_KG=1 grep -rn Known .",
+    "export SKIP_KG=1 && rg Known app",
     "$env:SKIP_KG = '1'; Select-String -Path . -Pattern Known",
 ])
-def test_skip_kg_written_in_front_of_a_shell_search_skips_the_servers_gate(repo: Path, command: str) -> None:
+def test_skip_kg_written_in_front_of_a_search_does_not_open_the_servers_gate(repo: Path, command: str) -> None:
+    """A skip is the user's choice. An agent that could write its own would pass the gate without a word;
+    its way through is to repeat the search."""
     tool = "PowerShell" if command.startswith("$env") else "Bash"
-    assert _server_run(repo, tool, {"command": command}, "s1", None) is None
-
-
-@pytest.mark.parametrize("command", ["grep -rn SKIP_KG=1 .", "echo SKIP_KG; grep -rn Known ."])
-def test_a_search_that_only_mentions_skip_kg_is_still_gated_by_the_server(repo: Path, command: str) -> None:
-    assert decision(_server_run(repo, "Bash", {"command": command}, "s1", None)) == "deny"
+    assert decision(_server_run(repo, tool, {"command": command}, "s1", None)) == "deny"
+    assert _server_run(repo, tool, {"command": command}, "s1", None) is None, "the repeat passes"
 
 
 def _write_local_config(proj: Path, body: str) -> None:

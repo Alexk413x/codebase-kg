@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +23,8 @@ from codebase_kg.writer import build
 
 
 @pytest.fixture(autouse=True)
-def fresh_server_state() -> Iterator[None]:
+def fresh_server_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setattr(search_gate, "_unusable", False)
     for store in (search_gate._states, search_gate._queried, search_gate._sessions):
         store.clear()
     yield
@@ -124,16 +127,25 @@ def test_a_failing_gate_answers_an_empty_object(repo: Path, monkeypatch: pytest.
     assert json.loads(search_gate.call({"tool_name": "Grep"}, "c")["content"][0]["text"]) == {}
 
 
-def test_a_gate_script_without_a_part_the_server_replaces_is_refused(monkeypatch: pytest.MonkeyPatch,
-                                                                      tmp_path: Path) -> None:
-    """The server swaps named functions of the script. If a rename removes one, the gate must fail loudly
-    at load and open for searches, not run with the script's own state files."""
+def test_a_gate_script_without_a_part_the_server_replaces_turns_the_gate_off_and_logs_once(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The server swaps named functions of the script. If a rename removes one, the gate must not run
+    with the script's own state files: it turns off, searches pass, and the log says why one time,
+    not on every Bash call."""
     stub = tmp_path / "kg_search_gate.py"
     stub.write_text("def _run(data):\n    pass\n", encoding="utf-8")
     monkeypatch.setattr(search_gate, "SCRIPT", stub)
     monkeypatch.setattr(search_gate, "_script", None)
-    with pytest.raises(ImportError, match="has no _read_state"):
-        search_gate._load()
+    monkeypatch.setattr(search_gate, "_unusable", False)
+
+    with caplog.at_level("ERROR", logger="codebase_kg.search_gate"):
+        answers = [_gate(repo, "c", pattern=f"p{i}") for i in range(4)]
+
+    assert answers == [{}, {}, {}, {}]
+    assert len(caplog.records) == 1 and "could not be loaded" in caplog.records[0].getMessage()
+    failure = caplog.records[0].exc_info
+    assert failure is not None and "has no _read_state" in str(failure[1])
 
 
 def test_loading_the_script_writes_no_bytecode_into_the_plugin(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,6 +159,61 @@ def test_loading_the_script_writes_no_bytecode_into_the_plugin(monkeypatch: pyte
 
 
 # --- a server that started after the session ---------------------------------------------------------
+FIRST_LINE = datetime(2026, 11, 25, 19, 17, 52, tzinfo=timezone.utc).timestamp()
+
+
+@pytest.mark.parametrize(("stamp", "expected"), [
+    ("2026-11-25T19:17:52.078Z", FIRST_LINE + 0.078), ("2026-11-25T19:17:52+00:00", FIRST_LINE),
+    ("2026-11-25T20:17:52+01:00", FIRST_LINE),
+])
+def test_the_session_start_falls_back_to_the_first_line_where_no_creation_time_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stamp: str, expected: float,
+) -> None:
+    """Linux records no creation time, and `st_ctime` there moves with every appended line."""
+    path = tmp_path / "t.jsonl"
+    path.write_text(json.dumps({"type": "user", "timestamp": stamp}) + "\n" + json.dumps({"timestamp": "2030-01-01T00:00:00Z"}) + "\n",
+                    encoding="utf-8")
+    monkeypatch.setattr(search_gate, "_created", lambda p: None)
+    assert search_gate.session_started(str(path)) == pytest.approx(expected)
+
+
+def test_a_transcript_with_no_usable_start_gives_no_session_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(search_gate, "_created", lambda p: None)
+    for body in ("", "not json\n", '{"timestamp": 5}\n', '{"no": "timestamp"}\n'):
+        path = tmp_path / "t.jsonl"
+        path.write_text(body, encoding="utf-8")
+        assert search_gate.session_started(str(path)) is None
+    assert search_gate.session_started(str(tmp_path / "missing.jsonl")) is None
+    assert search_gate.session_started(None) is None
+
+
+def test_the_notice_works_from_the_first_line_alone(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "t.jsonl"
+    path.write_text('{"timestamp": "2026-11-25T19:17:52Z"}\n', encoding="utf-8")
+    monkeypatch.setattr(search_gate, "_created", lambda p: None)
+    monkeypatch.setattr(search_gate, "STARTED", FIRST_LINE + search_gate.RESTART_SLACK + 30)
+    assert _gate(repo, "c", transcript_path=str(path))["systemMessage"] == search_gate.RESTARTED
+    monkeypatch.setattr(search_gate, "STARTED", FIRST_LINE + 5)
+    assert "systemMessage" not in _gate(repo, "c2", session="young", transcript_path=str(path))
+
+
+def test_the_creation_time_is_not_taken_from_ctime_off_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "t.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+
+    class Stat:
+        st_ctime = 123.0
+
+    monkeypatch.setattr(os, "stat", lambda p: Stat())
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert search_gate._created(str(path)) is None
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert search_gate._created(str(path)) == 123.0
+    Stat.st_birthtime = 77.0  # type: ignore[attr-defined]
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert search_gate._created(str(path)) == 77.0
+
+
 def _transcript(tmp_path: Path, age: float) -> str:
     path = tmp_path / "transcript.jsonl"
     path.write_text("{}\n", encoding="utf-8")

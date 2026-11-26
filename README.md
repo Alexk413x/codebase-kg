@@ -188,8 +188,8 @@ in about 0.2 s and holds about 25 MB while idle.
   and any foreign `Origin`, and needs a bearer token that only your user account can read. The
   `headersHelper` (`mcp/launch/kg_headers.py`) sends that token only after the server on the port
   proves, through its state file, to be yours.
-- **Lifetime.** The `SessionStart` and `SessionEnd` hooks register and unregister each Claude Code
-  session. A server that has seen a registered session exits after 300 s
+- **Lifetime.** The `SessionStart` hook registers each Claude Code session with its process id, and
+  the server drops a session whose process has exited. A server that has seen a registered session exits after 300 s
   (`CODEBASE_KG_SESSION_GRACE`) with no live session and no use, so a session that starts within that
   time keeps it. A server that has seen none exits after 8 hours with no request if it holds the HTTP
   port, and after 10 minutes with no connection if it serves only shims.
@@ -294,7 +294,7 @@ codebase-kg/
 │   ├── src/codebase_kg/      # the server and the CLIs (module map in mcp/README.md)
 │   ├── launch/               # kg_cli.py (CLI runner), kg-shim and kg-shim.cmd (stdio relay), kg_headers.py (HTTP headers helper), kg_copilot.py (Copilot CLI stdio configuration printer), run/ (one launcher per hook script and for kg_headers.py)
 │   └── claude.mcp.json       # registers the HTTP endpoint, with kg_headers.py as the headersHelper
-├── hooks/                    # Claude Code, Codex and Copilot CLI hooks: the search gate, the push gate, the unwired-clone notice, the server start, the session end
+├── hooks/                    # Claude Code, Codex and Copilot CLI hooks: the search gate, the push gate, the unwired-clone notice, the server start
 └── git-hooks/                # advisory pre-commit + pre-push staleness checks and install.sh, vendored into any repo (stdlib-only)
 ```
 
@@ -317,8 +317,7 @@ and nothing answers as codebase-kg on the server port, it allows the search and 
 session. The message names `kg_cli.py server start`.
 
 It ships with the plugin, so there is nothing to install — it activates in every repo that has a
-graph, and stays silent in every repo that does not. `SKIP_KG=1` in front of a search command
-(`SKIP_KG=1 grep -rn x src`) skips it for that command;
+graph, and stays silent in every repo that does not.
 `search_gate: warn` in `.claude/codebase-kg.local.md` downgrades it to a message, and
 `search_gate: off` disables it.
 
@@ -339,9 +338,12 @@ Three advisory layers, all pointing at the same fix (`/codebase-kg:refresh`):
 - **Push gate for agents** (`hooks/kg_push_gate.py`, a `PreToolUse` hook on Bash): when an agent runs
   `git push` (also `git -C <dir> push`, chained, or env-prefixed) while any mapped file is stale
   against `HEAD`, the hook denies the call. The reason lists the stale files and tells the agent to run
-  `/codebase-kg:refresh`, commit the graph and push again. `SKIP_KG=1` and a matching
-  `KG_STALE_ACK=<n>` pass it, and so does a push that only deletes refs. `--no-verify` does not, because
-  it skips git hooks and not this one. The hook fails open on any error. It uses the pre-push hook's
+  `/codebase-kg:refresh`, commit the graph and push again, without asking you. An agent cannot skip
+  the check on its own in Claude Code: a push prefixed with `SKIP_KG=1` or a matching
+  `KG_STALE_ACK=<n>` makes the server ask you, in a dialog that lists the stale files, and a session
+  with no user is refused. In Codex and Copilot CLI those prefixes pass. A push that only deletes
+  refs passes. `--no-verify` does not, because it skips git hooks and not this one. The hook fails
+  open on any error. It uses the pre-push hook's
   comparison, so both agree on what is stale.
 - **Commit/push checks** (`git-hooks/`): installed per-repo via `/codebase-kg:setup`. They compare
   the change set against the graph and report three things: source no node covers, deleted files the
