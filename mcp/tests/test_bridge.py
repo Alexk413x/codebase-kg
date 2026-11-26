@@ -45,6 +45,7 @@ class Endpoint:
     def __init__(self, answer: Answer, port: int = 0) -> None:
         self.answer = answer
         self.seen: list[tuple[dict[str, Any], dict[str, str]]] = []
+        self.peers: list[int] = []
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -57,6 +58,7 @@ class Endpoint:
                 body = json.loads(self.rfile.read(int(self.headers.get("content-length") or 0)))
                 headers = {k.lower(): v for k, v in self.headers.items()}
                 outer.seen.append((body, headers))
+                outer.peers.append(self.client_address[1])
                 reply = outer.answer(body, headers)
                 if callable(reply):
                     reply(self)
@@ -355,6 +357,37 @@ def test_a_refused_token_is_read_again_and_the_request_is_sent_once_more(serve: 
     assert session.refreshes == [False, True] and len(endpoint.seen) == 2
 
 
+def test_requests_in_turn_share_one_connection_and_one_check_of_the_holder(serve: Any) -> None:
+    """The owner's headers function is where the port's holder is checked, so it must run for every new
+    connection, and need not run again for a connection that stays with the checked process."""
+    endpoint, session = serve(lambda request, headers: _ok(request, {}))
+    for _ in range(5):
+        assert "result" in session.client.request("tools/list", _modern(""))
+    assert len(set(endpoint.peers)) == 1 and session.refreshes == [False]
+
+
+def test_a_kept_connection_the_server_closed_is_replaced_and_the_request_sent_again(serve: Any) -> None:
+    def answer(request: dict[str, Any], headers: dict[str, str]) -> Any:
+        data = json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {"resultType": "complete"}}).encode()
+
+        def reply_then_hang_up(handler: BaseHTTPRequestHandler) -> None:
+            handler.send_response(200)
+            handler.send_header("Content-Type", "application/json")
+            handler.send_header("Content-Length", str(len(data)))
+            handler.end_headers()
+            handler.wfile.write(data)
+            handler.wfile.flush()
+            handler.close_connection = True
+
+        return reply_then_hang_up
+
+    endpoint, session = serve(answer)
+    assert "result" in session.client.request("tools/list", _modern(""))
+    time.sleep(0.3)
+    assert "result" in session.client.request("tools/list", _modern(""))
+    assert len(set(endpoint.peers)) == 2 and session.refreshes == [False, False]
+
+
 def test_a_token_refused_twice_is_an_error_not_a_loop(serve: Any) -> None:
     endpoint, session = serve(lambda request, headers: (403, {"error": "missing or wrong bearer token"}),
                               ensure=lambda: True)
@@ -380,7 +413,7 @@ def test_no_server_asks_the_owner_to_start_one_and_tries_once_more() -> None:
     session = Session(port, ensure)
     try:
         assert session.client.request("tools/list", _modern(""))["result"]["up"] is True
-        assert session.ensured == 1 and session.refreshes == [False, True]
+        assert session.ensured == 1 and session.refreshes == [True]
     finally:
         session.close()
         for endpoint in started:
@@ -443,6 +476,27 @@ def test_bad_lines_are_answered_and_end_of_input_stops_the_bridge(serve: Any) ->
 def test_the_bridge_folder_imports_nothing_from_the_package() -> None:
     source = Path(bridge.__file__).read_text(encoding="utf-8")
     assert "codebase_kg" not in source and "from ." not in source and "import shim" not in source
+
+
+def test_the_shim_verifies_the_port_holder_before_every_send_of_the_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A token cached across requests would go to whatever binds the port after the server exits."""
+    holders = iter(["tok-1", "tok-1", None, "tok-2"])
+    asked: list[int] = []
+
+    def verified(port: int) -> str | None:
+        asked.append(port)
+        return next(holders)
+
+    monkeypatch.setattr(shim, "verified_token", verified)
+    headers = shim.bridge_headers(4711, {"X-Fixed": "1"})
+
+    assert headers(False) == {"X-Fixed": "1", "Authorization": "Bearer tok-1"}
+    assert headers(False) == {"X-Fixed": "1", "Authorization": "Bearer tok-1"}
+    assert headers(False) == {"X-Fixed": "1"}, "an unverified holder gets no token"
+    assert headers(True) == {"X-Fixed": "1", "Authorization": "Bearer tok-2"}
+    assert asked == [4711] * 4
 
 
 def test_the_shim_sends_the_header_names_the_server_reads() -> None:

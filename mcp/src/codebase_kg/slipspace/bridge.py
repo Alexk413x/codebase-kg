@@ -24,11 +24,19 @@ Requests run at the same time, each on its own thread and connection. A
 `notifications/cancelled` from the client closes the matching connection, which is
 the cancel signal of the HTTP transport, and the bridge writes no result for it.
 
+Connections are kept open and reused for up to `KEEP` seconds. The owner's
+headers function runs once for each new connection and never for a kept one, so
+an owner that checks who holds the port before it hands over a credential checks
+every process the credential is sent to: a kept connection stays with the process
+that was checked.
+
 When the server cannot be reached, the bridge asks its owner to start it and
-tries once more. When the server refuses the token, it reads the token again and
-tries once more. A connection that fails after the request was sent is never
-retried, because the server may have run the call: the client gets a JSON-RPC
-error and decides.
+tries once more. When the server refuses the token, it opens a new connection,
+which asks the owner for the headers again, and tries once more. A request that
+fails on a kept connection is sent once more on a new one, because a server that
+closed the connection while it was idle is the common cause. A request that fails
+on a new connection after it was sent is never retried, because the server may
+have run the call: the client gets a JSON-RPC error and decides.
 
 This folder imports nothing from the package around it. The owner passes the
 port, a function that returns the request headers, and a function that starts
@@ -42,6 +50,7 @@ import http.client
 import json
 import sys
 import threading
+import time
 from typing import Any, BinaryIO, Callable
 
 MODERN = "2026-07-28"
@@ -57,6 +66,8 @@ INTERNAL = -32603
 REQUEST_TIMEOUT = 300.0
 CLIENT_ANSWER_TIMEOUT = 600.0
 MAX_ROUNDS = 8
+KEEP = 20.0
+MAX_KEPT = 8
 DRAIN = 5.0
 
 Headers = Callable[[bool], "dict[str, str]"]
@@ -117,6 +128,7 @@ class Bridge:
         self._cancelled: set[Any] = set()
         self._waiters: dict[str, tuple[threading.Event, list[dict[str, Any]]]] = {}
         self._threads: set[threading.Thread] = set()
+        self._idle: list[tuple[http.client.HTTPConnection, dict[str, str], float]] = []
         self._asked = 0
         self._closing = threading.Event()
         self.client_capabilities: dict[str, Any] = {}
@@ -140,6 +152,10 @@ class Bridge:
             event.set()
         for thread in threads:
             thread.join(DRAIN)
+        with self._lock:
+            idle, self._idle = self._idle, []
+        for conn, _, _ in idle:
+            conn.close()
         return 0
 
     def _line(self, line: bytes) -> None:
@@ -314,47 +330,78 @@ class Bridge:
         """The server's JSON-RPC response to `message`. Raises `Unavailable` or `Cancelled`."""
         params = message.get("params")
         fields: dict[str, Any] = params if isinstance(params, dict) else {}
-        mirrored = {"MCP-Protocol-Version": MODERN, "Mcp-Method": str(message.get("method"))}
+        mirrored = {"MCP-Protocol-Version": MODERN, "Mcp-Method": str(message.get("method")),
+                    "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                    "Host": f"{self.host}:{self.port}"}
         named = fields.get(NAMED_BY.get(str(message.get("method")), ""))
         if isinstance(named, str):
             mirrored["Mcp-Name"] = header_value(named)
         body = json.dumps(message, separators=(",", ":")).encode("utf-8")
-        refreshed = False
+        started = refused = stale = False
         while True:
-            headers = {**self._headers(refreshed), **mirrored, "Content-Type": "application/json",
-                       "Accept": "application/json, text/event-stream", "Host": f"{self.host}:{self.port}"}
-            conn = http.client.HTTPConnection(self.host, self.port, timeout=REQUEST_TIMEOUT)
-            try:
+            kept = self._take()
+            if kept is not None:
+                conn, owned = kept
+            else:
+                conn = http.client.HTTPConnection(self.host, self.port, timeout=REQUEST_TIMEOUT)
                 try:
                     conn.connect()
                 except OSError as exc:
-                    if refreshed or not self._ensure():
+                    conn.close()
+                    if started or not self._ensure():
                         raise Unavailable(f"no server on port {self.port}") from exc
-                    refreshed = True
+                    started = True
                     continue
-                with self._lock:
-                    if request_id in self._cancelled:
-                        raise Cancelled
-                    self._inflight[request_id] = conn
-                try:
-                    conn.request("POST", self.path, body=body, headers=headers)
-                    response = conn.getresponse()
-                    raw = response.read()
-                except (OSError, http.client.HTTPException) as exc:
-                    with self._lock:
-                        if request_id in self._cancelled:
-                            raise Cancelled from exc
-                    raise Unavailable("the connection closed before the answer") from exc
-                if response.status == 403 and not refreshed:
-                    refreshed = True
-                    self._ensure()
-                    continue
-                return self._parsed(response, raw, request_id)
-            finally:
-                with self._lock:
-                    if self._inflight.get(request_id) is conn:
-                        self._inflight[request_id] = None
+                owned = self._headers(started or refused)
+            with self._lock:
+                if request_id in self._cancelled:
+                    conn.close()
+                    raise Cancelled
+                self._inflight[request_id] = conn
+            try:
+                conn.request("POST", self.path, body=body, headers={**owned, **mirrored})
+                response = conn.getresponse()
+                raw = response.read()
+            except (OSError, http.client.HTTPException) as exc:
                 conn.close()
+                with self._lock:
+                    self._inflight[request_id] = None
+                    if request_id in self._cancelled:
+                        raise Cancelled from exc
+                if kept is not None and not stale:
+                    stale = True
+                    continue
+                raise Unavailable("the connection closed before the answer") from exc
+            with self._lock:
+                self._inflight[request_id] = None
+            if response.status == 403 and not refused:
+                conn.close()
+                refused = True
+                self._ensure()
+                continue
+            if response.will_close or response.status == 403:
+                conn.close()
+            else:
+                self._give(conn, owned)
+            return self._parsed(response, raw, request_id)
+
+    def _take(self) -> tuple[http.client.HTTPConnection, dict[str, str]] | None:
+        """A kept connection that is still fresh, with the headers it was opened with."""
+        while True:
+            with self._lock:
+                if not self._idle:
+                    return None
+                conn, owned, since = self._idle.pop()
+            if time.monotonic() - since < KEEP:
+                return conn, owned
+            conn.close()
+
+    def _give(self, conn: http.client.HTTPConnection, owned: dict[str, str]) -> None:
+        with self._lock:
+            if len(self._idle) < MAX_KEPT and not self._closing.is_set():
+                self._idle.append((conn, owned, time.monotonic()))
+                return
+        conn.close()
 
     def _parsed(self, response: http.client.HTTPResponse, raw: bytes, request_id: Any) -> dict[str, Any]:
         if "text/event-stream" in (response.getheader("content-type") or ""):

@@ -62,6 +62,11 @@ mcp: FastMCP[Any] = FastMCP("codebase-kg", instructions=INSTRUCTIONS)
 _QUERY: dict[str, Any] = {"readOnlyHint": True, "openWorldHint": False}
 _WRITE: dict[str, Any] = {"readOnlyHint": False, "openWorldHint": False}
 _DESTRUCTIVE: dict[str, Any] = {**_WRITE, "destructiveHint": True}
+# A repeat of the same call changes nothing, so a client may send it again after a dropped connection.
+_REPEATABLE: dict[str, Any] = {**_WRITE, "destructiveHint": False, "idempotentHint": True}
+# The search gate denies a text search until a graph query runs, so the entry point must not sit
+# behind a client's tool search.
+_ALWAYS_LOADED: dict[str, Any] = {"anthropic/alwaysLoad": True}
 # Passed explicitly to the write tools: a `ToolResult` in the return type stops
 # fastmcp inferring any output schema, so the writes would otherwise lose it.
 _OBJECT: dict[str, Any] = {"type": "object", "additionalProperties": True}
@@ -134,7 +139,7 @@ def catalog() -> dict[str, Any]:
 
 # An optional parameter declares its default inside `Field`, not as `= None`:
 # fastmcp wraps a `= None` parameter in a second anyOf and its description ends up nested inside it.
-@mcp.tool(annotations=_QUERY)
+@mcp.tool(title="Search the code graph", annotations=_QUERY, meta=_ALWAYS_LOADED)
 def kg_search(
     query: Annotated[str, Field(description='Free text, e.g. "feed ranking".')],
     kind: Annotated[
@@ -148,7 +153,7 @@ def kg_search(
     return _read("kg_search", {"query": query, "kind": kind})
 
 
-@mcp.tool(annotations=_QUERY)
+@mcp.tool(title="Get a graph node", annotations=_QUERY)
 def kg_node(
     id: Annotated[str, Field(description="Node id.")],
 ) -> dict[str, Any]:
@@ -158,7 +163,7 @@ def kg_node(
     return _read("kg_node", {"id": id})
 
 
-@mcp.tool(annotations=_QUERY)
+@mcp.tool(title="Get a node's neighborhood", annotations=_QUERY)
 def kg_neighborhood(
     id: Annotated[str, Field(description="Center node id.")],
     depth: Annotated[
@@ -174,7 +179,7 @@ def kg_neighborhood(
     return _read("kg_neighborhood", {"id": id, "depth": depth, "limit": limit, "offset": offset})
 
 
-@mcp.tool(annotations=_QUERY)
+@mcp.tool(title="Find nodes by kind", annotations=_QUERY)
 def kg_find_by_kind(
     kind: Annotated[
         str,
@@ -189,7 +194,7 @@ def kg_find_by_kind(
     return _read("kg_find_by_kind", {"kind": kind, "limit": limit, "offset": offset})
 
 
-@mcp.tool(annotations=_QUERY)
+@mcp.tool(title="Find nodes by file path", annotations=_QUERY)
 def kg_find_by_path(
     path: Annotated[
         str,
@@ -203,7 +208,7 @@ def kg_find_by_path(
     return _read("kg_find_by_path", {"path": path, "limit": limit, "offset": offset})
 
 
-@mcp.tool(annotations=_QUERY)
+@mcp.tool(title="Find nodes by cross-graph link", annotations=_QUERY)
 def kg_find_by_link(
     target: Annotated[
         str,
@@ -216,7 +221,7 @@ def kg_find_by_link(
     return _read("kg_find_by_link", {"target": target})
 
 
-@mcp.tool(annotations=_QUERY)
+@mcp.tool(title="Find nodes by reference", annotations=_QUERY)
 def kg_find_by_reference(
     query: Annotated[
         str | None,
@@ -294,7 +299,7 @@ class NodePatch(TypedDict, total=False):
     ]
 
 
-@mcp.tool(annotations={**_WRITE, "destructiveHint": False, "idempotentHint": True}, output_schema=_OBJECT)
+@mcp.tool(title="Create or update graph nodes", annotations=_REPEATABLE, output_schema=_OBJECT)
 def kg_upsert_node(
     nodes: Annotated[list[NodePatch], Field(description="One object per node.")],
 ) -> dict[str, Any] | ToolResult:
@@ -307,7 +312,7 @@ def kg_upsert_node(
     return _write(_edits.upsert_node, nodes)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE, output_schema=_OBJECT)
+@mcp.tool(title="Delete graph nodes", annotations=_DESTRUCTIVE, output_schema=_OBJECT)
 def kg_delete_node(
     ids: Annotated[list[str], Field(description="Node ids.")],
     dry_run: Annotated[
@@ -324,7 +329,7 @@ def kg_delete_node(
     return _write(_edits.delete_node, ids, dry_run=dry_run, cascade_inbound=cascade_inbound)
 
 
-@mcp.tool(annotations=_WRITE, output_schema=_OBJECT)
+@mcp.tool(title="Add a cross-graph link", annotations=_REPEATABLE, output_schema=_OBJECT)
 def kg_add_link(
     node_id: Annotated[str, Field(description="Code node id.")],
     target: Annotated[
@@ -342,7 +347,7 @@ def kg_add_link(
     return _write(_edits.add_link, node_id, target, kind)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE, output_schema=_OBJECT)
+@mcp.tool(title="Remove a cross-graph link", annotations=_DESTRUCTIVE, output_schema=_OBJECT)
 def kg_remove_link(
     node_id: Annotated[str, Field(description="Code node id.")],
     target: Annotated[
@@ -356,7 +361,7 @@ def kg_remove_link(
     return _write(_edits.remove_link, node_id, target)
 
 
-@mcp.tool(annotations=_WRITE, output_schema=_OBJECT)
+@mcp.tool(title="Add a reference to a node", annotations=_REPEATABLE, output_schema=_OBJECT)
 def kg_add_reference(
     node_id: Annotated[str, Field(description="Code node id.")],
     url: Annotated[str, Field(description="Documentation URL.")],
@@ -380,7 +385,7 @@ def kg_add_reference(
     return _write(_edits.add_reference, node_id, url, kind, title, path, symbol)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE, output_schema=_OBJECT)
+@mcp.tool(title="Remove a reference from a node", annotations=_DESTRUCTIVE, output_schema=_OBJECT)
 def kg_remove_reference(
     node_id: Annotated[str, Field(description="Code node id.")],
     url: Annotated[str, Field(description="As `kg_node` lists it.")],

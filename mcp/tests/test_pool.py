@@ -155,6 +155,39 @@ def test_a_hung_worker_times_out_and_is_replaced(pools: list[Pool], fake: list[s
     assert _call(p, "kg_stats")["pid"] != first
 
 
+def test_a_cancelled_call_stops_its_worker_and_frees_the_slot(pools: list[Pool], fake: list[str]) -> None:
+    p = _pool(pools, 1, timeout=30, command=fake)
+    worker = _call(p, "kg_stats")["pid"]
+    asked: list[float] = []
+
+    def cancelled() -> bool:
+        asked.append(time.monotonic())
+        return len(asked) >= 3
+
+    t = time.monotonic()
+    with pytest.raises(pool_mod.Cancelled):
+        p.call("hang", {}, "/unused", cancelled)
+    assert time.monotonic() - t < 5 and len(asked) == 3
+    assert p.size() == 0
+    assert _wait_until(lambda: not shim.pid_alive(worker)), "the cancelled worker was not killed"
+    assert _call(p, "kg_stats")["pid"] != worker
+
+
+def test_a_call_that_is_not_cancelled_answers_as_usual(pools: list[Pool], fake: list[str]) -> None:
+    p = _pool(pools, 1, command=fake)
+    assert p.call("slow", {"s": 0.4}, "/unused", lambda: False)["tool"] == "slow"
+    assert p.size() == 1
+
+
+def test_a_write_is_never_cancelled(bound: Path, pools: list[Pool]) -> None:
+    """A write runs to its end, so the graph on disk is the one it produced or the one before it."""
+    engine = core.Core(_pool(pools, 1))
+    conn = resolve.Connection(cwd=bound.parent, explicit=bound)
+    result = engine.call_tool(conn, "kg_add_reference", {"node_id": "nope", "url": "https://example.com/x"},
+                              lambda: True)
+    assert result["isError"] is True and result["structuredContent"]["written"] is False
+
+
 def test_a_tool_error_keeps_the_worker(pools: list[Pool], fake: list[str]) -> None:
     p = _pool(pools, 2, command=fake)
     pid = _call(p, "kg_stats")["pid"]

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from codebase_kg import commit_check, core
+from codebase_kg import classic, commit_check, core
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.store import CodeGraph
 from codebase_kg.writer import build
@@ -404,7 +404,7 @@ def test_a_failing_check_answers_an_empty_object(monkeypatch: pytest.MonkeyPatch
 def test_the_hook_endpoint_is_not_in_the_catalog_and_needs_no_session() -> None:
     assert commit_check.TOOL not in core.TOOLS
     assert core.hook_result("kg_search", {}) is None
-    reply = core.classic(core.Core(None), None, {
+    reply = classic.answer(core.Core(None), None, {
         "jsonrpc": "2.0", "id": 7, "method": "tools/call",
         "params": {"name": commit_check.TOOL, "arguments": {"command": "git status", "cwd": "C:/x"}},
     })

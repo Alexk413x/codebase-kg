@@ -158,10 +158,15 @@ the shared server's HTTP endpoint (`slipspace/bridge.py`), so every client reach
   nothing for the session, so a server restart needs no replay.
 - Requests overlap: each runs on its own connection. `notifications/cancelled` closes the matching
   connection and the bridge writes no answer for that request.
+- Connections are kept open and reused for up to 20 seconds. Before the token goes onto a new
+  connection, the shim checks that the port's holder is this user's server (`verified_token`), and it
+  caches nothing: a program that binds the port after the server exits gets no token.
 - When nothing answers on the port, the bridge starts the server and tries once more. When the server
-  refuses the token, the bridge reads the token again and tries once more. A connection that fails after
-  the request was sent is not retried, because the server may have run the call: the client gets a
-  JSON-RPC error.
+  refuses the token, the bridge opens a new connection and tries once more. A request that fails on a
+  kept connection is sent once more on a new one. A request that fails on a new connection after it was
+  sent is not retried, because the server may have run the call: the client gets a JSON-RPC error.
+- The whole response is read before it is parsed, so a progress notification in a streamed response
+  reaches the client when the call ends. The server sends plain JSON, so nothing is delayed today.
 - When no shared server can start at launch, the session runs on a private stdio server, as in relay mode.
 - The bridge talks to whichever build holds the HTTP port, as Claude Code does. The relay talks only to
   a server of its own build.
@@ -272,6 +277,7 @@ server was running.
 | `catalog.json` | The `tools/list` result and the server instructions the server sends. |
 | `daemon.py` | The server: `--serve` runs the shared one (state file, idle and orphan exit); without it, a private stdio server. |
 | `core.py` | The catalog, argument checks, and one tool call on the pool, for every transport. Writes to one graph run one at a time. |
+| `classic.py` | Deprecated: the `initialize` handshake of the revisions before 2026-07-28, for Codex over HTTP, the TCP relay and the private stdio server. Each `initialize` logs the client's name. |
 | `http_transport.py` | MCP over HTTP for Claude Code: Host, Origin and token checks, `/health`, `/shutdown`, roots binding, port claim and handover. |
 | `tcp_transport.py` | Classic MCP over lines: the shims' TCP listener and handshake, and the private stdio server. |
 | `pool.py` / `worker.py` | The elastic worker pool and the worker that runs read and write tools. |

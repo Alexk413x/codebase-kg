@@ -29,8 +29,22 @@ def test_the_catalog_matches_the_registrations() -> None:
 
 
 def test_the_catalog_carries_no_fastmcp_metadata() -> None:
-    assert all("_meta" not in tool for tool in core.CATALOG["tools"])
     assert "fastmcp" not in json.dumps(core.CATALOG)
+
+
+def test_only_the_entry_point_is_always_loaded() -> None:
+    """A deferred `kg_search` costs a tool search before the first graph query, and the search gate
+    denies text searches until that query runs. Every other tool stays deferrable."""
+    flagged = {tool["name"]: tool["_meta"] for tool in core.CATALOG["tools"] if "_meta" in tool}
+    assert flagged == {"kg_search": {"anthropic/alwaysLoad": True}}
+
+
+def test_every_tool_has_a_written_title_and_repeat_safe_writes_say_so() -> None:
+    tools = {tool["name"]: tool for tool in core.CATALOG["tools"]}
+    for name, tool in tools.items():
+        assert tool["title"] and tool["title"] != name.replace("_", " ").title(), name
+    repeatable = {name for name, tool in tools.items() if tool["annotations"].get("idempotentHint")}
+    assert repeatable == {"kg_upsert_node", "kg_add_link", "kg_add_reference"}
 
 
 @pytest.fixture

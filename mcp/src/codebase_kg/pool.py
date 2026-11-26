@@ -12,6 +12,9 @@ and stdout.
 - A worker that exits during a call, or does not answer within `timeout`
   seconds (default 60), is killed and dropped. That call raises `WorkerError`;
   the next call starts a fresh worker, and other calls are not affected.
+- A call may pass `cancelled`, a function the pool asks every `CANCEL_POLL`
+  seconds while it waits. Once it returns true the worker is killed and the
+  call raises `Cancelled`.
 
 The limit is `CODEBASE_KG_MAX_WORKERS`, else the plugin's `max_workers`
 setting, else 8. It has no upper bound. A server reads it once, at start.
@@ -26,6 +29,7 @@ import queue
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import IO, Any
 
@@ -36,11 +40,16 @@ DEFAULT_MAX_WORKERS = 8
 IDLE_EXIT = 60.0
 CALL_TIMEOUT = 60.0
 STOP_WAIT = 2.0
+CANCEL_POLL = 0.1
 _ENTRY = "import sys; sys.path.insert(0, sys.argv[1]); from codebase_kg.worker import main; main()"
 
 
 class WorkerError(RuntimeError):
     """A worker exited or hung during a call, or could not start."""
+
+
+class Cancelled(WorkerError):
+    """The caller gave up on the call, and its worker was stopped."""
 
 
 class CallError(RuntimeError):
@@ -93,18 +102,26 @@ class _Worker:
         finally:
             self.replies.put(None)
 
-    def call(self, request: bytes, timeout: float) -> dict[str, Any]:
+    def call(self, request: bytes, timeout: float, cancelled: Callable[[], bool] | None = None) -> dict[str, Any]:
         try:
             self.stdin.write(request)
             self.stdin.flush()
         except (OSError, ValueError):
             raise WorkerError(f"codebase-kg worker {self.pid} exited before the call") from None
-        try:
-            line = self.replies.get(timeout=timeout)
-        except queue.Empty:
-            raise WorkerError(
-                f"codebase-kg worker {self.pid} did not answer within {timeout:g} s; it was stopped"
-            ) from None
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            try:
+                line = self.replies.get(timeout=max(0.0, left if cancelled is None else min(left, CANCEL_POLL)))
+                break
+            except queue.Empty:
+                if cancelled is not None and left > 0:
+                    if cancelled():
+                        raise Cancelled(f"the call on codebase-kg worker {self.pid} was cancelled") from None
+                    continue
+                raise WorkerError(
+                    f"codebase-kg worker {self.pid} did not answer within {timeout:g} s; it was stopped"
+                ) from None
         if line is None:
             code = self.proc.poll()
             raise WorkerError(f"codebase-kg worker {self.pid} exited during the call (exit code {code})")
@@ -171,12 +188,14 @@ class Pool:
         with self._cond:
             return len(self._idle) + len(self._busy) + self._starting
 
-    def call(self, tool: str, args: dict[str, Any], graph: str) -> dict[str, Any]:
+    def call(
+        self, tool: str, args: dict[str, Any], graph: str, cancelled: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
         request = json.dumps({"id": next(self._ids), "tool": tool, "args": args, "graph": graph})
         worker = self._acquire()
         healthy = False
         try:
-            reply = worker.call(request.encode("utf-8") + b"\n", self.timeout)
+            reply = worker.call(request.encode("utf-8") + b"\n", self.timeout, cancelled)
             healthy = True
         finally:
             self._release(worker, healthy)

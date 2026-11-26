@@ -1174,6 +1174,19 @@ def _load_bridge() -> Any:
     return module
 
 
+def bridge_headers(port: int, fixed: dict[str, str]) -> Any:
+    """The function the bridge calls for each new connection's headers: `fixed`, plus the token for a verified holder."""
+
+    def headers(refresh: bool) -> dict[str, str]:
+        # The bridge calls this once for each new connection. Verify the holder every time and cache
+        # nothing: after the server exits, another program can bind the port, and a cached token would
+        # be sent to it.
+        token = verified_token(port)
+        return {**fixed, "Authorization": f"Bearer {token}"} if token else dict(fixed)
+
+    return headers
+
+
 def run_bridge(args: list[str]) -> int:
     """Serve this session's stdio from the shared server's HTTP endpoint.
 
@@ -1190,12 +1203,6 @@ def run_bridge(args: list[str]) -> int:
     fixed = {CLIENT_HEADER: f"bridge-{secrets.token_hex(8)}", CWD_HEADER: quote(os.getcwd(), safe="/\\:")}
     if explicit:
         fixed[GRAPH_HEADER] = quote(str(Path(explicit).resolve()), safe="/\\:")
-    token: list[str | None] = [verified_token(port)]
-
-    def headers(refresh: bool) -> dict[str, str]:
-        if refresh or not token[0]:
-            token[0] = verified_token(port)
-        return {**fixed, "Authorization": f"Bearer {token[0]}"} if token[0] else dict(fixed)
 
     session = f"bridge-{os.getpid()}"
 
@@ -1209,7 +1216,7 @@ def run_bridge(args: list[str]) -> int:
     threading.Thread(target=register, daemon=True).start()
     print(f"codebase-kg: bridging to the shared server on port {port}", file=sys.stderr)
     try:
-        return _load_bridge().Bridge(port, headers, ensure_http_server, name="the codebase-kg server").run()
+        return _load_bridge().Bridge(port, bridge_headers(port, fixed), ensure_http_server, name="the codebase-kg server").run()
     finally:
         try:
             unregister_session(session)

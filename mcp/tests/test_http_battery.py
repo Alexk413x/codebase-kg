@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from codebase_kg import core, shim
+from codebase_kg import classic, core, shim
 from test_http_server import _start, _state
 from test_shared_server import TIMEOUT, _repo, _stop
 
@@ -395,7 +395,7 @@ def test_a_classic_call_honours_the_graph_header(front: dict[str, Any]) -> None:
 @pytest.mark.parametrize("cwd", [None, "rel/dir", ""])
 def test_a_classic_call_without_a_usable_cwd_is_a_tool_error(front: dict[str, Any], cwd: str | None) -> None:
     result = _plain(_classic(front, "tools/call", {"name": "kg_search", "arguments": {"query": "widget"}}, cwd=cwd))
-    assert result["isError"] is True and result["content"][0]["text"] == core.NO_CWD
+    assert result["isError"] is True and result["content"][0]["text"] == classic.NO_CWD
 
 
 def test_a_classic_request_with_a_bad_id_is_refused(front: dict[str, Any]) -> None:
@@ -512,3 +512,21 @@ def test_the_unchanged_shim_reaches_the_same_server(front: dict[str, Any]) -> No
         proc.wait(timeout=TIMEOUT)
     log = proc.stderr.read().decode("utf-8", "replace")
     assert f"connected to the shared server (pid {front['proc'].pid})" in log
+
+
+def test_a_classic_initialize_is_logged_as_deprecated_with_the_client_name(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="codebase_kg.classic"):
+        reply = classic.answer(core.Core(None), None, {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "clientInfo": {"name": "codex-mcp-client", "version": "0.167.2"}},
+        })
+        classic.answer(core.Core(None), None, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    assert reply is not None and reply["result"]["protocolVersion"] == "2025-06-18"
+    lines = [r.getMessage() for r in caplog.records]
+    assert lines == [
+        "deprecated handshake: codex-mcp-client 0.167.2 sent initialize for MCP 2025-06-18; MCP 2026-07-28 replaces it"
+    ]

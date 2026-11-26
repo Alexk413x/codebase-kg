@@ -24,6 +24,18 @@ All notable changes to the `codebase-kg` plugin.
   `initialize` is translated in the bridge, which also delivers the server's input requests
   (`roots/list`, `elicitation/create`) to it. The TCP relay stays the default.
 
+### Changed
+
+- Every tool has a written title, and `kg_add_link` and `kg_add_reference` carry `idempotentHint`: a
+  repeat of either changes nothing, so a client may send the call again after a dropped connection.
+- `kg_search` carries `_meta["anthropic/alwaysLoad"]`, so Claude Code does not put the entry point
+  behind its tool search. The search gate denies a text search until a graph query runs.
+- A client that closes the HTTP connection while a read runs cancels it: the server stops that read's
+  worker. A write always runs to its end. Closing the connection is the cancel signal of MCP 2026-07-28.
+- The `initialize` handshake of the older MCP revisions lives in one module, `classic.py`, marked
+  deprecated. Each `initialize` writes one line to the server log with the client's name and version.
+  Nothing is removed: Codex over HTTP, the TCP relay and the private stdio server still use it.
+
 ### Fixed
 
 - Four answers of the 2026-07-28 HTTP front that the official conformance suite

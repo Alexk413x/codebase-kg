@@ -6,12 +6,14 @@ sessions and no server-to-client channel. This front serves `server/discover`,
 `tools/list` and `tools/call`, the methods of the one capability it declares,
 answers a notification with 202, and refuses a protocol version it does not
 serve with -32022. An unknown tool is -32602, and a call that needs the client's
-roots from a client that did not declare them is -32021. Stdio clients keep classic MCP through the shim (`tcp_transport.py`),
+roots from a client that did not declare them is -32021. A client that closes the
+connection while a read runs cancels it: the read's worker is stopped. A write
+runs to its end. Stdio clients keep classic MCP through the shim (`tcp_transport.py`),
 served from the same `core.Core`.
 
 Codex opens with a classic `initialize` instead, so a request that carries a
 classic protocol version, or an `initialize` with no version, gets the classic
-stateless form from `core.classic`: plain JSON results, no `Mcp-Session-Id`,
+stateless form from `classic.answer`: plain JSON results, no `Mcp-Session-Id`,
 and `notifications/initialized` answered with 202. The roots request needs a
 server-to-client channel the classic form does not have, so the client's
 `headersHelper` equivalent must send `X-Codebase-KG-Cwd`.
@@ -43,6 +45,7 @@ import hmac
 import http.client
 import json
 import logging
+import select
 import socket
 import sys
 import threading
@@ -55,7 +58,7 @@ from typing import Any, cast
 from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 
-from . import core, resolve, shim
+from . import classic, core, pool, resolve, shim
 
 logger = logging.getLogger("codebase_kg.http")
 
@@ -378,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
             self._rpc_error(None, core.INVALID_REQUEST, NOT_ONE_MESSAGE)
             return
         if version != MODERN_PROTOCOL and (
-            version in core.CLASSIC_VERSIONS or (version is None and msg["method"] == "initialize")
+            version in classic.VERSIONS or (version is None and msg["method"] == "initialize")
         ):
             self._classic(msg)
             return
@@ -428,6 +431,10 @@ class Handler(BaseHTTPRequestHandler):
         except RpcError as exc:
             self._rpc_error(request_id, exc.code, exc.message, exc.data)
             return
+        except pool.Cancelled:
+            logger.info("the client closed the connection during %s; the call was stopped", method)
+            self.close_connection = True
+            return
         if result is None:
             self._rpc_error(request_id, core.METHOD_NOT_FOUND, "Method not found", method)
             return
@@ -447,12 +454,20 @@ class Handler(BaseHTTPRequestHandler):
         if msg["method"] == "tools/call":
             conn = classic_connection({h: self.headers.get(h) for h in (GRAPH_HEADER, CWD_HEADER)})
         try:
-            reply = core.classic(self.srv.core, conn, msg)
+            reply = classic.answer(self.srv.core, conn, msg)
         except Exception:
             logger.exception("classic request failed")
             self._rpc_error(request_id, core.INTERNAL_ERROR, "Internal error")
             return
         self._json(200, reply)
+
+    def _client_gone(self) -> bool:
+        """True once the client has closed its side of the connection, which cancels the request on this transport."""
+        try:
+            readable, _, _ = select.select([self.connection], [], [], 0)
+            return bool(readable) and self.connection.recv(1, socket.MSG_PEEK) == b""
+        except (OSError, ValueError):
+            return True
 
     def _unsupported(self, request_id: Any, requested: str) -> None:
         self._rpc_error(request_id, UNSUPPORTED_VERSION, "Unsupported protocol version",
@@ -476,7 +491,9 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(found, resolve.Connection):
                 return found
             try:
-                return self.srv.core.call_tool(found, params.get("name"), params.get("arguments"))
+                return self.srv.core.call_tool(found, name, params.get("arguments"), self._client_gone)
+            except pool.Cancelled:
+                raise
             except Exception as exc:
                 logger.exception("tool call failed")
                 return core.error_result(f"Error calling tool {params.get('name')!r}: {exc}")

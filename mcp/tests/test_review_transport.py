@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 from codebase_kg import (
+    classic,
     codex_config,
     control,
     core,
@@ -307,14 +308,14 @@ def test_a_tool_call_that_raises_still_gets_a_reply(tmp_path: Path) -> None:
 def test_a_non_call_message_that_raises_does_not_end_the_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real = core.classic
+    real = classic.answer
 
-    def classic(engine: Any, conn: Any, msg: dict[str, Any]) -> dict[str, Any] | None:
+    def answer(engine: Any, conn: Any, msg: dict[str, Any]) -> dict[str, Any] | None:
         if msg.get("method") == "ping":
             raise RuntimeError("boom")
         return real(engine, conn, msg)
 
-    monkeypatch.setattr(core, "classic", classic)
+    monkeypatch.setattr(classic, "answer", answer)
     lines = b'{"jsonrpc":"2.0","id":1,"method":"ping"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n'
     out = io.BytesIO()
     tcp_transport.serve_lines(core.Core(None), resolve.Connection(cwd=tmp_path), io.BytesIO(lines), out)
@@ -371,7 +372,7 @@ def test_an_http_tool_call_that_raises_gets_an_error_result(front: int, tmp_path
 
 def test_a_classic_http_tool_call_that_raises_gets_a_reply(front: int, tmp_path: Path) -> None:
     status, reply = _post(front, {
-        "Authorization": "Bearer tok", "mcp-protocol-version": core.CLASSIC_VERSIONS[-1],
+        "Authorization": "Bearer tok", "mcp-protocol-version": classic.VERSIONS[-1],
         "X-Codebase-KG-Cwd": str(tmp_path), "X-Codebase-KG-Graph": "a%00b",
     }, _call_request())
     assert status == 200

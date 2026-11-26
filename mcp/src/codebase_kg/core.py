@@ -22,22 +22,19 @@ from __future__ import annotations
 import json
 import re
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
 from . import cli, commit_check, resolve, shim, worker
-from .pool import CallError, Pool, Refused, WorkerError
+from .pool import CallError, Cancelled, Pool, Refused, WorkerError
 
 CATALOG: dict[str, Any] = json.loads((Path(__file__).with_name("catalog.json")).read_text(encoding="utf-8"))
 TOOLS: dict[str, dict[str, Any]] = {t["name"]: t for t in CATALOG["tools"]}
 INSTRUCTIONS: str = CATALOG["instructions"]
 SERVER_INFO = {"name": "codebase-kg", "version": shim.package_version()}
 
-CLASSIC_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR = -32700, -32600, -32601, -32602, -32603
-NO_CWD = "codebase-kg: the request names no working directory. Send an absolute X-Codebase-KG-Cwd header."
-EMPTY_LISTS = {"prompts/list": "prompts", "resources/list": "resources",
-               "resources/templates/list": "resourceTemplates"}
 
 _INT = re.compile(r"[+-]?[0-9]+(?:_[0-9]+)*(?:\.0*)?")
 _TRUE = frozenset({"1", "on", "t", "true", "y", "yes"})
@@ -173,9 +170,11 @@ class Core:
         with self._guard:
             return self._writers.setdefault(key, threading.Lock())
 
-    def _run(self, name: str, args: dict[str, Any], graph: Path) -> dict[str, Any]:
+    def _run(
+        self, name: str, args: dict[str, Any], graph: Path, cancelled: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
         if self.pool is not None:
-            return self.pool.call(name, args, str(graph))
+            return self.pool.call(name, args, str(graph), cancelled)
         request = dumps({"id": 0, "tool": name, "args": args, "graph": str(graph)}).encode("utf-8")
         reply = json.loads(worker.answer(request))
         if reply.get("ok"):
@@ -184,7 +183,15 @@ class Core:
             raise Refused(reply["refused"])
         raise CallError(str(reply.get("error")))
 
-    def call_tool(self, conn: resolve.Connection, name: Any, raw_args: Any) -> dict[str, Any]:
+    def call_tool(
+        self, conn: resolve.Connection, name: Any, raw_args: Any, cancelled: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """One tool call's result.
+
+        `cancelled` is asked while a read waits for its worker; once true, the worker is
+        stopped and `Cancelled` is raised. A write is never cancelled: it runs to its end,
+        so the graph on disk is the one the write produced or the one before it.
+        """
         if not isinstance(name, str) or name not in TOOLS:
             return error_result(f"Unknown tool: {name!r}")
         try:
@@ -203,46 +210,11 @@ class Core:
                 with self._writer(graph):
                     result = self._run(name, args, graph)
             else:
-                result = self._run(name, args, graph)
+                result = self._run(name, args, graph, cancelled)
+        except Cancelled:
+            raise
         except Refused as exc:
             return text_result(exc.body, is_error=True)
         except (CallError, WorkerError) as exc:
             return error_result(f"Error calling tool {name!r}: {exc}")
         return text_result(result)
-
-
-def classic(core: Core, conn: resolve.Connection | None, msg: dict[str, Any]) -> dict[str, Any] | None:
-    """The response to one message of a classic (initialize-first) MCP session, or None for none.
-
-    A `conn` of None is a stateless HTTP request that named no working directory.
-    """
-    method = msg.get("method")
-    if not isinstance(method, str) or "id" not in msg:
-        return None
-    raw = msg.get("params")
-    params: dict[str, Any] = raw if isinstance(raw, dict) else {}
-    result: dict[str, Any]
-    if method == "initialize":
-        asked = params.get("protocolVersion")
-        result = {
-            "protocolVersion": asked if asked in CLASSIC_VERSIONS else CLASSIC_VERSIONS[-1],
-            "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": SERVER_INFO, "instructions": INSTRUCTIONS,
-        }
-    elif method == "ping":
-        result = {}
-    elif method == "tools/list":
-        result = {"tools": CATALOG["tools"]}
-    elif method in EMPTY_LISTS:
-        result = {EMPTY_LISTS[method]: []}
-    elif method == "tools/call":
-        hooked = hook_result(params.get("name"), params.get("arguments"))
-        if hooked is not None:
-            result = hooked
-        elif conn is None:
-            result = error_result(NO_CWD)
-        else:
-            result = core.call_tool(conn, params.get("name"), params.get("arguments"))
-    else:
-        return shim.rpc_error(msg["id"], METHOD_NOT_FOUND, "Method not found")
-    return {"jsonrpc": "2.0", "id": msg["id"], "result": result}

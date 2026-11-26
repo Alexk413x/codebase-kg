@@ -920,3 +920,22 @@ def test_the_cli_sends_no_credential_to_a_squatter(cache: Path) -> None:
         holder.close()
     assert out["ok"] is False and "matches no state file" in str(out["error"])
     assert holder.authorizations() == []
+
+
+def test_a_closed_client_connection_reads_as_gone_and_an_open_one_does_not() -> None:
+    """Closing the connection is how a 2026-07-28 client cancels a request over HTTP."""
+    ours, theirs = socket.socketpair()
+    try:
+        handler = http_transport.Handler.__new__(http_transport.Handler)
+        handler.connection = ours
+        assert handler._client_gone() is False
+        theirs.sendall(b"POST /mcp HTTP/1.1")
+        assert handler._client_gone() is False, "a client that sent its next request has not gone"
+        ours.recv(64)
+        theirs.close()
+        deadline = time.monotonic() + 5
+        while not handler._client_gone() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert handler._client_gone() is True
+    finally:
+        ours.close()

@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 from codebase_kg import (
+    classic,
     control,
     core,
     http_transport,
@@ -169,7 +170,7 @@ def test_rpc_error_builds_the_envelope() -> None:
 
 def test_every_transport_builds_errors_with_the_one_envelope() -> None:
     engine = core.Core(None)
-    assert core.classic(engine, None, {"id": 4, "method": "nope"}) == shim.rpc_error(
+    assert classic.answer(engine, None, {"id": 4, "method": "nope"}) == shim.rpc_error(
         4, core.METHOD_NOT_FOUND, "Method not found")
 
 
