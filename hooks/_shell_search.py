@@ -28,9 +28,11 @@ from _config import (
 # otherwise an ordinary `find . -type d` trips the gate.
 # What may stand in front of the command word and leaves it the command: `sudo`, `env`, `command`,
 # and `NAME=value` assignments. Without these, `X=1 grep -rn x src` was not read as a search at all.
+# The three value branches start with different characters. If the bare branch matched a quote too,
+# a run of quotes would backtrack exponentially, and a hook that times out allows the command.
 _LEAD = (
     r"(?:(?:sudo|env|command)\s+"
-    r"|[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s|;&])*\s+)*"
+    r"|[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s|;&\"'])*\s+)*"
 )
 _SHELL_SEARCH = re.compile(
     r"(?:^\s*|[|;&]\s*)" + _LEAD + r"(?:grep|egrep|fgrep|rg|ripgrep|ag|ack|fd|sls|select-string)\b"

@@ -21,8 +21,10 @@ with the developer's real repos.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -494,6 +496,29 @@ def test_an_environment_prefix_does_not_make_another_command_a_search(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], command: str
 ) -> None:
     assert run(monkeypatch, capsys, repo, "Bash", {"command": command}) is None
+
+
+def test_a_crafted_environment_prefix_cannot_stall_the_parser() -> None:
+    """A regex that backtracks exponentially on a run of quotes stalls the hook, and a hook that times
+    out allows the command. Runs in a child process so a regression fails here and does not hang the run."""
+    code = textwrap.dedent('''
+        from pathlib import Path
+        import _shell_search as s
+        for n in (40, 400, 4000):
+            for quote in (chr(34), chr(39)):
+                for tail in ("|", " ", "!", " x", "=", " grep"):
+                    s.is_shell_search("X=" + quote * n + tail)
+                    s.is_shell_search("X=" + (quote * 2) * n + tail)
+                    s.is_shell_search(("X=" + quote + "a ") * n + tail)
+                    s.parse_shell_search("X=" + quote * n + tail, Path("."))
+            s.is_shell_search("A=1 " * n + "ls")
+            s.is_shell_search("env " * n + "ls")
+    ''')
+    hooks = Path(__file__).resolve().parents[2] / "hooks"
+    done = subprocess.run(
+        [sys.executable, "-c", code], cwd=hooks, capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert done.returncode == 0, done.stderr
 
 
 def test_a_powershell_search_after_an_environment_assignment_is_a_search(
