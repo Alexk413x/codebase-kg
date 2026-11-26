@@ -246,6 +246,7 @@ def serve() -> None:
                 "version": daemon.version, "port": tcp.port, "pid": os.getpid(), "token": daemon.token,
                 "http_port": daemon.http_port,
             }).encode("utf-8"))
+        shim.clear_dead_states()
         logger.info("serving codebase-kg %s on 127.0.0.1:%d", daemon.version, tcp.port)
         logger.info("tool calls run on up to %d worker processes", limit)
         _start(tcp, "kg-tcp", running)

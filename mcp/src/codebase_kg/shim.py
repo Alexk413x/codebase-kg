@@ -484,6 +484,21 @@ def read_state(build: str, port: int | None = None) -> dict[str, Any] | None:
     return state
 
 
+def clear_dead_states() -> None:
+    """Remove the state files of servers that no longer run. A killed server leaves its own behind."""
+    try:
+        found = list(cache_dir().glob("server-*.json"))
+    except OSError:
+        return
+    for path in found:
+        try:
+            pid = json.loads(path.read_text(encoding="utf-8")).get("pid")
+            if isinstance(pid, int) and not pid_alive(pid):
+                path.unlink()
+        except (OSError, ValueError, AttributeError):
+            continue
+
+
 def pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False

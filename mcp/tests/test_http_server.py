@@ -1220,3 +1220,39 @@ def test_a_closed_client_connection_reads_as_gone_and_an_open_one_does_not() -> 
         assert handler._client_gone() is True
     finally:
         ours.close()
+
+
+def test_clear_dead_states_keeps_a_running_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(tmp_path))
+    ended = subprocess.Popen([sys.executable, "-c", ""])
+    ended.wait()
+    dead = tmp_path / "server-0.1.0+aaaaaaaaaaaa-p5.json"
+    dead.write_text(json.dumps({"pid": ended.pid}), encoding="utf-8")
+    alive = tmp_path / "server-0.1.0+bbbbbbbbbbbb.json"
+    alive.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    unread = tmp_path / "server-0.1.0+cccccccccccc.json"
+    unread.write_text("not json", encoding="utf-8")
+    (tmp_path / "http-token").write_text("t", encoding="utf-8")
+
+    shim.clear_dead_states()
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["http-token", alive.name, unread.name]
+
+
+def test_a_starting_server_removes_the_state_of_a_dead_one(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    ended = subprocess.Popen([sys.executable, "-c", ""])
+    ended.wait()
+    dead = cache / "server-0.1.0+aaaaaaaaaaaa-p5.json"
+    dead.write_text(json.dumps({"pid": ended.pid}), encoding="utf-8")
+    proc = _start(cache, tmp_path)
+    try:
+        _state(cache)
+        deadline = time.monotonic() + TIMEOUT
+        while dead.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not dead.exists()
+    finally:
+        proc.kill()
+        proc.wait()
