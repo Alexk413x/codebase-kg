@@ -851,8 +851,10 @@ def other_clauses(command: str) -> list[str]:
         toks = _tokens(clause)
         if piped or not toks:
             continue
-        word, _ = _search_word(toks)
+        word, rest = _search_word(toks)
         if word in _SEARCH_WORDS or word in _CD_WORDS:
+            continue
+        if word == "git" and _git_subcommand(rest, None)[0] == "grep":
             continue
         out.append(clause)
     return out

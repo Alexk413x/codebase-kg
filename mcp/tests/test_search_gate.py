@@ -1171,6 +1171,17 @@ def test_a_denied_plain_search_carries_no_nothing_ran_notice(
     assert "nothing in this command ran" not in reason
 
 
+@pytest.mark.parametrize("command", ["git grep -n x -- app", "git --no-pager grep -n x -- app", "git -C . grep x"])
+def test_a_denied_git_grep_is_not_named_as_a_part_that_did_not_run(
+    command: str, repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result = run(monkeypatch, capsys, repo, "Bash", {"command": command}, session=command)
+    assert decision(result) == "deny"
+    reason = result["hookSpecificOutput"]["permissionDecisionReason"]  # type: ignore[index]
+    assert "nothing in this command ran" not in reason
+    assert gate.other_clauses(f"echo done >> log.txt && {command}") == ["echo done >> log.txt"]
+
+
 # --- the shell's own directory, and what counts as located --------------------
 def test_a_relative_path_resolves_from_the_shells_directory(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
