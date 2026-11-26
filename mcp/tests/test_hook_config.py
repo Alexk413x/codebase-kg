@@ -199,30 +199,33 @@ def _handlers(tool: str, script: str = "kg_search_gate.py") -> list[dict[str, ob
     config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
     return [
         h for group in config["hooks"]["PreToolUse"] if group["matcher"] == tool
-        for h in group["hooks"] if f"/{script.removesuffix('.py')}.cmd" in str(h["command"])
+        for h in group["hooks"] if f"/{script.removesuffix('.py')}.cmd" in str(h.get("command", ""))
     ]
 
 
-def _if_words(tool: str) -> set[str]:
-    rules = [str(h["if"]) for h in _handlers(tool)]
-    assert all(r.startswith(f"{tool}(") and r.endswith(" *)") for r in rules), rules
-    return {r[len(tool) + 1:-3].lower() for r in rules}
+def _direct(tool: str, endpoint: str) -> list[dict[str, object]]:
+    import json
+
+    config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
+    return [
+        h for group in config["hooks"]["PreToolUse"] if group["matcher"] == tool
+        for h in group["hooks"] if h["type"] == "mcp_tool" and h["tool"] == endpoint
+    ]
 
 
-def test_the_shell_if_rules_cover_every_search_word() -> None:
-    """The gate starts only for commands an `if` rule names, so a search word the
-    parser knows but no rule lists would never reach it."""
-    import kg_search_gate as gate
-
-    cmdlets = {"select-string", "sls", "get-childitem", "gci"}
-    # `git` for `git grep` and `git ls-files | xargs grep`.
-    assert _if_words("PowerShell") == gate._SEARCH_WORDS | {"git"}
-    assert _if_words("Bash") == (gate._SEARCH_WORDS - cmdlets) | {"sudo", "git"}
-
-
-def test_every_shell_handler_carries_an_if_rule() -> None:
-    for tool in ("Bash", "PowerShell"):
-        assert all("if" in h for h in _handlers(tool)), tool
+@pytest.mark.parametrize("tool", ["Grep|Glob", "Bash", "PowerShell"])
+def test_the_search_gate_is_one_direct_call_to_the_server_per_tool(tool: str) -> None:
+    """A direct hook starts no process, so no `if` rule has to keep it from starting: the server
+    receives every command and decides. An `if` rule per search word would miss a word the parser
+    learns later."""
+    (handler,) = _direct(tool, "kg_hook_search_gate")
+    assert handler["server"] == "plugin:codebase-kg:codebase-kg"
+    assert "if" not in handler and "onFailure" not in handler, "the gate steers, so it fails open"
+    assert handler["input"] == {
+        "tool_name": "${tool_name}", "tool_input": "${tool_input}", "cwd": "${cwd}",
+        "session_id": "${session_id}", "agent_id": "${agent_id}", "transcript_path": "${transcript_path}",
+    }
+    assert not _handlers(tool), "no search gate process starts for Claude Code"
 
 
 def test_the_push_gate_starts_only_for_git_commands() -> None:
@@ -258,7 +261,7 @@ def test_every_command_sources_one_launcher_that_runs_in_sh_and_powershell() -> 
     PowerShell 5.1 has no `&&`, and the interpreter is chosen inside the launcher. The tail hands
     the script's exit code to PowerShell."""
     commands = _launch_commands()
-    assert len(commands) == 32
+    assert len(commands) == 5
     for source, command in commands:
         assert command.startswith(LAUNCH_PREFIX) and command.endswith(LAUNCH_TAIL), (source, command)
         name = command[len(LAUNCH_PREFIX):-len(LAUNCH_TAIL)] + ".cmd"
@@ -267,9 +270,9 @@ def test_every_command_sources_one_launcher_that_runs_in_sh_and_powershell() -> 
 
 
 def test_the_launchers_are_one_template_with_the_script_swapped() -> None:
-    template = (RUN / "kg_search_gate.cmd").read_bytes().decode("utf-8")
+    template = (RUN / "kg_push_gate.cmd").read_bytes().decode("utf-8")
     scripts = {
-        "kg_search_gate": "hooks", "kg_push_gate": "hooks", "kg_session_end": "hooks", "kg_server_start": "hooks",
+        "kg_push_gate": "hooks", "kg_session_end": "hooks", "kg_server_start": "hooks",
         "kg_session_start": "hooks", "kg_headers": "mcp/launch",
     }
     assert sorted(p.stem for p in RUN.glob("*.cmd")) == sorted(scripts)
@@ -278,8 +281,8 @@ def test_the_launchers_are_one_template_with_the_script_swapped() -> None:
         text = (RUN / f"{stem}.cmd").read_bytes().decode("utf-8")
         assert chr(13) not in text, f"{stem}: sh cannot read a CR"
         assert (ROOT / folder / f"{stem}.py").is_file()
-        want = template.replace("hooks/kg_search_gate.py", f"{folder}/{stem}.py")
-        want = want.replace(f"hooks{back}kg_search_gate.py", f"{folder}/{stem}.py".replace("/", back))
+        want = template.replace("hooks/kg_push_gate.py", f"{folder}/{stem}.py")
+        want = want.replace(f"hooks{back}kg_push_gate.py", f"{folder}/{stem}.py".replace("/", back))
         assert text == want, stem
     assert template.startswith(':<<"::KG_CMD"' + chr(10))
     code = [ln.lower() for ln in template.splitlines() if not ln.startswith("rem ")]
@@ -449,7 +452,7 @@ def _without_cwd_guard(env: dict[str, str]) -> dict[str, str]:
 
 
 def test_the_launchers_turn_off_the_working_folder_lookup_before_any_interpreter() -> None:
-    text = (RUN / "kg_search_gate.cmd").read_bytes().decode("utf-8")
+    text = (RUN / "kg_push_gate.cmd").read_bytes().decode("utf-8")
     assert text.index("set NoDefaultCurrentDirectoryInExePath=1\n") < text.index("py -3")
     assert "kg_root=." not in text
 
@@ -638,13 +641,14 @@ def test_the_real_headers_helper_prints_its_headers_through_the_platform_shell(s
     assert set(headers) == {"X-Codebase-KG-Client"}, headers
 
 
-def test_the_async_credit_hook_says_why_it_is_async() -> None:
+def test_no_hook_reports_graph_queries_to_the_gate() -> None:
+    """The server receives every graph query itself and counts them. A hook on the codebase-kg tools
+    would start a process on every query to tell the server what it already knows."""
     import json
 
     config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
-    (group,) = [g for g in config["hooks"]["PreToolUse"] if g["matcher"].startswith("mcp__")]
-    assert all(h.get("async") is True for h in group["hooks"])
-    assert "`async: true` on purpose" in config["description"]
+    assert [g["matcher"] for g in config["hooks"]["PreToolUse"]] == ["Grep|Glob", "Bash", "PowerShell"]
+    assert "async" not in json.dumps(config["hooks"])
 
 
 # --- gate state is replaced, not rewritten in place -----------------------------

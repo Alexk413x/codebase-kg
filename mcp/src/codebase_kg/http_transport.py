@@ -58,7 +58,7 @@ from typing import Any, cast
 from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 
-from . import classic, core, pool, resolve, shim
+from . import classic, core, pool, resolve, search_gate, shim
 
 logger = logging.getLogger("codebase_kg.http")
 
@@ -481,7 +481,8 @@ class Handler(BaseHTTPRequestHandler):
             return {"tools": core.CATALOG["tools"], **LISTED}
         if method == "tools/call":
             name = params.get("name")
-            hooked = core.hook_result(name, params.get("arguments"))
+            client = _decoded(self.headers.get(CLIENT_HEADER))
+            hooked = core.hook_result(name, params.get("arguments"), client)
             if hooked is not None:
                 return hooked
             if not isinstance(name, str) or name not in core.TOOLS:
@@ -491,7 +492,9 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(found, resolve.Connection):
                 return found
             try:
-                return self.srv.core.call_tool(found, name, params.get("arguments"), self._client_gone)
+                result = self.srv.core.call_tool(found, name, params.get("arguments"), self._client_gone)
+                search_gate.note_query(client)
+                return result
             except pool.Cancelled:
                 raise
             except Exception as exc:

@@ -317,7 +317,8 @@ and nothing answers as codebase-kg on the server port, it allows the search and 
 session. The message names `kg_cli.py server start`.
 
 It ships with the plugin, so there is nothing to install — it activates in every repo that has a
-graph, and stays silent in every repo that does not. `SKIP_KG=1` silences it for a shell;
+graph, and stays silent in every repo that does not. `SKIP_KG=1` in front of a search command
+(`SKIP_KG=1 grep -rn x src`) skips it for that command;
 `search_gate: warn` in `.claude/codebase-kg.local.md` downgrades it to a message, and
 `search_gate: off` disables it.
 

@@ -197,14 +197,38 @@ def test_a_hook_endpoint_answers_an_unseen_client_without_asking_for_roots(front
     assert "kg_hook_commit_check" not in listed
 
 
+def _gate_call(front: dict[str, Any], client: str, pattern: str, session: str) -> dict[str, Any]:
+    reply = _call(front, "kg_hook_search_gate", {
+        "tool_name": "Grep", "tool_input": json.dumps({"pattern": pattern}), "cwd": str(front["repo"]),
+        "session_id": session,
+    }, client=client, roots=False)
+    return json.loads(_complete(reply)["content"][0]["text"])
+
+
+def test_a_graph_query_over_http_clears_the_next_searches_of_its_own_client(front: dict[str, Any]) -> None:
+    """The server ties a model's query to a session by the client id both calls carry, so no hook has to
+    report the query. Another client's session earns nothing from it."""
+    def denied(out: dict[str, Any]) -> bool:
+        return out.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+
+    assert denied(_gate_call(front, "gate-a", "first", "sess-a"))
+    _tool_ok(_call(front, "kg_search", {"query": "widget"}, client="gate-a"))
+    assert not denied(_gate_call(front, "gate-a", "second", "sess-a"))
+    assert denied(_gate_call(front, "gate-b", "second", "sess-b"))
+    listed = [tool["name"] for tool in _complete(_req(front, "tools/list"))["tools"]]
+    assert "kg_hook_search_gate" not in listed
+
+
+@pytest.mark.parametrize("endpoint", ["kg_hook_commit_check", "kg_hook_search_gate"])
 @pytest.mark.parametrize("version", [V, "2025-06-18"])
 @pytest.mark.parametrize("authorization", [None, "Bearer wrong-token", "Basic abc"])
 def test_a_hook_endpoint_is_refused_without_the_token_before_it_runs(
+    endpoint: str,
     front: dict[str, Any], tmp_path: Path, version: str, authorization: str | None,
 ) -> None:
     """The endpoint runs git in a folder the caller names. A caller without the token must not reach it:
     a `git commit` in `tmp_path` would raise if the server ran git there, and the reply would not be 403."""
-    params: dict[str, Any] = {"name": "kg_hook_commit_check",
+    params: dict[str, Any] = {"name": endpoint,
                               "arguments": {"command": "git commit -m x", "cwd": str(tmp_path)}}
     if version == V:
         params["_meta"] = META

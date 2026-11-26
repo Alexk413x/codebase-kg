@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from codebase_kg import search_gate
 from codebase_kg.models import Anchor, Meta, Node
 from codebase_kg.writer import build
 
@@ -42,6 +43,24 @@ class _Stdin:
 
     def read(self) -> str:
         return self._text
+
+
+BACKEND = "script"
+CLIENT = "client-under-test"
+script_only = pytest.mark.script_only
+
+
+@pytest.fixture(autouse=True, params=["script", "server"])
+def backend(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Every test runs twice: against the hook script, and against the server's hook endpoint, which
+    loads the same script. A test marked `script_only` covers what only a process of its own has: the
+    environment, the state files and the claim files."""
+    if request.param == "server" and request.node.get_closest_marker("script_only"):
+        pytest.skip("covers the hook script's own process")
+    monkeypatch.setattr(sys.modules[__name__], "BACKEND", request.param)
+    for store in (search_gate._states, search_gate._queried, search_gate._sessions):
+        store.clear()
+    return request.param
 
 
 @pytest.fixture(autouse=True)
@@ -87,6 +106,8 @@ def run(
 
     `cwd` is the shell's directory, which the Bash tool keeps across calls. The
     host then names the project in CLAUDE_PROJECT_DIR, as Claude Code does."""
+    if BACKEND == "server":
+        return _server_run(proj, tool, tool_input or {}, session, cwd)
     if cwd is not None:
         monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(proj))
     payload = {
@@ -99,6 +120,21 @@ def run(
     gate.main()
     out = capsys.readouterr().out.strip()
     return json.loads(out) if out else None
+
+
+def _server_run(
+    proj: Path, tool: str, tool_input: dict[str, Any], session: str, cwd: Path | None,
+) -> dict[str, Any] | None:
+    """The same call through the server: a graph query reaches it as a model's tool call, and anything
+    else as the hook's call, with the tool input as the JSON text Claude Code substitutes."""
+    if gate._KG_TOOL.match(tool):
+        search_gate.note_query(CLIENT)
+        return None
+    result = search_gate.call({
+        "tool_name": tool, "tool_input": json.dumps(tool_input), "cwd": str(cwd or proj), "session_id": session,
+    }, CLIENT)
+    assert result["isError"] is False
+    return json.loads(result["content"][0]["text"]) or None
 
 
 def decision(result: dict[str, Any] | None) -> str | None:
@@ -391,11 +427,40 @@ def test_a_repo_without_a_graph_is_never_gated(
     assert run(monkeypatch, capsys, bare, "Grep", {"pattern": "x"}) is None
 
 
+@script_only
 def test_skip_kg_silences_it(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("SKIP_KG", "1")
     assert run(monkeypatch, capsys, repo, "Grep", {"pattern": "x"}) is None
+
+
+def test_skip_kg_in_the_servers_environment_does_not_reach_its_gate(
+    repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The server's environment belongs to whoever started it, not to the session that searches."""
+    monkeypatch.setenv("SKIP_KG", "1")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo.parent / "another-project"))
+    monkeypatch.setattr(search_gate, "_script", None)
+    out = _server_run(repo, "Grep", {"pattern": "x"}, "s1", None)
+    assert decision(out) == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "SKIP_KG=1 grep -rn Known .",
+    "cd app && SKIP_KG=yes rg Known",
+    "export SKIP_KG=1; grep -rn Known .",
+    "env SKIP_KG=1 grep -rn Known .",
+    "$env:SKIP_KG = '1'; Select-String -Path . -Pattern Known",
+])
+def test_skip_kg_written_in_front_of_a_shell_search_skips_the_servers_gate(repo: Path, command: str) -> None:
+    tool = "PowerShell" if command.startswith("$env") else "Bash"
+    assert _server_run(repo, tool, {"command": command}, "s1", None) is None
+
+
+@pytest.mark.parametrize("command", ["grep -rn SKIP_KG=1 .", "echo SKIP_KG; grep -rn Known ."])
+def test_a_search_that_only_mentions_skip_kg_is_still_gated_by_the_server(repo: Path, command: str) -> None:
+    assert decision(_server_run(repo, "Bash", {"command": command}, "s1", None)) == "deny"
 
 
 def _write_local_config(proj: Path, body: str) -> None:
@@ -517,6 +582,7 @@ def test_a_malformed_payload_is_silent(
     assert capsys.readouterr().out.strip() == ""
 
 
+@script_only
 def test_it_degrades_to_a_warning_when_state_cannot_be_written(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -686,11 +752,26 @@ def test_the_end_to_end_gate_still_denies_a_tree_search(
 
 
 # --- an exemption is free, not cheap -----------------------------------------
-def _credit(repo: Path, session: str = "s1") -> int:
+def _state(repo: Path, session: str = "s1") -> dict[str, Any]:
+    """The session's gate state: the script's state file, or the server's memory."""
+    if BACKEND == "server":
+        return search_gate._read_state(repo, session)
     try:
-        return int(json.loads(gate._state_path(repo, session).read_text(encoding="utf-8"))["credit"])
-    except (OSError, ValueError, KeyError, TypeError):
-        return 0
+        return json.loads(gate._state_path(repo, session).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _credit(repo: Path, session: str = "s1") -> int:
+    """The searches the session may still make. The server applies a query's credit at the next gate
+    call from the same client, so a query it has noted and not yet applied counts here."""
+    try:
+        held = int(_state(repo, session)["credit"])
+    except (ValueError, KeyError, TypeError):
+        held = 0
+    if BACKEND == "server" and CLIENT in search_gate._queried:
+        return max(held, gate.gate_credit(gate.load_config(repo)))
+    return held
 
 
 @pytest.mark.parametrize(
@@ -927,8 +1008,8 @@ def test_the_denial_memory_is_bounded(
 ) -> None:
     for i in range(gate._DENIED_MEMORY * 2):
         run(monkeypatch, capsys, repo, "Grep", {"pattern": f"p{i}"})
-    state = json.loads(gate._state_path(repo, "s1").read_text(encoding="utf-8"))
-    assert len(state["denied"]) <= gate._DENIED_MEMORY
+    state = _state(repo)
+    assert 0 < len(state["denied"]) <= gate._DENIED_MEMORY
 
 
 def test_two_handlers_for_one_shell_call_decide_once(

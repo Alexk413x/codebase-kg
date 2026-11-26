@@ -6,7 +6,7 @@ no `knowledge/code_graph.db`. The server start and the session end run in every 
 
 | File | Role |
 |---|---|
-| `hooks.json` | Plugin hook config — PreToolUse on `Grep\|Glob`, on `Bash` and `PowerShell` calls that an `if` rule names as a search (`Bash(grep *)`, `PowerShell(Select-String *)`, one rule per search word, plus `Bash(git *)` for `git grep` and `git ls-files | xargs grep`), and on the codebase-kg MCP tools → `kg_search_gate.py` (`async: true`, on purpose: the hook only credits the query, so the query never waits for it); `Bash(git *)` calls → `kg_push_gate.py` as well; SessionStart on `startup\|resume\|clear` → `kg_server_start.py`, then `kg_session_start.py`; SessionEnd → `kg_session_end.py`. Every hook command is `. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/<script>.cmd"`; see "How a hook starts" below. |
+| `hooks.json` | Plugin hook config for Claude Code. PreToolUse on `Grep\|Glob`, `Bash` and `PowerShell` calls the server's `kg_hook_search_gate` directly (hook type `mcp_tool`, no process); `Bash(git *)` and `PowerShell(git *)` calls → `kg_push_gate.py` as well. PostToolUse on `Bash(git *)` and `PowerShell(git *)` calls the server's `kg_hook_commit_check`. SessionStart on `startup\|resume\|clear` → `kg_server_start.py`, then `kg_session_start.py`; SessionEnd → `kg_session_end.py`. Every command hook is `. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/<script>.cmd"`; see "How a hook starts" below. |
 | `codex-hooks.json` | The same hooks for Codex, named by `hooks` in `.codex-plugin/plugin.json`: the search gate and push gate on `Bash`, the credit hook on codebase-kg MCP calls, and the session notice. It has no `if`, `Grep`, `Glob` or `PowerShell` entry, because Codex ignores `if` and reports shell commands as `Bash`, so each script decides for itself whether a command is a search or a push. It has no server start hook: the `--start` option of `mcp/launch/kg_headers.py`, which the Codex config table runs as its headers helper, or the stdio shim starts the server. `commandWindows` runs `py -3` and names the script through `$env:PLUGIN_ROOT`, because Codex runs it in PowerShell, where `${CLAUDE_PLUGIN_ROOT}` is empty; `command` runs `python3`. |
 | `copilot-hooks.json` | The hooks for GitHub Copilot CLI, named by `hooks` in `.github/plugin/plugin.json`: `preToolUse` runs `kg_copilot.py` with `python`. |
 | `kg_copilot.py` | The Copilot CLI adapter. Turns Copilot's hook payloads into the shape the shared search gate and push gate read, so those scripts stay unchanged. |
@@ -27,7 +27,7 @@ and in PowerShell on Windows when Git Bash is not installed (it falls back to `p
 when there is no `pwsh`). One command string has to work in all of them, so each hook is
 
 ```
-. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_search_gate.cmd"; exit $LASTEXITCODE
+. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/kg_push_gate.cmd"; exit $LASTEXITCODE
 ```
 
 `.` sources the file in `sh` and runs it in PowerShell (PowerShell resolves the placeholder from
@@ -143,14 +143,35 @@ Three ways through, each inferred from what the agent actually did:
   list, and a subagent without a codebase-kg tool could never earn credit, so a gated search from a
   subagent passes with the graph-first instruction added to its context.
 - **`warn` mode** passes the search, adds the instruction to Claude's context, and shows it to you.
-- **Keeps state in the OS temp dir**, keyed by project and session. Nothing is written into the repo.
+- **Keeps state outside the repo**, keyed by project and session: in the server's memory for Claude
+  Code, in the OS temp dir for the script. Nothing is written into the repo.
 
 Shell detection is deliberately narrow — a false positive denies unrelated work. `find` and
 `Get-ChildItem` only count when they carry a name/path filter, so an ordinary `find . -type d` is not
-a search. Claude Code starts the gate for a shell call only when an `if` rule in `hooks.json` names
-one of its subcommands, so `git status` costs no process. `test_hook_config.py` asserts that the
-rules list every word the parser knows. A command that matches two rules starts two gate processes;
-the first to claim the call's `tool_use_id` decides, and the other exits silently.
+a search.
+
+### Where the gate runs
+
+One rule, two callers. The decision is `kg_search_gate.py` for every client.
+
+- **Claude Code** asks the server. `hooks.json` has one `mcp_tool` entry each for `Grep|Glob`, `Bash`
+  and `PowerShell`, which call the unlisted tool `kg_hook_search_gate`
+  (`mcp/src/codebase_kg/search_gate.py`). The server loads `kg_search_gate.py` and replaces the parts
+  that assumed a process of their own: state lives in memory, and the server counts graph queries
+  itself, because it receives them. No hook reports a query. A model's query and the hook call that
+  follows carry the same client id, which is how the credit reaches the right session. A server
+  restart clears the state: denied searches are asked once more and the credit starts from zero. A
+  session that is older than the server is told so once.
+- **Codex and Copilot CLI** run the script as a process (`codex-hooks.json`, `kg_copilot.py`). There a
+  second hook on the codebase-kg tools credits a query, state lives in the OS temp dir, and several
+  matching handlers settle who decides through a claim file on the call's `tool_use_id`.
+
+With the server unreachable, Claude Code's hook fails open and the search runs. The script allows the
+search and says so once.
+
+`SKIP_KG` differs by caller. A direct hook passes no environment, so for Claude Code only a
+`SKIP_KG=1` written in front of the shell search skips the gate (`SKIP_KG=1 grep -rn x src`), and
+`search_gate: off` in the per-clone file turns it off. The script reads `SKIP_KG` from its environment.
 
 ## The push gate (PreToolUse)
 
@@ -316,6 +337,8 @@ See `../templates/codebase-kg.local.md.example`.
 | `root` | from the graph | only paths under here count |
 | `graph_path` | `knowledge/code_graph.db` | where the graph lives (`kg_path` is an alias) |
 
-`SKIP_KG=1` in the environment silences the search gate, the push gate, the unwired-clone notice (and the
-Codex config refresh it runs) and the `pre-commit` and `pre-push` checks for that shell, for a change that deliberately outruns the
-graph. It does not silence the server start or the session end.
+`SKIP_KG=1` in the environment silences the push gate, the unwired-clone notice (and the
+Codex config refresh it runs), the `pre-commit` and `pre-push` checks, and the search gate where it runs
+as a script (Codex, Copilot CLI), for a change that deliberately outruns the graph. In Claude Code the
+search gate runs in the server and does not see the agent's environment: write `SKIP_KG=1` in front of
+the search command. It does not silence the server start, the session end or the commit check.

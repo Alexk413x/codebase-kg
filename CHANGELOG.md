@@ -26,6 +26,19 @@ All notable changes to the `codebase-kg` plugin.
 
 ### Changed
 
+- In Claude Code the search gate runs in the server. `hooks.json` has three hooks of type `mcp_tool`
+  (`Grep|Glob`, `Bash`, `PowerShell`) where it had 27 command hooks, one per search word, so a search
+  starts no Python process. The rule is unchanged: the server loads `hooks/kg_search_gate.py`, the script
+  Codex and Copilot CLI still run. Behavior changes for Claude Code:
+  - `SKIP_KG` in the agent's environment no longer reaches the search gate, because a direct hook
+    passes no environment. `SKIP_KG=1` written in front of a shell search (`SKIP_KG=1 grep -rn x src`)
+    skips the gate for that command, and `search_gate: off` in `.claude/codebase-kg.local.md` turns it
+    off for a clone. The push gate, the git hooks, Codex and Copilot CLI read `SKIP_KG` as before.
+  - The server counts graph queries itself and holds the count in memory, per session. The hook that
+    started a process on every codebase-kg tool call to record the query is gone. A server restart
+    resets the count and the list of denied searches; a session older than the server is told once.
+  - With the server unreachable a search is allowed with no message. The script printed one.
+  - Every `Bash` and `PowerShell` call reaches the server, not only the ones an `if` rule named.
 - Every tool has a written title, and `kg_add_link` and `kg_add_reference` carry `idempotentHint`: a
   repeat of either changes nothing, so a client may send the call again after a dropped connection.
 - `kg_search` carries `_meta["anthropic/alwaysLoad"]`, so Claude Code does not put the entry point

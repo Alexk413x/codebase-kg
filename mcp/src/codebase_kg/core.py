@@ -26,7 +26,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
-from . import cli, commit_check, resolve, shim, worker
+from . import cli, commit_check, resolve, search_gate, shim, worker
 from .pool import CallError, Cancelled, Pool, Refused, WorkerError
 
 CATALOG: dict[str, Any] = json.loads((Path(__file__).with_name("catalog.json")).read_text(encoding="utf-8"))
@@ -146,14 +146,17 @@ def error_result(text: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": text}], "isError": True}
 
 
-def hook_result(name: Any, args: Any) -> dict[str, Any] | None:
+def hook_result(name: Any, args: Any, client: str | None = None) -> dict[str, Any] | None:
     """The result of a hook endpoint, or None when `name` is not one.
 
     Hook endpoints are tools a hook calls and the catalog does not list. They take
-    the session's folder as an argument, so they need no session.
+    the session's folder as an argument, so they need no session. `client` is the
+    caller's client id, which ties a hook call to the model calls of its session.
     """
     if name == commit_check.TOOL:
         return commit_check.call(args)
+    if name == search_gate.TOOL:
+        return search_gate.call(args, client)
     return None
 
 

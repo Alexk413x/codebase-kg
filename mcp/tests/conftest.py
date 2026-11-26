@@ -116,3 +116,7 @@ def sample_db(tmp_path: Path, sample_meta: Meta, sample_nodes: list[Node]) -> Pa
     db = tmp_path / "code_graph.db"
     build(db, sample_meta, sample_nodes)
     return db
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "script_only: the test covers a hook script's own process, not the server")
