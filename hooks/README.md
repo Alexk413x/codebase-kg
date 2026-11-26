@@ -127,6 +127,25 @@ second MCP server in `mcp/claude.mcp.json` that Claude Code starts on stdio with
 - **No Python.** The relay cannot start, and Claude Code prints its notice for every hook call, as
   it does for every hook of every plugin that needs an interpreter.
 
+## Sessions started with --strict-mcp-config
+
+A Claude Code session started with `--strict-mcp-config` loads the plugin's hooks and none of its MCP
+servers. The hooks address the relay by the name Claude Code gives a plugin's server,
+`plugin:codebase-kg:codebase-kg-hooks`. Such a session must pass a server of exactly that name. Without
+it no gate runs, and Claude Code prints a two-line "hook failed ... not connected" notice for every
+hook call. Version 0.17.1 gated these sessions, because its hooks were scripts.
+
+`kg_cli.py strict-mcp-config [--port N]` prints the config to pass: the plugin's HTTP server and the
+relay under its full name, with this plugin folder and the port filled in. `--port` defaults to the
+`server_port` setting when the environment holds it, else 47821.
+
+```sh
+claude --strict-mcp-config --mcp-config "$(python3 "<plugin folder>/mcp/launch/kg_cli.py" strict-mcp-config)"
+```
+
+A program that builds its own config merges the printed `mcpServers` into it. The name `codebase-kg-hooks`
+without the `plugin:codebase-kg:` prefix does not work.
+
 ## The search gate (PreToolUse)
 
 The only part of the plugin that can **deny** a tool call, and the only reason the graph gets used at

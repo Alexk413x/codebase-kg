@@ -347,6 +347,12 @@ The division of labor it enforces: **the graph is authoritative for where code l
 authoritative for what it does now.** The graph is a committed snapshot, so orient with it, then read
 the anchored files to confirm behavior.
 
+### Sessions started with `--strict-mcp-config`
+
+A Claude Code session started with `--strict-mcp-config` must pass the plugin's hook relay itself, or
+it runs without gates and shows a failure notice for every hook call. Print the config to pass with
+`kg_cli.py strict-mcp-config [--port N]` (`hooks/README.md`, "Sessions started with --strict-mcp-config").
+
 ## Keeping the graph in sync with commits
 
 Three advisory layers, all pointing at the same fix (`/codebase-kg:refresh`):

@@ -32,6 +32,9 @@ All notable changes to the `codebase-kg` plugin.
   `initialize` is translated in the bridge, which also delivers the server's input requests
   (`roots/list`, `elicitation/create`) to it. The TCP relay stays the default.
 
+- `kg_cli.py strict-mcp-config [--port N]`, which prints the MCP config a `--strict-mcp-config` session
+  of Claude Code needs: the HTTP server and the hook relay under its full name (see Changed).
+
 - `kg_cli.py codex-config` ends with a line that says whether Codex trusts the plugin's hooks. Codex
   skips an untrusted hook without a message, and its trust covers every file in the plugin, so the
   gates stop in Codex after each plugin update until you run `/hooks` there. No hook can report
@@ -41,6 +44,12 @@ All notable changes to the `codebase-kg` plugin.
 
 ### Changed
 
+- A Claude Code session started with `--strict-mcp-config` must pass the hook relay itself. Such a
+  session loads the plugin's hooks and none of its MCP servers, and the hooks address the relay by the
+  name `plugin:codebase-kg:codebase-kg-hooks`. Without a server of that name no gate runs, and Claude
+  Code prints a "hook failed" notice for every hook call. Version 0.17.1 gated these sessions, because
+  its hooks were scripts. `kg_cli.py strict-mcp-config [--port N]` prints the config to pass
+  (`hooks/README.md`, "Sessions started with --strict-mcp-config").
 - Claude Code's hooks go through a hook relay. The plugin declares a second MCP server,
   `codebase-kg-hooks`, which Claude Code starts on stdio with each session. It lists no tools and
   adds nothing to the model's context. It passes each hook call to the shared server and answers an
@@ -137,6 +146,18 @@ All notable changes to the `codebase-kg` plugin.
     request, or a result with `isError`.
 - An unsupported protocol version is reported (-32022) before a missing request envelope (-32602),
   and a notification with no version header gets 202.
+
+- A lone `git grep` that the search gate denied opened with "nothing in this command ran" and listed
+  itself as a part that was refused with the search. The gate did not read `git grep` as the search.
+- In a subagent, and in `warn` mode, the gate lets the search run and adds its instruction as context.
+  That context opened with "denied a search of". It says the search ran.
+- A session of a development copy (a checkout, a scratch copy) moved a clone's graph diff driver pin
+  to that copy's version and called it the installed plugin. Only a release or an installed copy
+  moves the pin.
+- `kg_node` and `kg_neighborhood` left out the id one letter away from a wrong id when five other ids
+  shared a word with it. The closest spelling comes first in `did_you_mean`.
+- A server that was killed left its state file in the cache folder for good, one for each build and
+  port that ever ran. A starting server removes the state files of servers that no longer run.
 
 ### Removed
 

@@ -2,7 +2,7 @@
 # requires-python = ">=3.9"
 # dependencies = []
 # ///
-"""Run a codebase-kg CLI from any repo: kg_cli.py build|export|migrate|upgrade|query|server|codex-config|gate [args].
+"""Run a codebase-kg CLI from any repo: kg_cli.py build|export|migrate|upgrade|query|server|codex-config|strict-mcp-config|gate [args].
 
 Stdlib only. The CLIs import nothing outside the standard library, so this
 puts the plugin's `src` on `sys.path` and runs the module; no venv is built.
@@ -13,7 +13,8 @@ import sys
 from pathlib import Path
 
 COMMANDS = {"build": "build", "export": "export", "migrate": "migrate", "upgrade": "upgrade",
-            "query": "query", "server": "control", "codex-config": "codex_config"}
+            "query": "query", "server": "control", "codex-config": "codex_config",
+            "strict-mcp-config": "strict_config"}
 
 if len(sys.argv) >= 2 and sys.argv[1] == "gate":
     # The search gate lives with the hooks, outside the package: run it by path.

@@ -318,6 +318,7 @@ server was running.
 | `query.py` | `kg_cli.py query`: one read tool from a shell. |
 | `cli.py` | Console I/O that survives a non-UTF-8 stdout, and UTF-8 stdin decoding. |
 | `codex_config.py` | `kg_cli.py codex-config`: the Codex config table. |
+| `strict_config.py` | `kg_cli.py strict-mcp-config`: the MCP config a Claude Code session started with `--strict-mcp-config` must pass, with the hook relay under the name the hooks address. |
 
 ## Development
 
