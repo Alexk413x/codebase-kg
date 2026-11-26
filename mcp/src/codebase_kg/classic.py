@@ -63,7 +63,7 @@ def answer(engine: core.Core, conn: resolve.Connection | None, msg: dict[str, An
     elif method in EMPTY_LISTS:
         result = {EMPTY_LISTS[method]: []}
     elif method == "tools/call":
-        hooked = core.hook_result(params.get("name"), params.get("arguments"), None, params)
+        hooked = core.hook_result(params.get("name"), params.get("arguments"))
         if hooked is not None:
             result = hooked
         elif conn is None:

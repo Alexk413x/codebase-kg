@@ -26,11 +26,17 @@ from _config import (
 # a false positive here denies an unrelated command, which is worse than missing
 # one. `find` and `Get-ChildItem` only count when they carry a name/path filter,
 # otherwise an ordinary `find . -type d` trips the gate.
+# What may stand in front of the command word and leaves it the command: `sudo`, `env`, `command`,
+# and `NAME=value` assignments. Without these, `X=1 grep -rn x src` was not read as a search at all.
+_LEAD = (
+    r"(?:(?:sudo|env|command)\s+"
+    r"|[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s|;&])*\s+)*"
+)
 _SHELL_SEARCH = re.compile(
-    r"(?:^\s*|[|;&]\s*)(?:sudo\s+)?(?:grep|egrep|fgrep|rg|ripgrep|ag|ack|fd|sls|select-string)\b"
-    r"|(?:^\s*|[|;&]\s*)(?:sudo\s+)?find\b[^|;&\n]*\s-(?:i?name|i?path|i?regex)\b"
+    r"(?:^\s*|[|;&]\s*)" + _LEAD + r"(?:grep|egrep|fgrep|rg|ripgrep|ag|ack|fd|sls|select-string)\b"
+    r"|(?:^\s*|[|;&]\s*)" + _LEAD + r"find\b[^|;&\n]*\s-(?:i?name|i?path|i?regex)\b"
     r"|(?:^\s*|[|;&]\s*)(?:get-childitem|gci)\b[^|;&\n]*\s-r(?:ecurse)?\b"
-    r"|(?:^\s*|[|;&]\s*)(?:sudo\s+)?git\b(?:\s+-[Cc]\s+\S+|\s+-\S+)*\s+grep\b"
+    r"|(?:^\s*|[|;&]\s*)" + _LEAD + r"git\b(?:\s+-[Cc]\s+\S+|\s+-\S+)*\s+grep\b"
     r"|\|\s*xargs\b[^|;&\n]*\s(?:grep|egrep|fgrep|rg|ripgrep|ag|ack)\b",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -590,12 +596,36 @@ def _listed_paths(toks: list[str], cwd: Path | None) -> list[Path]:
     return out
 
 
+_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_LEAD_WORDS = {"sudo", "env", "command"}
+
+
 def _search_word(toks: list[str]) -> tuple[str, list[str]]:
-    word = toks[0].lower().lstrip("./\\")
-    if word == "sudo" and len(toks) > 1:
-        toks = toks[1:]
-        word = toks[0].lower()
-    return word, toks
+    """The command word of a clause and the tokens from it on, past `sudo`, `env`, `command` and
+    `NAME=value` assignments. Those change the environment a command runs in, not which command runs."""
+    start = 0
+    while start < len(toks) - 1:
+        tok = toks[start]
+        if tok.lower() in _LEAD_WORDS:
+            start += 1
+        elif not isinstance(tok, _Quoted) and _ASSIGNMENT.match(tok):
+            start = _past_value(toks, start)
+        else:
+            break
+    toks = toks[min(start, len(toks) - 1):]
+    return toks[0].lower().lstrip("./\\"), toks
+
+
+def _past_value(toks: list[str], at: int) -> int:
+    """The index after the assignment at `at`. `_tokens` splits `NAME="two words"` at the space, so a
+    value that opens a quote runs to the token that closes it."""
+    for quote in "\"'":
+        if toks[at].count(quote) % 2:
+            for end in range(at + 1, len(toks)):
+                if quote in toks[end]:
+                    return end + 1
+            return len(toks)
+    return at + 1
 
 
 def parse_shell_search(

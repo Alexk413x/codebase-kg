@@ -14,12 +14,16 @@ stale push is decided here:
   the user.
 - **A skip in the command** (`SKIP_KG=<value>`, or `KG_STALE_ACK=<n>` naming the
   stale count, written in front of the push). An agent cannot grant itself the
-  skip: the server asks the user. On MCP 2026-07-28 it answers `input_required`
-  with a form elicitation that lists the stale files, and the client repeats the
-  hook's call with the user's answer. The push runs only when the user accepts
-  and ticks the box. A decline, a cancel, or a run with no user refuses it.
-  A client that declared no elicitation gets `permissionDecision: "ask"`, which
-  puts the same question in the client's own permission prompt.
+  skip: the answer is `permissionDecision: "ask"`, with the stale files in the
+  reason, so the client puts the question to the user in its permission prompt.
+  A run with no user has no prompt and the client denies the call.
+
+The question is not an MCP elicitation, although a hook's call can raise one.
+The client keeps the hook waiting while an elicitation is open, and when the
+hook's timeout passes it cancels the hook and runs the command: an unanswered
+dialog became an approved push. `ask` ends the hook at once, and the permission
+prompt that follows has no timeout. It also prompts when the session runs with
+permissions bypassed.
 
 The server's environment belongs to whoever started it, so `SKIP_KG` and
 `KG_STALE_ACK` there mean nothing: only the command's own prefix counts.
@@ -28,7 +32,9 @@ The server's environment belongs to whoever started it, so `SKIP_KG` and
 update changes no code, the graph file is in git, and the refresh the deny asks
 for must not stop at a permission prompt.
 
-Any failure answers `{}`. The git pre-push hook still blocks a stale push.
+A failure before any stale push is found answers `{}`, and the git pre-push hook
+still blocks. A failure after one is found answers deny: the command's text is
+the agent's, and a value in it that makes this code raise must not open the gate.
 """
 
 from __future__ import annotations
@@ -36,6 +42,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import re
 import sys
 import threading
 from pathlib import Path
@@ -48,8 +55,7 @@ logger = logging.getLogger("codebase_kg.push_gate")
 TOOL = "kg_hook_push_gate"
 ALLOW_WRITE_TOOL = "kg_hook_allow_write"
 SCRIPT = shim.MCP_DIR.parent / "hooks" / "kg_push_gate.py"
-CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities"
-ANSWER = "codebase-kg-push-skip"
+_COUNT = re.compile(r"[0-9]{1,9}")
 LIST_CAP = 20
 ALLOW_WRITE = {"hookSpecificOutput": {
     "hookEventName": "PreToolUse", "permissionDecision": "allow",
@@ -115,45 +121,27 @@ def deny_reason(stale: list[str], graph_rel: str) -> str:
     )
 
 
-def refused_reason(stale: list[str], graph_rel: str) -> str:
-    return (
-        f"codebase-kg: push blocked. The user did not approve a push with {len(stale)} stale mapped file(s) "
-        f"against {graph_rel}:\n{_listed(stale)}\n\n"
-        "Run /codebase-kg:refresh, commit the graph and run git push again. Do not retry the skip."
-    )
+Found = tuple[Path, list[str], str]
 
 
-def question(stale: list[str], graph_rel: str) -> str:
-    return (
-        f"Push without updating the code graph? {len(stale)} mapped file(s) no longer match {graph_rel}:\n"
-        f"{_listed(stale)}"
-    )
-
-
-def _form(stale: list[str], graph_rel: str) -> dict[str, Any]:
-    return {"method": "elicitation/create", "params": {
-        "mode": "form",
-        "message": question(stale, graph_rel),
-        "requestedSchema": {
-            "type": "object",
-            "properties": {"approve": {
-                "type": "boolean", "title": "Push without updating the graph", "default": False,
-            }},
-            "required": ["approve"],
-        },
-    }}
+def question(skips: list[Found]) -> str:
+    """What the user is asked. Every repository the command would push with a stale graph is listed, so
+    one answer never covers files the user was not shown."""
+    if len(skips) == 1:
+        _, stale, graph_rel = skips[0]
+        return (
+            f"Push without updating the code graph? {len(stale)} mapped file(s) no longer match {graph_rel}:\n"
+            f"{_listed(stale)}"
+        )
+    blocks = [f"{repo}: {len(stale)} mapped file(s) no longer match {graph_rel}:\n{_listed(stale)}"
+              for repo, stale, graph_rel in skips]
+    return f"Push {len(skips)} repositories without updating their code graphs?\n\n" + "\n\n".join(blocks)
 
 
 def _wants_skip(script: Any, env: dict[str, str], count: int) -> bool:
     """True when the command's own prefix carries `SKIP_KG`, or a `KG_STALE_ACK` that names `count`."""
     ack = (env.get("KG_STALE_ACK") or "").strip()
-    return bool(script.skip_kg(env)) or (ack.isdigit() and int(ack) == count)
-
-
-def _approved(answer: Any) -> bool:
-    content = answer.get("content") if isinstance(answer, dict) else None
-    return isinstance(answer, dict) and answer.get("action") == "accept" and isinstance(content, dict) \
-        and content.get("approve") is True
+    return bool(script.skip_kg(env)) or (_COUNT.fullmatch(ack) is not None and int(ack) == count)
 
 
 def _pre(decision: str, reason: str) -> dict[str, Any]:
@@ -161,8 +149,11 @@ def _pre(decision: str, reason: str) -> dict[str, Any]:
         "hookEventName": "PreToolUse", "permissionDecision": decision, "permissionDecisionReason": reason}}
 
 
-def decide(args: dict[str, Any], params: dict[str, Any] | None = None) -> dict[str, Any]:
-    """The hook's JSON for one shell command, or an `input_required` result that asks the user."""
+def decide(args: dict[str, Any], seen: list[Found] | None = None) -> dict[str, Any]:
+    """The hook's JSON for one shell command: `{}`, a deny, or an ask.
+
+    Each stale push found is appended to `seen`, so the caller knows one exists if this raises.
+    """
     tool, command, cwd = args.get("tool_name"), args.get("command"), args.get("cwd")
     if tool not in ("Bash", "PowerShell") or not isinstance(command, str) or not isinstance(cwd, str):
         return {}
@@ -173,12 +164,8 @@ def decide(args: dict[str, Any], params: dict[str, Any] | None = None) -> dict[s
         pushes = script.find_pushes(script.powershell_to_shell(command) if tool == "PowerShell" else command, Path(cwd))
     except ValueError:
         return {}
-    fields: dict[str, Any] = params if isinstance(params, dict) else {}
-    responses = fields.get("inputResponses")
-    meta = fields.get("_meta")
-    capabilities = meta.get(CAPABILITIES_KEY) if isinstance(meta, dict) else None
     checked: dict[Path, tuple[list[str], str] | None] = {}
-    skips: list[tuple[list[str], str]] = []
+    skips: list[Found] = []
     for push in pushes:
         if push.deletes_only:
             continue
@@ -190,33 +177,33 @@ def decide(args: dict[str, Any], params: dict[str, Any] | None = None) -> dict[s
         found = checked[repo]
         if found is None or not found[0]:
             continue
+        if seen is not None:
+            seen.append((repo, *found))
         if not _wants_skip(script, push.env, len(found[0])):
             return _pre("deny", deny_reason(*found))
-        skips.append(found)
+        if not any(repo == listed for listed, _, _ in skips):
+            skips.append((repo, *found))
     # A push with no skip is denied above before anyone is asked: one command can hold both.
-    if not skips:
-        return {}
-    stale, graph_rel = skips[0]
-    if isinstance(responses, dict) and ANSWER in responses:
-        return {} if _approved(responses[ANSWER]) else _pre("deny", refused_reason(stale, graph_rel))
-    if isinstance(capabilities, dict) and "elicitation" in capabilities:
-        return {"resultType": "input_required", "inputRequests": {ANSWER: _form(stale, graph_rel)}}
-    return _pre("ask", question(stale, graph_rel))
+    return _pre("ask", question(skips)) if skips else {}
 
 
 def _as_text(out: dict[str, Any]) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": json.dumps(out)}], "isError": False}
 
 
-def call(args: Any, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    """The tool result: the hook's JSON as text, or the `input_required` result itself."""
+def call(args: Any) -> dict[str, Any]:
+    """The tool result: the hook's JSON as text."""
     out: dict[str, Any] = {}
+    seen: list[Found] = []
     try:
         if isinstance(args, dict):
-            out = decide(args, params)
+            out = decide(args, seen)
     except Exception:
         logger.exception("push gate failed")
-    return out if out.get("resultType") == "input_required" else _as_text(out)
+        if seen:
+            _, stale, graph_rel = seen[0]
+            out = _pre("deny", deny_reason(stale, graph_rel))
+    return _as_text(out)
 
 
 def allow_write() -> dict[str, Any]:

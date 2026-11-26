@@ -41,12 +41,11 @@ All notable changes to the `codebase-kg` plugin.
   - Every `Bash` and `PowerShell` call reaches the server, not only the ones an `if` rule named.
 - In Claude Code the push gate runs in the server too (`kg_hook_push_gate`), and an agent can no longer
   skip it on its own. A stale push whose prefix carries `SKIP_KG=1` or a matching `KG_STALE_ACK=<n>`
-  makes the server ask the user, through an MCP elicitation that lists the stale files. The push runs
-  only when the user accepts with the box ticked; a decline, a cancel or a run with no user leaves it
-  denied. A client without elicitation gets the question in its permission prompt. `SKIP_KG` and
-  `KG_STALE_ACK` in the environment of the Claude Code process no longer open the gate. The deny tells
-  the agent to refresh the graph, commit it and push again without asking the user. Codex and Copilot
-  CLI run the script as before.
+  gets `permissionDecision: "ask"`: Claude Code shows its permission prompt with the stale files, also
+  in a session that runs with permissions bypassed, and the push runs only when the user says yes. A run
+  with no user is denied. `SKIP_KG` and `KG_STALE_ACK` in the environment of the Claude Code process no
+  longer open the gate. The deny tells the agent to refresh the graph, commit it and push again without
+  asking the user. Codex and Copilot CLI run the script as before.
 - A hook answers `allow` for the six graph write tools in Claude Code, so a graph refresh does not stop
   at a permission prompt. A graph update changes no code, and the graph file is in git.
 - Every tool has a written title, and `kg_add_link` and `kg_add_reference` carry `idempotentHint`: a
@@ -61,6 +60,12 @@ All notable changes to the `codebase-kg` plugin.
 
 ### Fixed
 
+- A search with an environment assignment in front of it was not read as a search, so
+  `X=1 grep -rn x src` and `env X=1 rg x` passed the search gate without a word, in every client. The
+  parser took the assignment for the command. It reads past `NAME=value` assignments, `env` and
+  `command` to the command word.
+- A `KG_STALE_ACK` value of non-ASCII digits, such as a superscript two, made the push gate script
+  raise, and a hook that errors allows the push. Only ASCII digits count.
 - Four answers of the 2026-07-28 HTTP front that the official conformance suite
   (`@modelcontextprotocol/conformance` 0.2.0-alpha.12) reports against the specification:
   - Whitespace around the `Mcp-Name` or `Mcp-Method` header value no longer reads as a header

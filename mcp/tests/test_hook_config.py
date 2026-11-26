@@ -192,6 +192,32 @@ def test_rows_does_not_leave_the_connection_open(graph_db: Path) -> None:
         conn.close()
 
 
+def _posix_shell(name: str) -> str | None:
+    """The shell Claude Code would run a hook in, or None.
+
+    On Windows `bash` on PATH can be the WSL launcher in System32. It runs in another filesystem and
+    does not see this process's environment, so it is not the shell a hook runs in. Git for Windows'
+    shell is used when it is installed, and the test is skipped when only the WSL launcher exists.
+    """
+    import os
+    import shutil
+
+    found = shutil.which(name)
+    if sys.platform != "win32" or found is None:
+        return found
+    system = os.path.normcase(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32"))
+    if os.path.normcase(os.path.dirname(found)) != system:
+        return found
+    git = shutil.which("git")
+    if git is None:
+        return None
+    for folder in ("bin", os.path.join("usr", "bin")):
+        candidate = Path(git).resolve().parents[1] / folder / f"{name}.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 # --- hooks.json --------------------------------------------------------------
 def _handlers(tool: str, script: str = "kg_search_gate.py") -> list[dict[str, object]]:
     import json
@@ -357,10 +383,9 @@ def _interpreter_stubs() -> dict[str, str]:
 def test_a_failing_hook_script_runs_once_and_reads_the_payload_in_sh(tmp_path: Path, shell: str) -> None:
     """The launcher picks one interpreter and runs the script once: a script that exits non-zero
     must not be retried under the next interpreter, and a python3 that does not start is skipped."""
-    import shutil
     import subprocess
 
-    exe = shutil.which(shell)
+    exe = _posix_shell(shell)
     if exe is None:
         pytest.skip(f"no {shell}")
     runs, env = _plugin_with(tmp_path, "kg_session_start", _interpreter_stubs())
@@ -481,10 +506,9 @@ def test_the_launchers_turn_off_the_working_folder_lookup_before_any_interpreter
 def test_the_launcher_never_runs_a_script_from_the_working_folder_in_sh(tmp_path: Path, shell: str) -> None:
     """Without the variable, bash finds the plugin from the launcher's own path. A shell that cannot
     (dash) stops with exit 127 instead of using the working folder, which is the project for a hook."""
-    import shutil
     import subprocess
 
-    exe = shutil.which(shell)
+    exe = _posix_shell(shell)
     if exe is None:
         pytest.skip(f"no {shell}")
     _, env = _plugin_with(tmp_path, "kg_session_start", _interpreter_stubs())
@@ -553,7 +577,7 @@ def _run_helper(shell: str, root: Path, env: dict[str, str], cwd: Path | None = 
         command = _headers_helper().replace("${CLAUDE_PLUGIN_ROOT}", str(root))
         args: object = f'"{comspec}" /d /s /c "{command}"'
     else:
-        exe = shutil.which(shell)
+        exe = _posix_shell(shell) if shell in ("sh", "bash", "dash") else shutil.which(shell)
         if exe is None:
             pytest.skip(f"no {shell}")
         command = _headers_helper().replace(

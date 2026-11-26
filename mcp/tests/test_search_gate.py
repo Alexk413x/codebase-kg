@@ -459,6 +459,50 @@ def test_skip_kg_written_in_front_of_a_search_does_not_open_the_servers_gate(rep
     assert _server_run(repo, tool, {"command": command}, "s1", None) is None, "the repeat passes"
 
 
+@pytest.mark.parametrize("command", [
+    "FOO=1 grep -rn Known .",
+    "SKIP_KG=1 grep -rn Known .",
+    "A=1 B=2 rg Known app",
+    'LABEL="two words" grep -rn Known .',
+    "LC_ALL=C grep -rn Known app/src",
+    "env X=1 grep -rn Known .",
+    "env grep -rn Known .",
+    "command grep -rn Known .",
+    "sudo FOO=1 grep -rn Known .",
+    "X=1 find . -name '*.kt'",
+    "X=1 git grep Known",
+    "cd app && Y=2 rg Known",
+])
+def test_a_search_with_an_environment_prefix_is_still_a_search(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    """An assignment in front changes the environment the search runs in, not that it is a search. The
+    parser used to read the assignment as the command, so any `X=1 grep ...` passed the gate unseen."""
+    assert decision(run(monkeypatch, capsys, repo, "Bash", {"command": command})) == "deny"
+
+
+@pytest.mark.parametrize("command", [
+    "FOO=grep ls",
+    "X=1 git status",
+    "GREP=1 make test",
+    "env",
+    "env X=1 ls -la",
+    "echo FOO=1 grep -rn Known .",
+    "FOO=1",
+])
+def test_an_environment_prefix_does_not_make_another_command_a_search(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    assert run(monkeypatch, capsys, repo, "Bash", {"command": command}) is None
+
+
+def test_a_powershell_search_after_an_environment_assignment_is_a_search(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    command = "$env:X = '1'; Select-String -Path . -Pattern Known"
+    assert decision(run(monkeypatch, capsys, repo, "PowerShell", {"command": command})) == "deny"
+
+
 def _write_local_config(proj: Path, body: str) -> None:
     (proj / ".claude").mkdir(exist_ok=True)
     (proj / ".claude" / "codebase-kg.local.md").write_text(

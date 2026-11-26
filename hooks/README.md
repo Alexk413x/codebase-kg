@@ -198,15 +198,15 @@ files with the total count.
 - **A skip is the user's decision (Claude Code).** `hooks.json` asks the server
   (`kg_hook_push_gate`, `mcp/src/codebase_kg/push_gate.py`), which reads the command with this script's
   parser. A push whose own prefix carries `SKIP_KG=1`, or `KG_STALE_ACK=<n>` naming the stale count
-  (also after an earlier `export`), does not pass by itself: the server asks the user. It answers the
-  hook's call with an MCP elicitation, a form that lists the stale files with one box, "Push without
-  updating the graph". The push runs only when the user accepts with the box ticked. A decline, a
-  cancel, an unticked box, and a headless or background run, which has no user and answers `cancel`,
-  leave the push denied, and the reason tells the agent to refresh the graph. A client that declared no
-  elicitation gets the same question in its own permission prompt (`permissionDecision: "ask"`).
-  The server ignores `SKIP_KG` and `KG_STALE_ACK` in its own environment. codebase-kg ships no
-  `Elicitation` hook; one the user configured themselves can answer in their place, and the server
-  cannot tell that answer from one given in the dialog.
+  (also after an earlier `export`), does not pass by itself. The server answers
+  `permissionDecision: "ask"`, so Claude Code shows its permission prompt with the stale files listed,
+  and the push runs only when the user says yes. The prompt appears in a session that runs with
+  permissions bypassed too. A headless or background run has no prompt, so the push is denied. A command
+  that pushes several repositories lists every one. The server ignores `SKIP_KG` and `KG_STALE_ACK` in
+  its own environment.
+  The question is not an MCP elicitation, although a hook can raise one: Claude Code keeps the hook
+  waiting while that dialog is open, and when the hook's timeout passes it cancels the hook and runs the
+  command. The permission prompt has no timeout.
 - **Ways through (Codex, Copilot CLI).** The script lets the same prefixes through without asking, and
   reads them from the environment of its own process too.
 - **Never a way through.** `--no-verify`: it skips git hooks, and the point is that an agent cannot skip

@@ -340,8 +340,8 @@ Three advisory layers, all pointing at the same fix (`/codebase-kg:refresh`):
   against `HEAD`, the hook denies the call. The reason lists the stale files and tells the agent to run
   `/codebase-kg:refresh`, commit the graph and push again, without asking you. An agent cannot skip
   the check on its own in Claude Code: a push prefixed with `SKIP_KG=1` or a matching
-  `KG_STALE_ACK=<n>` makes the server ask you, in a dialog that lists the stale files, and a session
-  with no user is refused. In Codex and Copilot CLI those prefixes pass. A push that only deletes
+  `KG_STALE_ACK=<n>` makes Claude Code ask you, in a permission prompt that lists the stale files, and
+  a session with no user is refused. In Codex and Copilot CLI those prefixes pass. A push that only deletes
   refs passes. `--no-verify` does not, because it skips git hooks and not this one. The hook fails
   open on any error. It uses the pre-push hook's
   comparison, so both agree on what is stale.

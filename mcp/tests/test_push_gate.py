@@ -186,7 +186,7 @@ def backend(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> 
 
 def _call(command: str, cwd: Path, capsys: pytest.CaptureFixture, tool: str = "Bash") -> str:
     if BACKEND == "server":
-        result = push_gate.call({"tool_name": tool, "command": command, "cwd": str(cwd)}, {})
+        result = push_gate.call({"tool_name": tool, "command": command, "cwd": str(cwd)})
         text = result["content"][0]["text"]
         return "" if text == "{}" else text
     payload = {"tool_name": tool, "tool_input": {"command": command}, "cwd": str(cwd)}
@@ -289,6 +289,16 @@ def test_a_wrong_ack_does_not_allow_the_push(
     assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
     monkeypatch.setenv("KG_STALE_ACK", "7")
     out = _call("git push", repo, capsys)
+    assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize("ack", ["\u00b2", "\u0662", "1\u00b2"])
+def test_an_ack_of_non_ascii_digits_does_not_open_the_gate(
+    tmp_path: Path, capsys: pytest.CaptureFixture, ack: str,
+) -> None:
+    """`str.isdigit` accepts these and `int` rejects them. The error used to end the hook, which allows."""
+    repo = _make_repo(tmp_path, drift=(KNOWN,))
+    out = _call(f"KG_STALE_ACK={ack} git push", repo, capsys)
     assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 

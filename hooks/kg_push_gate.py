@@ -358,7 +358,9 @@ def allowed_by_env(push_env: dict[str, str], count: int) -> bool:
         if skip_kg(source):
             return True
         ack = (source.get("KG_STALE_ACK") or "").strip()
-        if ack.isdigit() and int(ack) == count:
+        # ASCII digits only: `str.isdigit` accepts characters such as a superscript two, which `int`
+        # rejects, and an error in this hook allows the push.
+        if ack.isascii() and ack.isdigit() and int(ack) == count:
             return True
     return False
 
