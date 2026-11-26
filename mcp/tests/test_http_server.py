@@ -236,9 +236,12 @@ def _roots(path: Path) -> dict[str, Any]:
 def test_a_client_is_asked_for_its_roots_once(tmp_path: Path) -> None:
     clients = http_transport.Clients()
     headers = {"x-codebase-kg-client": "c1"}
-    first = clients.connection(headers, {})
+    first = clients.connection(headers, {}, {"roots": {}})
     assert first == {"resultType": "input_required",
                      "inputRequests": {http_transport.ROOTS_REQUEST: {"method": "roots/list"}}}
+    with pytest.raises(http_transport.RpcError) as refused:
+        clients.connection(headers, {}, {"elicitation": {}})
+    assert refused.value.code == -32021 and refused.value.data == {"requiredCapabilities": {"roots": {}}}
     bound = clients.connection(headers, _roots(tmp_path))
     assert getattr(bound, "cwd") == tmp_path  # noqa: B009 - pyright rejects `.cwd` on the dict arm of the union
     assert clients.connection(headers, {}) is bound

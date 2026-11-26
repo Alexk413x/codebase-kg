@@ -156,15 +156,15 @@ def test_tools_list(front: dict[str, Any]) -> None:
     assert result["tools"] == core.CATALOG["tools"] and len(result["tools"]) == 13
 
 
-@pytest.mark.parametrize(("method", "key"), [
-    ("prompts/list", "prompts"), ("resources/list", "resources"),
-    ("resources/templates/list", "resourceTemplates"),
+def test_discover_declares_exactly_what_the_server_answers(front: dict[str, Any]) -> None:
+    """The server has tools only, so it declares tools only and answers no prompt or resource method."""
+    assert _complete(_req(front, "server/discover"))["capabilities"] == {"tools": {"listChanged": False}}
+
+
+@pytest.mark.parametrize("method", [
+    "ping", "bogus/method", "initialize", "prompts/list", "prompts/get", "resources/list",
+    "resources/templates/list", "resources/read", "completion/complete",
 ])
-def test_empty_lists(front: dict[str, Any], method: str, key: str) -> None:
-    assert _complete(_req(front, method))[key] == []
-
-
-@pytest.mark.parametrize("method", ["ping", "bogus/method", "initialize"])
 def test_an_unknown_method_is_404(front: dict[str, Any], method: str) -> None:
     error = _rpc_error(_req(front, method), 404, -32601)
     assert error["data"] == method
@@ -221,9 +221,50 @@ def test_a_root_that_is_not_a_file_is_refused(front: dict[str, Any]) -> None:
     _tool_error(reply)
 
 
+@pytest.mark.parametrize("name", ["kg_nope", "kg_stats", "", None])
+def test_an_unknown_tool_is_a_protocol_error_before_any_roots_request(front: dict[str, Any], name: Any) -> None:
+    """`kg_stats` is a CLI-only read: the catalog does not list it, so a client cannot call it."""
+    reply = _req(front, "tools/call", {"name": name, "arguments": {}},
+                 headers={"x-codebase-kg-client": "never-seen", "mcp-name": None if name is None else str(name)})
+    error = _rpc_error(reply, 400, -32602)
+    assert error["message"] == f"Unknown tool: {name}"
+
+
+def test_a_client_without_the_roots_capability_gets_32021_and_not_a_roots_request(front: dict[str, Any]) -> None:
+    meta = {"io.modelcontextprotocol/clientCapabilities": {"elicitation": {"form": {}}}}
+    reply = _req(front, "tools/call", {"name": "kg_search", "arguments": {"query": "widget"}, "_meta": meta},
+                 headers={"x-codebase-kg-client": "no-roots"})
+    error = _rpc_error(reply, 400, -32021)
+    assert error["data"] == {"requiredCapabilities": {"roots": {}}}
+
+
+def test_a_client_without_the_roots_capability_is_served_by_the_cwd_header(front: dict[str, Any]) -> None:
+    meta = {"io.modelcontextprotocol/clientCapabilities": {}}
+    reply = _req(front, "tools/call", {"name": "kg_search", "arguments": {"query": "widget"}, "_meta": meta},
+                 headers={"x-codebase-kg-cwd": str(front["repo"])})
+    assert [r["id"] for r in _tool_ok(reply)["results"]] == ["alpha_widget"]
+
+
+@pytest.mark.parametrize("header", ["  kg_search  ", "kg_search ", "	kg_search"])
+def test_whitespace_around_the_name_header_is_not_a_mismatch(front: dict[str, Any], header: str) -> None:
+    reply = _call(front, "kg_search", {"query": "widget"}, client="ows", headers={"mcp-name": header})
+    assert [r["id"] for r in _tool_ok(reply)["results"]] == ["alpha_widget"]
+
+
+def test_an_unsupported_version_is_reported_before_a_missing_envelope(front: dict[str, Any]) -> None:
+    reply = _post(front, {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                  headers={"mcp-protocol-version": "2099-01-01"})
+    error = _rpc_error(reply, 400, -32022)
+    assert error["data"] == {"supported": [V], "requested": "2099-01-01"}
+
+
+def test_a_notification_without_a_version_header_is_accepted(front: dict[str, Any]) -> None:
+    reply = _post(front, {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}},
+                  headers={"mcp-protocol-version": None, "mcp-method": None})
+    assert reply.status == 202 and reply.body == ""
+
+
 @pytest.mark.parametrize(("name", "args"), [
-    ("kg_nope", {}),
-    ("kg_stats", {}),
     ("kg_node", {}),
     ("kg_node", {"id": "alpha_widget", "zzz": 1}),
     ("kg_neighborhood", {"id": "alpha_widget", "depth": "two"}),

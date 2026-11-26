@@ -170,25 +170,29 @@ host's job object, and falls back to a plain detached start when WMI fails (`shi
 ## The HTTP front
 
 `http_transport.py` serves MCP 2026-07-28 as Claude Code 2.1.293 sends it: one self-contained POST
-per request, no sessions. It answers `server/discover`, `tools/list`, `tools/call` and the empty
-prompt and resource lists; a notification gets 202. It advertises only the tools capability.
+per request, no sessions. It answers `server/discover`, `tools/list` and `tools/call`; a
+notification gets 202. It declares only the tools capability, so a prompt or resource method is an
+unknown method. A request that opens with a classic `initialize`, or carries a classic protocol
+version, gets the classic stateless form instead (see the module docstring).
 
 | Request | Answer |
 |---|---|
 | Body is not JSON | 400, `-32700` |
 | Body is not one JSON-RPC message | 400, `-32600` |
 | `params._meta` lacks the protocol version or client capabilities | 400, `-32602` |
-| A header contradicts the body (`mcp-protocol-version`, `mcp-method`, `mcp-name`) | 400, `-32020` |
-| Any protocol version but 2026-07-28, including a classic `initialize` | 400, `-32022`, with the supported versions |
-| Unknown method | 404, `-32601` |
+| A header contradicts the body (`mcp-protocol-version`, `mcp-method`, `mcp-name`) | 400, `-32020`. Whitespace around a header value is ignored |
+| A protocol version that is neither 2026-07-28 nor a classic version, or no version on a request that is not `initialize` | 400, `-32022`, with the supported versions. Checked before the envelope |
+| Unknown tool | 400, `-32602` |
+| A tool call that needs the client's roots, from a client that did not declare `roots` | 400, `-32021`, with `requiredCapabilities` |
+| Unknown method, including `prompts/*` and `resources/*` | 404, `-32601` |
 | `GET /mcp` | 405 |
 | An `Accept` without JSON | 406 |
 | Body over 8 MB | 413 |
 | Wrong `Host`, foreign `Origin`, missing or wrong token | 403 |
-| Tool error or refused write | 200, a result with `isError: true` |
+| Tool error, bad arguments or refused write | 200, a result with `isError: true` |
 
-The first tool call from an unseen client returns `resultType: "input_required"` with a roots
-request; the retry carries the roots in `inputResponses`. When those roots include no local folder, the
+The first tool call from an unseen client that declared `roots` returns
+`resultType: "input_required"` with a roots request; the retry carries the roots in `inputResponses`. When those roots include no local folder, the
 call gets an error result that tells the client to send `X-Codebase-KG-Cwd`; the server does not ask again. Request bodies may be chunked. A keep-alive
 connection idle for 60 s is closed.
 

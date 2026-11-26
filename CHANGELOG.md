@@ -17,6 +17,23 @@ All notable changes to the `codebase-kg` plugin.
   a session's repository. The git hooks leave it unset and behave as before. The file is vendored
   into repos, so a wired clone receives this change the next time `git-hooks/install.sh` runs.
 
+### Fixed
+
+- Four answers of the 2026-07-28 HTTP front that the official conformance suite
+  (`@modelcontextprotocol/conformance` 0.2.0-alpha.12) reports against the specification:
+  - Whitespace around the `Mcp-Name` or `Mcp-Method` header value no longer reads as a header
+    mismatch (-32020).
+  - `prompts/list`, `resources/list` and `resources/templates/list` are unknown methods (404,
+    -32601). The server declares only the tools capability and answered them with empty lists.
+    Clients on the classic `initialize` path still get the empty lists.
+  - A tool call that needs the client's roots, from a client that did not declare the `roots`
+    capability, gets -32021 with `requiredCapabilities` and HTTP 400. It used to get a roots request
+    the client could not answer. A client that sends `X-Codebase-KG-Cwd` is served as before.
+  - An unknown tool gets -32602 and HTTP 400, before any roots request. It used to get a roots
+    request, or a result with `isError`.
+- An unsupported protocol version is reported (-32022) before a missing request envelope (-32602),
+  and a notification with no version header gets 202.
+
 ### Removed
 
 - The post-edit nudge (`hooks/kg_post_edit_check.py`) for Claude Code, Codex and Copilot CLI. It

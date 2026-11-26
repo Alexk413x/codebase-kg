@@ -192,7 +192,7 @@ def test_an_unusable_roots_answer_ends_the_exchange(roots: list[dict[str, Any]])
 
 
 def test_no_roots_answer_still_asks_for_roots() -> None:
-    found = http_transport.Clients().connection({http_transport.CLIENT_HEADER: "client-1"}, {})
+    found = http_transport.Clients().connection({http_transport.CLIENT_HEADER: "client-1"}, {}, {"roots": {}})
     assert isinstance(found, dict) and found["resultType"] == "input_required"
 
 
