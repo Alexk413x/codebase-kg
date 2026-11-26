@@ -30,3 +30,4 @@ mcp/launch/run/*.cmd text eol=lf
 # /codebase-kg:setup vendors them. See docs/REVIEW.md.
 *.db binary diff=codegraph
 code_graph.db binary diff=codegraph
+mcp/launch/kg-hooks text eol=lf

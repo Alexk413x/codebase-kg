@@ -33,8 +33,19 @@ All notable changes to the `codebase-kg` plugin.
 
 ### Changed
 
-- In Claude Code the search gate runs in the server. `hooks.json` has three hooks of type `mcp_tool`
-  (`Grep|Glob`, `Bash`, `PowerShell`) where it had 27 command hooks, one per search word, so a search
+- Claude Code's hooks go through a hook relay. The plugin declares a second MCP server,
+  `codebase-kg-hooks`, which Claude Code starts on stdio with each session. It lists no tools and
+  adds nothing to the model's context. It passes each hook call to the shared server and answers an
+  empty result itself when that server gives none, so every gate fails open without a failure notice.
+  After a failure it starts the server again, which also brings the gates back after a plugin update
+  and `/reload-plugins`. `/mcp` shows the two servers.
+- The server counts a graph query for the agent process that made it, not for the client connection,
+  because hook calls and model calls arrive on two connections. A subagent's query earns credit for
+  its session as before.
+- The server answers a hook tool it does not know (`kg_hook_*`) with an empty result, so a session
+  whose hook list is newer than the server gets no error from it.
+- In Claude Code the search gate runs in the server. `hooks.json` has one hook of type `mcp_tool`
+  (`kg_hook_pre` on `Grep|Glob|Bash|PowerShell`, shared with the push gate) where it had 27 command hooks, one per search word, so a search
   starts no Python process. The rule is unchanged: the server loads `hooks/kg_search_gate.py`, the script
   Codex and Copilot CLI still run. Behavior changes for Claude Code:
   - `SKIP_KG` no longer applies to the search gate in Claude Code. A direct hook passes no
@@ -67,6 +78,13 @@ All notable changes to the `codebase-kg` plugin.
 
 ### Fixed
 
+- A server that was away, older or slow filled the screen or stalled the session. Claude Code prints
+  a two-line "hook failed" notice for every hook that calls a server which is not connected or does
+  not know the tool, and the hooks called the shared server directly: one notice for each plain
+  command, three for each git command. A server that hung made every hook wait its whole timeout,
+  10 to 20 seconds for each tool call. The hooks call a local relay now (see Changed). The user gets
+  one line when the gates go off and one when they return, and a server that hangs costs one wait of
+  1.5 seconds.
 - A copy of the plugin could take over the shared server for every session on the machine. The server
   that held the port gave it up to any copy of the same version whose files were newer, so a
   checkout, a worktree, a scratch copy, or another agent's cached copy replaced the installed server

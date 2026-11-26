@@ -525,6 +525,12 @@ def agent_pid() -> int | None:
     return None
 
 
+def agent_name() -> str:
+    """The agent's pid as the `X-Codebase-KG-Agent` header value, or `unknown`."""
+    pid = agent_pid()
+    return str(pid) if pid else "unknown"
+
+
 def sessions_dir() -> Path:
     return cache_dir() / "sessions"
 
@@ -1178,6 +1184,7 @@ def run_private(args: list[str]) -> int:
 
 BRIDGE_START_WAIT = 10.0
 CLIENT_HEADER, CWD_HEADER, GRAPH_HEADER = "X-Codebase-KG-Client", "X-Codebase-KG-Cwd", "X-Codebase-KG-Graph"
+AGENT_HEADER = "X-Codebase-KG-Agent"
 
 
 def ensure_http_server(wait: float = BRIDGE_START_WAIT) -> bool:
@@ -1267,8 +1274,46 @@ def run_bridge(args: list[str]) -> int:
             pass
 
 
+HOOK_PREFIX = "kg_hook_"
+SEARCH_BUDGET, GIT_BUDGET = 1.5, 20.0
+
+
+def hook_budget(name: str, arguments: Any) -> float:
+    """Seconds the server gets for one hook call. A search decision takes milliseconds; a push or a
+    commit runs git in the repository."""
+    if name == "kg_hook_commit_check":
+        return GIT_BUDGET
+    if name != "kg_hook_pre":
+        return SEARCH_BUDGET
+    tool_input = arguments.get("tool_input") if isinstance(arguments, dict) else None
+    text = tool_input if isinstance(tool_input, str) else json.dumps(tool_input or "")
+    return GIT_BUDGET if "git" in text and "push" in text else SEARCH_BUDGET
+
+
+def run_hooks() -> int:
+    """Serve this session's hook calls on stdio, from the shared server when it answers."""
+    port = http_port()
+    fixed = {CLIENT_HEADER: f"hooks-{secrets.token_hex(8)}"}
+    agent: list[str] = []
+
+    def headers(refresh: bool) -> dict[str, str]:
+        if not agent:
+            agent.append(agent_name())
+        token = verified_token(port)
+        own = {**fixed, AGENT_HEADER: agent[0]}
+        return {**own, "Authorization": f"Bearer {token}"} if token else own
+
+    off = (f"codebase-kg: the server on port {port} does not answer its hooks, so the search gate, the commit "
+           f"check and the push gate are off. They return when it does.")
+    on = "codebase-kg: the server answers its hooks again. The search gate, the commit check and the push gate are back on."
+    info = {"name": "codebase-kg-hooks", "version": package_version()}
+    return _load_bridge().HookRelay(port, headers, ensure_http_server, off, on, hook_budget, HOOK_PREFIX, info).run()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
+    if args[:1] == ["--hooks"]:
+        return run_hooks()
     if os.environ.get("CODEBASE_KG_SHARED", "").strip() == "0":
         return run_private(args)
     if os.environ.get("CODEBASE_KG_BRIDGE", "").strip() == "1":

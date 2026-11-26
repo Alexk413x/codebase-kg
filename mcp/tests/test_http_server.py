@@ -831,7 +831,7 @@ def test_the_helper_prints_json_with_no_server(tmp_path: Path) -> None:
     started = time.monotonic()
     out = _helper({"CODEBASE_KG_CACHE_DIR": str(tmp_path),
                    "CLAUDE_CODE_MCP_SERVER_URL": f"http://127.0.0.1:{_free_port()}/mcp"})
-    assert set(out) == {"X-Codebase-KG-Client"}
+    assert set(out) == {"X-Codebase-KG-Client", "X-Codebase-KG-Agent"}
     assert time.monotonic() - started < helper_module().WAIT + 5
 
 

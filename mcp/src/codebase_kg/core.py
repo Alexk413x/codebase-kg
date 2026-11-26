@@ -153,6 +153,8 @@ def hook_result(name: Any, args: Any, client: str | None = None) -> dict[str, An
     the session's folder as an argument, so they need no session. `client` is the
     caller's client id, which ties a hook call to the model calls of its session.
     """
+    if name == PRE_TOOL:
+        return pre_tool(args, client)
     if name == commit_check.TOOL:
         return commit_check.call(args)
     if name == search_gate.TOOL:
@@ -161,7 +163,33 @@ def hook_result(name: Any, args: Any, client: str | None = None) -> dict[str, An
         return push_gate.call(args)
     if name == push_gate.ALLOW_WRITE_TOOL:
         return push_gate.allow_write()
+    if isinstance(name, str) and name.startswith(HOOK_PREFIX):
+        # A hook list from a newer version than this server: an error here would show the user a
+        # failure notice on every tool call.
+        return {"content": [{"type": "text", "text": "{}"}], "isError": False}
     return None
+
+
+HOOK_PREFIX = "kg_hook_"
+PRE_TOOL = "kg_hook_pre"
+
+
+def pre_tool(args: Any, client: str | None = None) -> dict[str, Any]:
+    """One answer for a `PreToolUse` hook on Grep, Glob, Bash and PowerShell: the push gate's when it has
+    one, else the search gate's. One hook call for each tool call, where two hooks made two."""
+    if isinstance(args, dict) and args.get("tool_name") in ("Bash", "PowerShell"):
+        tool_input = args.get("tool_input")
+        if isinstance(tool_input, str):
+            try:
+                tool_input = json.loads(tool_input)
+            except ValueError:
+                tool_input = None
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        if isinstance(command, str) and "git" in command and "push" in command:
+            pushed = push_gate.call({"tool_name": args.get("tool_name"), "command": command, "cwd": args.get("cwd")})
+            if pushed["content"][0]["text"] != "{}":
+                return pushed
+    return search_gate.call(args, client)
 
 
 class Core:

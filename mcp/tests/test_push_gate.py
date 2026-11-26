@@ -442,17 +442,17 @@ def test_powershell_backtick_continuation_and_ack(
     assert _ps("$env:KG_STALE_ACK = 1\ngit `\n  push origin main", repo, capsys) == ""
 
 
-def test_hooks_json_routes_powershell_git_commands_to_the_push_gate() -> None:
+def test_hooks_json_routes_bash_and_powershell_commands_to_the_push_gate() -> None:
+    """The push gate shares the `PreToolUse` hook of the search gate (`core.pre_tool`), which hands it a push."""
     config = json.loads((Path(gate.__file__).parent / "hooks.json").read_text(encoding="utf-8"))
-    for tool in ("Bash", "PowerShell"):
-        (handler,) = [
-            h for m in config["hooks"]["PreToolUse"] if m["matcher"] == tool for h in m["hooks"]
-            if h.get("tool") == push_gate.TOOL
-        ]
-        assert handler["type"] == "mcp_tool" and handler["if"] == f"{tool}(git *)"
-        assert handler["input"] == {"tool_name": "${tool_name}", "command": "${tool_input.command}", "cwd": "${cwd}"}
-        # With `onFailure: "block"` an unreachable server would block every git command, not only a push.
-        assert "onFailure" not in handler
+    (handler,) = [
+        h for m in config["hooks"]["PreToolUse"] if "Bash" in m["matcher"].split("|") and "PowerShell" in m["matcher"].split("|")
+        for h in m["hooks"]
+    ]
+    assert handler["type"] == "mcp_tool" and handler["tool"] == "kg_hook_pre"
+    assert handler["input"]["tool_name"] == "${tool_name}" and handler["input"]["tool_input"] == "${tool_input}"
+    # With `onFailure: "block"` an unreachable server would block every command, not only a push.
+    assert "onFailure" not in handler
 
 
 # --- review fixes: comments, wrappers, dry runs ---------------------------------

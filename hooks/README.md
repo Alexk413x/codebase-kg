@@ -6,7 +6,7 @@ no `knowledge/code_graph.db`. The server start runs in every session.
 
 | File | Role |
 |---|---|
-| `hooks.json` | Plugin hook config for Claude Code. PreToolUse on `Grep\|Glob`, `Bash` and `PowerShell` calls the server's `kg_hook_search_gate` directly (hook type `mcp_tool`, no process); `Bash(git *)` and `PowerShell(git *)` calls → `kg_push_gate.py` as well. PostToolUse on `Bash(git *)` and `PowerShell(git *)` calls the server's `kg_hook_commit_check`. SessionStart on `startup\|resume\|clear` → `kg_server_start.py`, then `kg_session_start.py`. Every command hook is `. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/<script>.cmd"`; see "How a hook starts" below. |
+| `hooks.json` | Plugin hook config for Claude Code. Every gate is a hook of type `mcp_tool` on the plugin's second MCP server, `codebase-kg-hooks` (see "The hook relay"), so no process starts. PreToolUse on `Grep\|Glob\|Bash\|PowerShell` calls `kg_hook_pre`, which holds the search gate and the push gate. PostToolUse on `Bash(git *)` and `PowerShell(git *)` calls `kg_hook_commit_check`. PreToolUse on the six graph write tools calls `kg_hook_allow_write`. SessionStart on `startup\|resume\|clear` → `kg_server_start.py`, then `kg_session_start.py`. Every command hook is `. "${CLAUDE_PLUGIN_ROOT}/mcp/launch/run/<script>.cmd"`; see "How a hook starts" below. |
 | `codex-hooks.json` | The same hooks for Codex, named by `hooks` in `.codex-plugin/plugin.json`: the search gate and push gate on `Bash`, the credit hook on codebase-kg MCP calls, and the session notice. It has no `if`, `Grep`, `Glob` or `PowerShell` entry, because Codex ignores `if` and reports shell commands as `Bash`, so each script decides for itself whether a command is a search or a push. It has no server start hook: the `--start` option of `mcp/launch/kg_headers.py`, which the Codex config table runs as its headers helper, or the stdio shim starts the server. `commandWindows` runs `py -3` and names the script through `$env:PLUGIN_ROOT`, because Codex runs it in PowerShell, where `${CLAUDE_PLUGIN_ROOT}` is empty; `command` runs `python3`. |
 | `copilot-hooks.json` | The hooks for GitHub Copilot CLI, named by `hooks` in `.github/plugin/plugin.json`: `preToolUse` runs `kg_copilot.py` with `python`. |
 | `kg_copilot.py` | The Copilot CLI adapter. Turns Copilot's hook payloads into the shape the shared search gate and push gate read, so those scripts stay unchanged. |
@@ -86,6 +86,36 @@ must name one executable on every platform, and no interpreter name does: `py` e
 and `python3` is a Store stub there. `hooks/codex-hooks.json` keeps its `command` and `commandWindows`
 pair, because Codex has that field.
 
+## The hook relay (Claude Code)
+
+A hook of type `mcp_tool` that names a server which is not connected, does not know the tool, or
+answers with an error fails, and Claude Code prints a two-line notice for each failed hook on every
+tool call. A hook that gets no answer waits for its whole timeout. Nothing in a hook's config makes
+either quiet. So the hooks do not name the shared HTTP server. They name `codebase-kg-hooks`, a
+second MCP server in `mcp/claude.mcp.json` that Claude Code starts on stdio with each session
+(`mcp/launch/kg-hooks`, which runs `shim.py --hooks`; the class is `HookRelay` in
+`mcp/src/codebase_kg/slipspace/bridge.py`).
+
+- **What it does.** It passes each hook call to the shared server, with the token and the agent's
+  process id, and returns the answer unchanged. It lists no tools and sends no instructions, so it
+  adds nothing to the model's context.
+- **When the server gives no hook result.** No listener, a refused token, an older build that does
+  not know the tool, an error, or no answer in time: the relay answers `{}`, so the tool call goes
+  on. Every gate fails open; the git pre-push hook still blocks a stale push.
+- **What the user sees.** One line when the gates go off and one when they return, and nothing in
+  between. A healthy session shows nothing.
+- **Allowances.** 1.5 s for a search decision, 20 s for a push or a commit check, which run git.
+  After a call that got no answer in time, the relay sends nothing for 30 s, so a server that hangs
+  costs one wait. After any other failure it starts the server on another thread, the way the
+  SessionStart hook does, and asks again as soon as one runs. That is also what brings the gates
+  back after a plugin update: `/reload-plugins` runs no SessionStart hook, and the relay of the new
+  version replaces the old server.
+- **Launch.** `claude.mcp.json` names `mcp/launch/kg-hooks` with no extension: Claude Code runs the
+  `sh` script on macOS and Linux and `kg-hooks.cmd` on Windows. Both run the base interpreter with
+  `-I -S`.
+- **No Python.** The relay cannot start, and Claude Code prints its notice for every hook call, as
+  it does for every hook of every plugin that needs an interpreter.
+
 ## The search gate (PreToolUse)
 
 The only part of the plugin that can **deny** a tool call, and the only reason the graph gets used at
@@ -154,19 +184,23 @@ a search.
 
 One rule, two callers. The decision is `kg_search_gate.py` for every client.
 
-- **Claude Code** asks the server. `hooks.json` has one `mcp_tool` entry each for `Grep|Glob`, `Bash`
-  and `PowerShell`, which call the unlisted tool `kg_hook_search_gate`
-  (`mcp/src/codebase_kg/search_gate.py`). The server loads `kg_search_gate.py` and replaces the parts
+- **Claude Code** asks the server. `hooks.json` has one `mcp_tool` entry for `Grep|Glob|Bash|PowerShell`,
+  which calls the unlisted tool `kg_hook_pre` through the hook relay. The server hands a `git push` to
+  the push gate first and everything else to the search gate (`core.pre_tool`,
+  `mcp/src/codebase_kg/search_gate.py`). The server loads `kg_search_gate.py` and replaces the parts
   that assumed a process of their own: state lives in memory, and the server counts graph queries
-  itself, because it receives them. No hook reports a query. A model's query and the hook call that
-  follows carry the same client id, which is how the credit reaches the right session. A server
+  itself, because it receives them. No hook reports a query. A model's query arrives on the
+  HTTP connection and the hook call that follows arrives through the relay, two clients. Both name the
+  agent process they belong to (`X-Codebase-KG-Agent`), which is how the credit reaches the right
+  session, for the main agent and for a subagent. Clients that cannot find their agent process say
+  `unknown` and share one count, so a query always earns credit. A server
   restart clears the state: denied searches are asked once more and the credit starts from zero. A
   session that is older than the server is told so once.
 - **Codex and Copilot CLI** run the script as a process (`codex-hooks.json`, `kg_copilot.py`). There a
   second hook on the codebase-kg tools credits a query, state lives in the OS temp dir, and several
   matching handlers settle who decides through a claim file on the call's `tool_use_id`.
 
-With the server unreachable, Claude Code's hook fails open and the search runs. The script allows the
+With the server unreachable, the hook relay answers for it and the search runs. The script allows the
 search and says so once.
 
 `SKIP_KG` differs by caller. For Claude Code it does not apply: a direct hook passes no environment,
@@ -224,7 +258,7 @@ files with the total count.
 
 ## The commit check (PostToolUse)
 
-Claude Code only. It has no script: `hooks.json` calls the codebase-kg server directly with a hook of
+Claude Code only. It has no script: `hooks.json` calls the codebase-kg server, through the hook relay, with a hook of
 type `mcp_tool`, so no process starts. The server answers the tool `kg_hook_commit_check`, which
 `tools/list` does not show (`mcp/src/codebase_kg/commit_check.py`).
 

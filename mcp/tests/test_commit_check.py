@@ -417,7 +417,7 @@ def test_claude_code_calls_the_endpoint_after_git_commands() -> None:
     assert set(entries) == {"Bash", "PowerShell"}
     for shell, (handler,) in entries.items():
         assert handler["type"] == "mcp_tool"
-        assert handler["server"] == "plugin:codebase-kg:codebase-kg"
+        assert handler["server"] == "plugin:codebase-kg:codebase-kg-hooks"
         assert handler["tool"] == commit_check.TOOL
         assert handler["if"] == f"{shell}(git *)"
         assert handler["input"] == {"command": "${tool_input.command}", "cwd": "${cwd}"}

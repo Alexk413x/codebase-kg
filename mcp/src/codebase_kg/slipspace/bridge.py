@@ -38,6 +38,13 @@ closed the connection while it was idle is the common cause. A request that fail
 on a new connection after it was sent is never retried, because the server may
 have run the call: the client gets a JSON-RPC error and decides.
 
+`HookRelay` is the bridge for a client's hooks. A hook that calls an MCP tool
+fails with a notice for the user on every call while its server is away. The
+relay is a stdio server the client starts itself, so it is always there: it
+sends each hook call to the HTTP endpoint and answers an empty hook result
+itself when the endpoint gives none. It lists no tools and sends no
+instructions, so it adds nothing to the model's context.
+
 This folder imports nothing from the package around it. The owner passes the
 port, a function that returns the request headers, and a function that starts
 the server.
@@ -47,7 +54,9 @@ from __future__ import annotations
 
 import base64
 import http.client
+import io
 import json
+import socket
 import sys
 import threading
 import time
@@ -75,6 +84,14 @@ Headers = Callable[[bool], "dict[str, str]"]
 
 class Unavailable(Exception):
     """The server gave no usable answer."""
+
+
+class NoServer(Unavailable):
+    """Nothing accepted the connection."""
+
+
+class TimedOut(Unavailable):
+    """The server took the request and sent no answer in the time allowed."""
 
 
 class Cancelled(Exception):
@@ -326,7 +343,7 @@ class Bridge:
 
     # --- one request to the server --------------------------------------------------------------------
 
-    def _post(self, message: dict[str, Any], request_id: Any) -> dict[str, Any]:
+    def _post(self, message: dict[str, Any], request_id: Any, timeout: float = REQUEST_TIMEOUT) -> dict[str, Any]:
         """The server's JSON-RPC response to `message`. Raises `Unavailable` or `Cancelled`."""
         params = message.get("params")
         fields: dict[str, Any] = params if isinstance(params, dict) else {}
@@ -342,14 +359,16 @@ class Bridge:
             kept = self._take()
             if kept is not None:
                 conn, owned = kept
+                if conn.sock is not None:
+                    conn.sock.settimeout(timeout)
             else:
-                conn = http.client.HTTPConnection(self.host, self.port, timeout=REQUEST_TIMEOUT)
+                conn = http.client.HTTPConnection(self.host, self.port, timeout=timeout)
                 try:
                     conn.connect()
                 except OSError as exc:
                     conn.close()
                     if started or not self._ensure():
-                        raise Unavailable(f"no server on port {self.port}") from exc
+                        raise NoServer(f"no server on port {self.port}") from exc
                     started = True
                     continue
                 owned = self._headers(started or refused)
@@ -368,6 +387,8 @@ class Bridge:
                     self._inflight[request_id] = None
                     if request_id in self._cancelled:
                         raise Cancelled from exc
+                if isinstance(exc, socket.timeout):
+                    raise TimedOut("no answer in time") from exc
                 if kept is not None and not stale:
                     stale = True
                     continue
@@ -442,3 +463,187 @@ def _hang_up(conn: http.client.HTTPConnection) -> None:
         except OSError:
             pass
     conn.close()
+
+
+class HookRelay:
+    """A stdio MCP server that answers a client's hook calls, from the HTTP endpoint when it answers.
+
+    A tool call whose name starts with `prefix` goes to the endpoint, with `budget(name, arguments)`
+    seconds to answer. The answer must be a tool result whose text is a JSON object: the hook's output.
+    Anything else is a failure: no listener, a refused token, an error, a tool the server does not
+    know, no answer in time. On a failure the relay answers `{}`, which lets the client go on, and
+    sends nothing to the endpoint for `pause` seconds, so an endpoint that hangs costs one wait.
+    The first failure carries `off` as `systemMessage`, and the first answer after it carries `on`:
+    one line for the user each time, and nothing while the endpoint keeps failing.
+
+    `start` is called on another thread after a failure, and may start or replace the server. When
+    it returns True the pause ends at once, unless the failure was an answer that did not come in
+    time: asking a server that fails at once costs milliseconds, asking one that hangs costs the
+    whole allowance.
+    """
+
+    def __init__(
+        self, port: int, headers: Headers, start: Callable[[], bool], off: str, on: str,
+        budget: Callable[[str, Any], float], prefix: str, info: dict[str, str],
+        reader: BinaryIO | None = None, writer: BinaryIO | None = None, pause: float = 30.0,
+        host: str = "127.0.0.1", path: str = "/mcp",
+    ) -> None:
+        self._bridge = Bridge(port, headers, lambda: False, reader=_NOTHING, writer=_NOTHING, host=host, path=path)
+        self._start, self._off, self._on = start, off, on
+        self._budget, self._prefix, self._info, self._pause = budget, prefix, info, pause
+        self._reader = reader if reader is not None else sys.stdin.buffer
+        self._writer = writer if writer is not None else sys.stdout.buffer
+        self._write_lock = threading.Lock()
+        self._lock = threading.Lock()
+        self._threads: set[threading.Thread] = set()
+        self._retry_at = 0.0
+        self._down = False
+        self._starting = False
+
+    def run(self) -> int:
+        while True:
+            try:
+                line = self._reader.readline()
+            except (OSError, ValueError):
+                break
+            if not line:
+                break
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            for message in parsed if isinstance(parsed, list) else [parsed]:
+                if isinstance(message, dict) and isinstance(message.get("method"), str) and "id" in message:
+                    self._request(message)
+        with self._lock:
+            threads = list(self._threads)
+        for thread in threads:
+            thread.join(DRAIN)
+        return 0
+
+    def _request(self, message: dict[str, Any]) -> None:
+        method, request_id = message["method"], message["id"]
+        raw = message.get("params")
+        params: dict[str, Any] = raw if isinstance(raw, dict) else {}
+        meta = params.get("_meta")
+        modern = isinstance(meta, dict) and VERSION_KEY in meta
+        done: dict[str, Any] = {"resultType": "complete", "_meta": {SERVER_INFO_KEY: self._info}} if modern else {}
+        listed: dict[str, Any] = {**done, "ttlMs": 0, "cacheScope": "private"} if modern else {}
+        if method == "tools/call":
+            name = params.get("name")
+            if not isinstance(name, str) or not name.startswith(self._prefix):
+                self._write(error(request_id, -32602, f"Unknown tool: {name}"))
+                return
+            thread = threading.Thread(target=self._call, args=(request_id, name, params.get("arguments"), done), daemon=True)
+            with self._lock:
+                self._threads.add(thread)
+            thread.start()
+        elif method == "server/discover":
+            self._result(request_id, {"supportedVersions": [MODERN], "capabilities": {"tools": {"listChanged": False}}, **listed})
+        elif method == "initialize":
+            asked = params.get("protocolVersion")
+            self._result(request_id, {
+                "protocolVersion": asked if asked in CLASSIC_VERSIONS else CLASSIC_VERSIONS[-1],
+                "capabilities": {"tools": {"listChanged": False}}, "serverInfo": self._info,
+            })
+        elif method == "tools/list":
+            self._result(request_id, {"tools": [], **listed})
+        elif method == "ping":
+            self._result(request_id, {})
+        else:
+            self._write(error(request_id, -32601, "Method not found"))
+
+    def _call(self, request_id: Any, name: str, arguments: Any, done: dict[str, Any]) -> None:
+        try:
+            try:
+                out = self._ask(request_id, name, arguments)
+            except Exception:  # noqa: BLE001 - a relay fault must not fail the client's hook
+                out = {}
+            self._result(request_id, {"content": [{"type": "text", "text": json.dumps(out)}], "isError": False, **done})
+        finally:
+            with self._lock:
+                self._threads.discard(threading.current_thread())
+
+    def _ask(self, request_id: Any, name: str, arguments: Any) -> dict[str, Any]:
+        with self._lock:
+            if time.monotonic() < self._retry_at:
+                return {}
+        message = {"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": {
+            "name": name, "arguments": arguments if isinstance(arguments, dict) else {},
+            "_meta": {VERSION_KEY: MODERN, CAPABILITIES_KEY: {}, CLIENT_INFO_KEY: self._info},
+        }}
+        try:
+            out = _hook_output(self._bridge._post(message, request_id, max(0.1, float(self._budget(name, arguments)))))
+        except TimedOut:
+            return self._failed(hung=True)
+        except (Unavailable, Cancelled):
+            return self._failed(hung=False)
+        with self._lock:
+            back, self._down = self._down, False
+        if back:
+            said = out.get("systemMessage")
+            out = {**out, "systemMessage": f"{self._on}\n{said}" if isinstance(said, str) and said else self._on}
+        return out
+
+    def _failed(self, hung: bool) -> dict[str, Any]:
+        with self._lock:
+            self._retry_at = time.monotonic() + self._pause
+            first, self._down = not self._down, True
+            begin = not self._starting
+            self._starting = True
+        if begin:
+            threading.Thread(target=self._restart, args=(hung,), daemon=True).start()
+        return {"systemMessage": self._off} if first else {}
+
+    def _restart(self, hung: bool) -> None:
+        try:
+            started = bool(self._start())
+        except Exception:  # noqa: BLE001 - the owner's start function is not this module's
+            started = False
+        with self._lock:
+            self._starting = False
+            if started and not hung:
+                self._retry_at = 0.0
+
+    def _result(self, request_id: Any, result: dict[str, Any]) -> None:
+        self._write({"jsonrpc": "2.0", "id": request_id, "result": result})
+
+    def _write(self, message: dict[str, Any]) -> None:
+        data = json.dumps(message, separators=(",", ":")).encode("utf-8") + b"\n"
+        with self._write_lock:
+            try:
+                self._writer.write(data)
+                self._writer.flush()
+            except (OSError, ValueError):
+                pass
+
+
+def _hook_output(reply: dict[str, Any]) -> dict[str, Any]:
+    """The hook's JSON from a tool result, or `Unavailable` for anything that is not one."""
+    result = reply.get("result")
+    if not isinstance(result, dict) or result.get("isError"):
+        raise Unavailable("no hook result")
+    try:
+        out = json.loads(result["content"][0]["text"])
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise Unavailable("no hook result") from exc
+    if not isinstance(out, dict):
+        raise Unavailable("no hook result")
+    return out
+
+
+class _Nothing(io.RawIOBase):
+    def readable(self) -> bool:
+        return True
+
+    def writable(self) -> bool:
+        return True
+
+    def readinto(self, _buffer: Any) -> int:
+        return 0
+
+    def write(self, data: Any) -> int:
+        return len(data)
+
+
+_NOTHING: Any = _Nothing()

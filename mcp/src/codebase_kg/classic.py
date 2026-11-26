@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from . import core, resolve, shim
+from . import core, resolve, search_gate, shim
 
 logger = logging.getLogger("codebase_kg.classic")
 
@@ -34,10 +34,14 @@ def _client(params: dict[str, Any]) -> str:
     return f"{str(info.get('name') or 'unnamed')[:80]} {str(info.get('version') or '')[:40]}".strip()
 
 
-def answer(engine: core.Core, conn: resolve.Connection | None, msg: dict[str, Any]) -> dict[str, Any] | None:
+def answer(
+    engine: core.Core, conn: resolve.Connection | None, msg: dict[str, Any], client: str | None = None,
+) -> dict[str, Any] | None:
     """The response to one message of an `initialize`-first MCP session, or None for none.
 
-    A `conn` of None is a stateless HTTP request that named no working directory.
+    A `conn` of None is a stateless HTTP request that named no working directory. `client` is the
+    caller's identity where the transport has one: a graph query earns search credit for it, and
+    a gate call from it spends that credit.
     """
     method = msg.get("method")
     if not isinstance(method, str) or "id" not in msg:
@@ -63,13 +67,14 @@ def answer(engine: core.Core, conn: resolve.Connection | None, msg: dict[str, An
     elif method in EMPTY_LISTS:
         result = {EMPTY_LISTS[method]: []}
     elif method == "tools/call":
-        hooked = core.hook_result(params.get("name"), params.get("arguments"))
+        hooked = core.hook_result(params.get("name"), params.get("arguments"), client)
         if hooked is not None:
             result = hooked
         elif conn is None:
             result = core.error_result(NO_CWD)
         else:
             result = engine.call_tool(conn, params.get("name"), params.get("arguments"))
+            search_gate.note_query(client)
     else:
         return shim.rpc_error(msg["id"], core.METHOD_NOT_FOUND, "Method not found")
     return {"jsonrpc": "2.0", "id": msg["id"], "result": result}

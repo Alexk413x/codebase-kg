@@ -239,26 +239,29 @@ def _direct(tool: str, endpoint: str) -> list[dict[str, object]]:
     ]
 
 
-@pytest.mark.parametrize("tool", ["Grep|Glob", "Bash", "PowerShell"])
-def test_the_search_gate_is_one_direct_call_to_the_server_per_tool(tool: str) -> None:
+SEARCH_TOOLS = "Grep|Glob|Bash|PowerShell"
+
+
+def test_one_direct_hook_answers_both_gates_for_every_search_tool() -> None:
     """A direct hook starts no process, so no `if` rule has to keep it from starting: the server
     receives every command and decides. An `if` rule per search word would miss a word the parser
-    learns later."""
-    (handler,) = _direct(tool, "kg_hook_search_gate")
-    assert handler["server"] == "plugin:codebase-kg:codebase-kg"
-    assert "if" not in handler and "onFailure" not in handler, "the gate steers, so it fails open"
+    learns later. One hook for the search gate and the push gate, where two made two calls for a
+    git command."""
+    import json
+
+    config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
+    groups = [g for g in config["hooks"]["PreToolUse"] if not g["matcher"].startswith("mcp__")]
+    assert [g["matcher"] for g in groups] == [SEARCH_TOOLS]
+    (handler,) = _direct(SEARCH_TOOLS, "kg_hook_pre")
+    assert groups[0]["hooks"] == [handler]
+    assert handler["server"] == "plugin:codebase-kg:codebase-kg-hooks"
+    assert "if" not in handler and "onFailure" not in handler, "the gates fail open"
     assert handler["input"] == {
         "tool_name": "${tool_name}", "tool_input": "${tool_input}", "cwd": "${cwd}",
         "session_id": "${session_id}", "agent_id": "${agent_id}", "transcript_path": "${transcript_path}",
     }
-    assert not _handlers(tool), "no search gate process starts for Claude Code"
-
-
-@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
-def test_the_push_gate_is_asked_only_for_git_commands(tool: str) -> None:
-    (handler,) = _direct(tool, "kg_hook_push_gate")
-    assert handler["if"] == f"{tool}(git *)"
-    assert not _handlers(tool, "kg_push_gate.py"), "no push gate process starts for Claude Code"
+    assert not _handlers(SEARCH_TOOLS), "no search gate process starts for Claude Code"
+    assert not _handlers(SEARCH_TOOLS, "kg_push_gate.py"), "no push gate process starts for Claude Code"
 
 
 def test_the_graph_write_tools_are_allowed_without_a_prompt() -> None:
@@ -682,7 +685,7 @@ def test_the_real_headers_helper_prints_its_headers_through_the_platform_shell(s
     assert done.returncode == 0, done.stderr
     assert len(done.stdout.decode().strip().splitlines()) == 1
     headers = json.loads(done.stdout)
-    assert set(headers) == {"X-Codebase-KG-Client"}, headers
+    assert set(headers) == {"X-Codebase-KG-Client", "X-Codebase-KG-Agent"}, headers
 
 
 def test_no_hook_reports_graph_queries_to_the_gate() -> None:
@@ -691,8 +694,10 @@ def test_no_hook_reports_graph_queries_to_the_gate() -> None:
     import json
 
     config = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
-    reporting = [g for g in config["hooks"]["PreToolUse"] if "search_gate" in json.dumps(g)]
-    assert [g["matcher"] for g in reporting] == ["Grep|Glob", "Bash", "PowerShell"]
+    assert config["hooks"]["PreToolUse"][0]["matcher"] == SEARCH_TOOLS
+    assert not [g for g in config["hooks"]["PreToolUse"] if "search_gate" in json.dumps(g)]
+    on_graph_tools = [g for g in config["hooks"]["PreToolUse"] if g["matcher"].startswith("mcp__")]
+    assert [h["tool"] for g in on_graph_tools for h in g["hooks"]] == ["kg_hook_allow_write"]
     assert "async" not in json.dumps(config["hooks"])
 
 

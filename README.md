@@ -301,8 +301,8 @@ codebase-kg/
 ├── skills/                   # query / build / refresh / audit / link / validate, and setup
 ├── mcp/
 │   ├── src/codebase_kg/      # the server and the CLIs (module map in mcp/README.md)
-│   ├── launch/               # kg_cli.py (CLI runner), kg-shim and kg-shim.cmd (stdio relay), kg_headers.py (HTTP headers helper), kg_copilot.py (Copilot CLI stdio configuration printer), run/ (one launcher per hook script and for kg_headers.py)
-│   └── claude.mcp.json       # registers the HTTP endpoint, with kg_headers.py as the headersHelper
+│   ├── launch/               # kg_cli.py (CLI runner), kg-shim and kg-shim.cmd (stdio relay), kg-hooks and kg-hooks.cmd (hook relay), kg_headers.py (HTTP headers helper), kg_copilot.py (Copilot CLI stdio configuration printer), run/ (one launcher per hook script and for kg_headers.py)
+│   └── claude.mcp.json       # registers the HTTP endpoint, with kg_headers.py as the headersHelper, and the hook relay
 ├── hooks/                    # Claude Code, Codex and Copilot CLI hooks: the search gate, the push gate, the unwired-clone notice, the server start
 └── git-hooks/                # advisory pre-commit + pre-push staleness checks and install.sh, vendored into any repo (stdlib-only)
 ```

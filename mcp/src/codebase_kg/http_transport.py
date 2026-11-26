@@ -65,6 +65,7 @@ logger = logging.getLogger("codebase_kg.http")
 MODERN_PROTOCOL = "2026-07-28"
 ROOTS_REQUEST = "codebase-kg-roots"
 CLIENT_HEADER = "x-codebase-kg-client"
+AGENT_HEADER = "x-codebase-kg-agent"
 CWD_HEADER = "x-codebase-kg-cwd"
 GRAPH_HEADER = "x-codebase-kg-graph"
 VERSION_KEY = "io.modelcontextprotocol/protocolVersion"
@@ -454,7 +455,7 @@ class Handler(BaseHTTPRequestHandler):
         if msg["method"] == "tools/call":
             conn = classic_connection({h: self.headers.get(h) for h in (GRAPH_HEADER, CWD_HEADER)})
         try:
-            reply = classic.answer(self.srv.core, conn, msg)
+            reply = classic.answer(self.srv.core, conn, msg, caller(self.headers))
         except Exception:
             logger.exception("classic request failed")
             self._rpc_error(request_id, core.INTERNAL_ERROR, "Internal error")
@@ -481,7 +482,7 @@ class Handler(BaseHTTPRequestHandler):
             return {"tools": core.CATALOG["tools"], **LISTED}
         if method == "tools/call":
             name = params.get("name")
-            client = _decoded(self.headers.get(CLIENT_HEADER))
+            client = caller(self.headers)
             hooked = core.hook_result(name, params.get("arguments"), client)
             if hooked is not None:
                 return hooked
@@ -564,6 +565,20 @@ def claim_port(port: int, mine: dict[str, Any]) -> socket.socket | None:
             time.sleep(0.1)
     logger.warning("codebase-kg %s did not hand over port %d", theirs.get("build"), port)
     return None
+
+
+def caller(headers: Any) -> str | None:
+    """Who a graph query earns search credit for: the agent process when the client names it, else the client id.
+
+    Claude Code's hooks reach the server through the hook relay and its model calls through the HTTP
+    connection, two clients with two ids. Both name the agent process they belong to, so a query
+    and the gate call that follows it meet. A client that could not find its agent says `unknown`,
+    and such clients share one count: a query then always earns credit.
+    """
+    agent = _decoded(headers.get(AGENT_HEADER))
+    if agent and (agent == "unknown" or agent.isdigit()):
+        return f"agent:{agent}"
+    return _decoded(headers.get(CLIENT_HEADER))
 
 
 def health_reply(info: dict[str, Any], pid: int) -> dict[str, Any]:
