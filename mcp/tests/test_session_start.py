@@ -377,3 +377,105 @@ def test_a_url_that_looks_like_an_option_is_not_read_as_one(monkeypatch: pytest.
     assert hook.tag_published(url, "0.8.2") is False
     (command,) = seen
     assert command[command.index(url) - 1] == "--"
+
+
+@pytest.fixture
+def hinting(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The hint switched on, with its record in a cache folder of the test's own."""
+    monkeypatch.delenv(hook.PLATFORM_HINT_ENV, raising=False)
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(tmp_path / "cache"))
+    return repo
+
+
+def _mounts(tmp_path: Path, *rows: str) -> Path:
+    table = tmp_path / "mounts"
+    table.write_text("".join(f"{row}\n" for row in rows), encoding="utf-8")
+    return table
+
+
+def test_native_windows_gets_the_wsl_hint_once(hinting: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hook, "on_windows", lambda: True)
+    msg = hook.platform_hint(hinting)
+    assert msg is not None and "WSL 2" in msg and hook.WSL_GUIDE in msg
+    assert hook.platform_hint(hinting) is None
+
+
+def test_a_project_on_a_windows_drive_in_wsl_gets_one_hint_per_project(
+    hinting: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hook, "on_windows", lambda: False)
+    monkeypatch.setattr(hook, "in_wsl", lambda: True)
+    monkeypatch.setattr(hook, "windows_mount", lambda proj: "/mnt/c")
+    msg = hook.platform_hint(hinting)
+    assert msg is not None and "/mnt/c" in msg and "Linux home folder" in msg
+    assert hook.platform_hint(hinting) is None
+    other = tmp_path / "other"
+    other.mkdir()
+    _graph(other)
+    assert hook.platform_hint(other) is not None
+
+
+def test_a_project_on_the_linux_file_system_gets_no_hint(
+    hinting: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hook, "on_windows", lambda: False)
+    monkeypatch.setattr(hook, "in_wsl", lambda: True)
+    monkeypatch.setattr(hook, "windows_mount", lambda proj: None)
+    assert hook.platform_hint(hinting) is None
+
+
+def test_linux_outside_wsl_and_macos_get_no_hint(hinting: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hook, "on_windows", lambda: False)
+    monkeypatch.setattr(hook, "in_wsl", lambda: False)
+    assert hook.platform_hint(hinting) is None
+
+
+def test_the_hint_is_silent_without_a_graph(hinting: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hook, "on_windows", lambda: True)
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert hook.platform_hint(bare) is None
+    assert hook.platform_hint(hinting) is not None
+
+
+def test_the_hint_can_be_turned_off_for_a_clone_and_for_the_machine(
+    hinting: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hook, "on_windows", lambda: True)
+    monkeypatch.setenv(hook.PLATFORM_HINT_ENV, "off")
+    assert hook.platform_hint(hinting) is None
+    monkeypatch.delenv(hook.PLATFORM_HINT_ENV)
+    local = hinting / ".claude" / "codebase-kg.local.md"
+    local.parent.mkdir()
+    local.write_text("---\nplatform_hint: off\n---\n", encoding="utf-8")
+    assert hook.platform_hint(hinting) is None
+    local.unlink()
+    assert hook.platform_hint(hinting) is not None
+
+
+def test_a_cache_folder_that_cannot_be_written_gives_no_hint(
+    hinting: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a record the hint would repeat in every session."""
+    monkeypatch.setattr(hook, "on_windows", lambda: True)
+    blocker = tmp_path / "file"
+    blocker.write_text("", encoding="utf-8")
+    monkeypatch.setenv("CODEBASE_KG_CACHE_DIR", str(blocker / "cache"))
+    assert hook.platform_hint(hinting) is None
+
+
+def test_the_mount_table_names_the_windows_drive_that_holds_a_project(tmp_path: Path) -> None:
+    table = _mounts(
+        tmp_path,
+        "/dev/sdc / ext4 rw 0 0",
+        r"C:\134 /mnt/c 9p rw 0 0",
+        r"D:\134 /mnt/my\040drive drvfs rw 0 0",
+        "tmpfs /mnt/c/linux tmpfs rw 0 0",
+    )
+    assert hook.windows_mount(Path("/mnt/c/Users/a/repo"), table) == "/mnt/c"
+    assert hook.windows_mount(Path("/mnt/c"), table) == "/mnt/c"
+    assert hook.windows_mount(Path("/mnt/my drive/repo"), table) == "/mnt/my drive"
+    assert hook.windows_mount(Path("/home/a/repo"), table) is None
+    assert hook.windows_mount(Path("/mnt/cache/repo"), table) is None
+    assert hook.windows_mount(Path("/mnt/c/linux/repo"), table) is None
+    assert hook.windows_mount(Path("/mnt/c/repo"), tmp_path / "absent") is None

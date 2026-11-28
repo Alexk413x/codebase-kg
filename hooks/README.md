@@ -377,6 +377,21 @@ because of this.
 does not stop the server or drop the session registration, so running the hooks again would only
 repeat work and could repeat the notice.
 
+### The platform hint
+
+The same hook prints one more line, at most once, about where the project runs:
+
+- **On Windows outside WSL:** it names WSL 2 and the README section "Windows: use WSL 2". Once for
+  the machine.
+- **In WSL with the project on a Windows drive** (a `9p` or `drvfs` mount in `/proc/mounts`, such as
+  `/mnt/c`): it says to clone the project under the Linux home folder. Once for the project.
+
+It is silent on macOS, on Linux outside WSL, in WSL with the project on the Linux file system, and
+in a repo with no graph. The record of shown hints is `platform-hint.json` in the plugin's cache
+folder; when that file cannot be written, the hint stays silent, so it never repeats in every
+session. `platform_hint: off` in `.claude/codebase-kg.local.md` turns it off for a clone, and the
+environment variable `CODEBASE_KG_PLATFORM_HINT=off` turns it off for the machine.
+
 ## The server start (SessionStart)
 
 Claude Code reaches the codebase-kg server over HTTP on the `server_port` setting (default 47821). It
