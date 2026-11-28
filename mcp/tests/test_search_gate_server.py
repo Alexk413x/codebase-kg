@@ -214,15 +214,22 @@ def test_the_creation_time_is_not_taken_from_ctime_off_windows(tmp_path: Path, m
     assert search_gate._created(str(path)) == 77.0
 
 
-def _transcript(tmp_path: Path, age: float) -> str:
+def _transcript(tmp_path: Path) -> str:
     path = tmp_path / "transcript.jsonl"
-    path.write_text("{}\n", encoding="utf-8")
+    stamp = datetime.now(timezone.utc).isoformat()
+    path.write_text(json.dumps({"timestamp": stamp}) + "\n", encoding="utf-8")
     return str(path)
 
 
+def _started(transcript: str) -> float:
+    started = search_gate.session_started(transcript)
+    assert started is not None
+    return started
+
+
 def test_a_session_older_than_the_server_is_told_once(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    transcript = _transcript(tmp_path, 0)
-    monkeypatch.setattr(search_gate, "STARTED", os.path.getctime(transcript) + search_gate.RESTART_SLACK + 30)
+    transcript = _transcript(tmp_path)
+    monkeypatch.setattr(search_gate, "STARTED", _started(transcript) + search_gate.RESTART_SLACK + 30)
 
     first = _gate(repo, "c", transcript_path=transcript)
     again = _gate(repo, "c", pattern="other", transcript_path=transcript)
@@ -234,8 +241,8 @@ def test_a_session_older_than_the_server_is_told_once(repo: Path, tmp_path: Path
 
 def test_the_notice_rides_on_an_allowed_search_as_context_too(repo: Path, tmp_path: Path,
                                                                monkeypatch: pytest.MonkeyPatch) -> None:
-    transcript = _transcript(tmp_path, 0)
-    monkeypatch.setattr(search_gate, "STARTED", os.path.getctime(transcript) + search_gate.RESTART_SLACK + 30)
+    transcript = _transcript(tmp_path)
+    monkeypatch.setattr(search_gate, "STARTED", _started(transcript) + search_gate.RESTART_SLACK + 30)
     search_gate.note_query("c")
 
     out = _gate(repo, "c", transcript_path=transcript)
@@ -246,7 +253,7 @@ def test_the_notice_rides_on_an_allowed_search_as_context_too(repo: Path, tmp_pa
 
 def test_the_session_that_started_the_server_gets_no_notice(repo: Path, tmp_path: Path,
                                                              monkeypatch: pytest.MonkeyPatch) -> None:
-    transcript = _transcript(tmp_path, 0)
+    transcript = _transcript(tmp_path)
     monkeypatch.setattr(search_gate, "STARTED", time.time() + 5)
     assert "systemMessage" not in _gate(repo, "c", transcript_path=transcript)
     assert "systemMessage" not in _gate(repo, "c2", session="no-transcript")
@@ -256,8 +263,8 @@ def test_the_session_that_started_the_server_gets_no_notice(repo: Path, tmp_path
 def test_a_repo_without_a_graph_gets_no_notice_and_no_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bare = tmp_path / "bare"
     bare.mkdir()
-    transcript = _transcript(tmp_path, 0)
-    monkeypatch.setattr(search_gate, "STARTED", os.path.getctime(transcript) + 600)
+    transcript = _transcript(tmp_path)
+    monkeypatch.setattr(search_gate, "STARTED", _started(transcript) + 600)
     search_gate.note_query("c")
     assert _gate(bare, "c", transcript_path=transcript) == {}
     assert not search_gate._states

@@ -435,7 +435,9 @@ class _Holder:
             def log_message(self, format: str, *args: Any) -> None:
                 pass
 
-        http.server.ThreadingHTTPServer.allow_reuse_address = False
+        # Matches http_transport.bind. Linux refuses to rebind a port for 60 s after a
+        # holder without SO_REUSEADDR closes its connections; Windows lets two sockets share one with it.
+        http.server.ThreadingHTTPServer.allow_reuse_address = sys.platform != "win32"
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()

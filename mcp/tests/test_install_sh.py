@@ -169,7 +169,7 @@ def test_it_names_hooks_committed_non_executable(tmp_path: Path, wired_repo: Pat
     """Git skips a non-executable hook on macOS and Linux with no message at all,
     so a 100644 in the index is a silently dead check."""
     _git(wired_repo, "update-index", "--chmod=-x", ".githooks/pre-commit")
-    _git(wired_repo, "commit", "-qam", "unexec")
+    _git(wired_repo, "commit", "-qm", "unexec")
     dest = tmp_path / "clone2"
     _git(wired_repo, "clone", "-q", str(wired_repo), str(dest))
     proc = _run(dest, "sh", ".githooks/install.sh")

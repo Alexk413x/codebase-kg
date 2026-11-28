@@ -57,8 +57,6 @@ def backend(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> 
     """Every test runs twice: against the hook script, and against the server's hook endpoint, which
     loads the same script. A test marked `script_only` covers what only a process of its own has: the
     environment, the state files and the claim files."""
-    if request.param == "server" and request.node.get_closest_marker("script_only"):
-        pytest.skip("covers the hook script's own process")
     monkeypatch.setattr(sys.modules[__name__], "BACKEND", request.param)
     for store in (search_gate._states, search_gate._queried, search_gate._sessions):
         store.clear()

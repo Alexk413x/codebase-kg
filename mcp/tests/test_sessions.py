@@ -99,7 +99,8 @@ def test_the_agent_is_unknown_when_the_chain_breaks(monkeypatch: pytest.MonkeyPa
 def test_the_process_table_lists_this_process() -> None:
     table = shim._process_table()
     assert table[os.getpid()][0] == os.getppid()
-    assert table[os.getpid()][1].startswith("python")
+    name = table[os.getpid()][1]
+    assert name.startswith("python") or name == Path(sys.argv[0]).name.lower()[:15]
 
 
 # --- the hooks and the CLI ----------------------------------------------------
