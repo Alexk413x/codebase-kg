@@ -845,6 +845,7 @@ def _fake_shim(hook: Any, answers: list[tuple[str, dict[str, Any]]]) -> Any:
     last = answers[-1] if answers else ("free", {})
     real.health = lambda port, timeout=1.0: next(calls, last)
     real.spawn_server_detached = lambda build: spawned.append(build)
+    real.verified_holder = lambda port: ({}, {})
     real.spawned = spawned
     return real
 
@@ -854,6 +855,40 @@ def test_the_hook_names_the_setting_when_another_program_holds_the_port(hook: An
     message = hook.ensure_server(fake)
     assert message is not None and "server_port" in message and "another program" in message
     assert fake.spawned == []
+
+
+def test_the_hook_names_a_server_whose_state_this_user_cannot_read(hook: Any, cache: Path) -> None:
+    """A server in WSL answers on Windows too, and its token is out of reach there."""
+    fake = _fake_shim(hook, [])
+    mine = fake.build_info()
+    fake.health = lambda port, timeout=1.0: ("codebase-kg", {**mine, "service": "codebase-kg", "pid": 1})
+    fake.verified_holder = shim.verified_holder
+    hook.VERIFY_WAIT = 0.3
+    message = hook.ensure_server(fake)
+    assert message is not None and "\n" not in message
+    assert "server_port" in message and "WSL" in message and "cannot use" in message
+    assert fake.spawned == []
+
+
+def test_the_hook_waits_for_a_server_that_verifies_a_moment_later(hook: Any, cache: Path) -> None:
+    fake = _fake_shim(hook, [])
+    mine = fake.build_info()
+    fake.health = lambda port, timeout=1.0: ("codebase-kg", {**mine, "service": "codebase-kg"})
+    verdicts = iter([None, None])
+    fake.verified_holder = lambda port: next(verdicts, ({}, {}))
+    assert hook.ensure_server(fake) is None and fake.spawned == []
+
+
+def test_the_hook_starts_the_server_when_an_unverified_holder_leaves(hook: Any, cache: Path) -> None:
+    fake = _fake_shim(hook, [])
+    mine = fake.build_info()
+    ours = ("codebase-kg", {**mine, "service": "codebase-kg"})
+    answers = iter([("codebase-kg", _older()), ("free", {}), ("free", {})])
+    fake.health = lambda port, timeout=1.0: next(answers, ours)
+    verdicts = iter([None])
+    fake.verified_holder = lambda port: next(verdicts, ({}, {}))
+    assert hook.ensure_server(fake) is None
+    assert fake.spawned == [mine["build"]]
 
 
 def test_the_hook_leaves_a_running_server_alone(hook: Any, cache: Path) -> None:
