@@ -19,6 +19,11 @@ line for each:
   - run with `--codex`, as `codex-hooks.json` does, the codebase-kg paths in
     Codex's `config.toml` move to this plugin's folder (`_codex_config.py`)
 
+It also prints the platform hint (`platform_hint`): one line that names WSL 2 on
+Windows outside WSL, once for the machine, and one line in WSL when the project
+is on a Windows drive, once for the project. Its only write is the record of
+which hints were shown, in the plugin's cache folder.
+
 `SKIP_KG` skips all of it, the Codex config refresh included.
 
 The notice is silent unless every one of these holds:
@@ -35,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -50,7 +56,9 @@ from _config import (
     graph_meta,
     load_config,
     project_dir,
+    read_state,
     skip_kg,
+    write_state,
 )
 from _shim_loader import load_shim
 
@@ -85,6 +93,13 @@ _PLUGIN_PATH = re.compile(r"(?<![\w:/.~}\-])(?:[A-Za-z]:)?[/\\][^'\"\s;,)]*codeb
 # Both must be present: kg_pre_commit.py imports the coverage rules from
 # kg_pre_push.py beside it, so one without the other is not a wired repo.
 VENDORED = ("kg_pre_push.py", "kg_pre_commit.py")
+
+PLATFORM_HINT_FILE = "platform-hint.json"
+PLATFORM_HINT_ENV = "CODEBASE_KG_PLATFORM_HINT"
+PROC_MOUNTS = Path("/proc/mounts")
+# WSL 2 mounts a Windows drive as 9p, WSL 1 as drvfs.
+WINDOWS_MOUNT_TYPES = {"9p", "drvfs"}
+WSL_GUIDE = "https://github.com/Alexk413x/codebase-kg#windows-use-wsl-2"
 
 
 def _git(proj: Path, *args: str) -> str:
@@ -289,6 +304,81 @@ def advice(proj: Path) -> str | None:
     )
 
 
+def on_windows() -> bool:
+    return sys.platform == "win32"
+
+
+def in_wsl() -> bool:
+    return sys.platform == "linux" and (
+        bool(os.environ.get("WSL_DISTRO_NAME")) or "microsoft" in platform.release().lower()
+    )
+
+
+def windows_mount(proj: Path, mounts: Path = PROC_MOUNTS) -> str | None:
+    """The mount point of the Windows drive that holds `proj`, or None when a Linux file system holds it."""
+    try:
+        lines = mounts.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    target = proj.as_posix()
+    found, fstype = "", ""
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        mount = fields[1].replace("\\040", " ")
+        inside = target == mount or target.startswith(mount.rstrip("/") + "/")
+        if inside and len(mount) > len(found):
+            found, fstype = mount, fields[2]
+    return found if fstype in WINDOWS_MOUNT_TYPES else None
+
+
+def _hint_once(key: str, text: str) -> str | None:
+    """`text` the first time `key` is seen on this machine, then None. None too when the
+    record cannot be written, so a read-only cache folder does not repeat the hint every session."""
+    try:
+        record = Path(load_shim().cache_dir()) / PLATFORM_HINT_FILE
+    except Exception:  # noqa: BLE001
+        return None
+    seen = read_state(record)
+    if key in seen:
+        return None
+    seen[key] = True
+    return text if write_state(record, seen) else None
+
+
+def platform_hint(proj: Path) -> str | None:
+    """One line about where the project runs, at most once, or None.
+
+    On Windows outside WSL it names WSL 2, once for the machine. In WSL with the project on a
+    Windows drive it names the Linux home folder, once for the project. Silent in a repo with no
+    graph, when `platform_hint` is off in the per-clone file, and when the environment variable
+    `CODEBASE_KG_PLATFORM_HINT` is `off`.
+    """
+    if os.environ.get(PLATFORM_HINT_ENV, "").strip().lower() in {"off", "0", "false", "no"}:
+        return None
+    cfg = load_config(proj)
+    if cfg.get("platform_hint") is False or find_graph(proj, cfg) is None:
+        return None
+    if on_windows():
+        return _hint_once(
+            "windows",
+            "codebase-kg: on Windows, Git and file operations run faster when the project and "
+            f"the agent both run inside WSL 2. Setup: {WSL_GUIDE}  This notice shows once.",
+        )
+    if in_wsl():
+        mount = windows_mount(proj)
+        if mount:
+            return _hint_once(
+                f"wsl:{proj.as_posix()}",
+                f"codebase-kg: this project is on a Windows drive ({mount}) and the agent runs in "
+                "WSL, so every file operation crosses between the two systems. That is slower "
+                "than either system alone. Clone the project under your Linux home folder (~). "
+                f"Setup: {WSL_GUIDE}  This notice shows once for this project.",
+            )
+    return None
+
+
 def main() -> None:
     global _deadline
     _deadline = time.monotonic() + HOOK_BUDGET
@@ -300,7 +390,8 @@ def main() -> None:
         if not isinstance(data, dict):
             return
         cwd = data.get("cwd")
-        messages = [advice(project_dir(cwd if isinstance(cwd, str) else None))]
+        proj = project_dir(cwd if isinstance(cwd, str) else None)
+        messages = [advice(proj), platform_hint(proj)]
         if "--codex" in sys.argv[1:]:
             messages.append(refresh_codex_config(PLUGIN_ROOT))
         text = "\n".join(m for m in messages if m)

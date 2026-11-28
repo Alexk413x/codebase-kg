@@ -37,6 +37,11 @@ gate_credit: 3
 # not describe to the agent. Advisory. Set false to turn it off for this clone.
 commit_check: true
 
+# The platform hint: one line at session start that names WSL 2 on Windows outside WSL, or says
+# the project is on a Windows drive when the agent runs in WSL. Shown at most once. Set false to
+# turn it off for this clone.
+platform_hint: true
+
 # File extensions that never count as source, for a graph that declares no `covers` patterns (a
 # graph with `covers` decides by those patterns instead, and ignores this). Setting it REPLACES
 # the default list, so repeat the entries you want to keep. Default:

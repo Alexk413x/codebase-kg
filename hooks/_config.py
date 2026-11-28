@@ -29,6 +29,7 @@ DEFAULTS: dict[str, object] = {
     # Unlocated searches one codebase-kg query clears. At 0 the repeat-to-override
     # escape hatch still applies, so no setting here can strand an agent.
     "gate_credit": 3,
+    "platform_hint": True,  # the SessionStart line about WSL; see kg_session_start.py
     # Generic doc/config exclusions (NOT language detection) — these edits don't
     # imply graph drift. Kept identical to the pre-push gate's EXCLUDE_EXT; the
     # two are asserted equal by test_hook_parity.py, because the copies had

@@ -371,7 +371,7 @@ needed**.
 A `.claude/codebase-kg.local.md` is an **optional, per-developer override** — by the `.local`
 convention it is gitignored, never committed. Use it only when one clone differs. It carries the
 YAML front-matter keys `graph_path` and `root`, plus the hook settings (`search_gate`,
-`gate_shell_search`, `gate_credit`, `commit_check`, `exclude_ext`). `exclude_ext` is
+`gate_shell_search`, `gate_credit`, `commit_check`, `platform_hint`, `exclude_ext`). `exclude_ext` is
 the list of file extensions that never count as source when the graph declares no `covers`; setting
 it replaces the default list (`templates/codebase-kg.local.md.example` shows it). The older key name `kg_path` is
 still read. Nothing reads `codebase`, `counterpart` or `language` from this file: set those in the

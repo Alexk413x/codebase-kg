@@ -40,6 +40,27 @@ For **Antigravity CLI** (`agy`), use the separate [Antigravity setup](antigravit
 It adds a manifest, a root `hooks.json` and a hook adapter. You add the stdio MCP server with
 `agy mcp add`.
 
+### Windows: use WSL 2
+
+The plugin runs on Windows, macOS and Linux. On Windows, run it inside
+[WSL 2](https://learn.microsoft.com/windows/wsl/install): Git and file operations are faster on the
+Linux file system than on a Windows drive.
+
+1. Install WSL 2 with a Linux distribution: in PowerShell, run `wsl --install`.
+2. Inside the distribution, install Claude Code and this plugin.
+3. Clone each project under your Linux home folder, for example `~/projects/my-repo`. Start
+   Claude Code from that folder.
+
+Keep a project and the tools that work on it on the same system. A project on a Windows drive
+(`/mnt/c/...`) opened from WSL is slower than either system alone, because every file operation
+crosses between the two.
+
+A session on Windows outside WSL prints one line that names this section, once per machine. A
+session in WSL with the project on a Windows drive prints one line, once per project. Both appear
+only in a repo that has a graph. To turn them off for a clone, set `platform_hint: off` in
+`.claude/codebase-kg.local.md`. To turn them off for the machine, set the environment variable
+`CODEBASE_KG_PLATFORM_HINT=off`.
+
 ## How it works
 
 Each repo gets a committed `knowledge/code_graph.db`. A node is a row:
