@@ -75,16 +75,39 @@ nothing when a textconv command cannot resolve — it falls back silently.
    python3 <copy>/mcp/launch/kg_cli.py server stop --port <that port>
    ```
 
-4. **Open a PR and merge to main.** Tags point at the *merge* commit, which does
-   not exist until then.
+4. **Open a PR and merge to main.** The tag points at the release build commit, which
+   the workflow creates from the merge commit.
 
-5. **Check the tag.** On a push to `main`, `.github/workflows/release.yml`
-   tags the commit `codebase-kg--v<version>` from `plugin.json` when that tag is
-   missing. It rebuilds the `release` branch only when that branch holds another
-   version than `main`, so a merge that keeps the version releases nothing:
-   `main` then holds changes that ship with the next version. The annotation is the title of the version's changelog entry. Confirm
-   it with `git ls-remote --tags origin`. To tag by hand, use
-   `claude plugin tag --push -m "codebase-kg %s — <one line>"` on a clean `main`.
+5. **Check the tag.** On a push to `main`, `.github/workflows/release.yml` rebuilds the
+   `release` branch only when that branch holds another version than `main`, so a merge
+   that keeps the version releases nothing: `main` then holds changes that ship with the
+   next version. After the build, the workflow tags the head of `release`
+   `codebase-kg--v<version>` when that tag is missing. The annotation is the title of the
+   version's changelog entry. Confirm the tag with `git ls-remote --tags origin`: the
+   line that ends in `^{}` names the same commit as `refs/heads/release`.
+
+   The tag sits on the release build, not on `main`, because Claude Code installs a
+   dependency that declares a version range (`"version": ">=0.14.0"`) at the highest
+   matching tag and ignores the `ref` of the marketplace entry. A tag on `main` installs
+   the development tree: tests, docs and no `RELEASE` marker. The tags for 0.18.1 and
+   older sit on `main` merge commits and stay there.
+
+   `mcp/src/codebase_kg/RELEASE` at the tag names the `main` commit the build came from.
+   The tag is not an ancestor of `main`, so `git describe` on `main` does not find it.
+
+   The workflow never moves a tag. A run that stops after it pushes `release` leaves the
+   version without a tag; run the workflow again, or push to `main` again, and it tags
+   the head of `release`. To tag by hand:
+
+   ```sh
+   git fetch origin release
+   git tag -a "codebase-kg--v<version>" -m "codebase-kg <version> — <one line>" origin/release
+   git push origin "codebase-kg--v<version>"
+   ```
+
+   `claude plugin tag` tags `HEAD`, so on `main` it tags the development tree. Run it
+   only in a clean checkout of `origin/release`. Do not pass `--force`: it moves an
+   existing tag.
 
 6. **Verify the tag resolves**, which is the only step that proves the release
    works. A tag listing does not — it shows the ref exists, not that the pinned

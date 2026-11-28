@@ -18,20 +18,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Tag the version if its tag is missing
+      - name: Build only when the release branch holds another version
         id: version
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           version=$(python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['version'])")
-          tag="codebase-kg--v$version"
-          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            echo "$tag exists"
-          else
-            title=$(sed -n "s/^## \[$version\] — [0-9-]* — //p" CHANGELOG.md | head -n 1)
-            git tag -a "$tag" -m "codebase-kg $version${title:+ — $title}"
-            git push origin "$tag"
-          fi
           git fetch -q --depth=1 origin release:refs/remotes/origin/release || true
           released=$(git show origin/release:.claude-plugin/plugin.json 2>/dev/null | python3 -c "import json, sys; print(json.load(sys.stdin)['version'])" 2>/dev/null || true)
           if [ "$released" = "$version" ]; then
@@ -54,3 +44,22 @@ jobs:
           git commit -q -m "Release build of ${GITHUB_SHA::7}"
           git cat-file -e HEAD:mcp/src/codebase_kg/RELEASE
           git push -f origin release
+      - name: Tag the release build if the version has no tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          version=$(python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['version'])")
+          tag="codebase-kg--v$version"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag exists"
+            exit 0
+          fi
+          git fetch -q --depth=1 origin +release:refs/remotes/origin/release
+          released=$(git show origin/release:.claude-plugin/plugin.json | python3 -c "import json, sys; print(json.load(sys.stdin)['version'])")
+          if [ "$released" != "$version" ]; then
+            echo "The release branch holds $released, not $version, so there is no build to tag."
+            exit 1
+          fi
+          title=$(sed -n "s/^## \[$version\] — [0-9-]* — //p" CHANGELOG.md | head -n 1)
+          git tag -a "$tag" -m "codebase-kg $version${title:+ — $title}" origin/release
+          git push origin "$tag"
