@@ -121,7 +121,7 @@ def test_a_command_it_cannot_read_falls_back_to_the_session_folder(tmp_path: Pat
 
 
 def test_a_windows_path_keeps_its_separators(tmp_path: Path) -> None:
-    assert commit_check.commit_dirs(r"git -C C:\work\repo commit -m x", tmp_path) == [Path(r"C:\work\repo")]
+    assert commit_check.commit_dirs(r"git -C C:\work\repo commit -m x", tmp_path) == [tmp_path / r"C:\work\repo"]
 
 
 def test_a_commit_of_unmapped_changed_and_deleted_source_lists_each(repo: Path) -> None:

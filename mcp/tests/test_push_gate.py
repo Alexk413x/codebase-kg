@@ -178,8 +178,6 @@ def backend(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> 
     """Every test runs against the hook script and against the server's hook endpoint. A test marked
     `script_only` covers what differs on purpose: the script lets a skip in the command or in its
     environment through, and the server asks the user."""
-    if request.param == "server" and request.node.get_closest_marker("script_only"):
-        pytest.skip("covers the hook script's own process")
     monkeypatch.setattr(sys.modules[__name__], "BACKEND", request.param)
     return request.param
 

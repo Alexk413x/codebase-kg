@@ -522,13 +522,30 @@ def pid_alive(pid: int) -> bool:
             return code.value == _STILL_ACTIVE
         finally:
             kernel32.CloseHandle(handle)
+    # An exited child stays a zombie until its parent waits for it, and signal 0
+    # still reaches a zombie. Without the reap and the state check, the shim that
+    # started a server reports it alive after it has exited.
+    try:
+        if os.waitpid(pid, os.WNOHANG)[0] == pid:
+            return False
+    except OSError:
+        pass
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
-    return True
+    return not _is_zombie(pid)
+
+
+def _is_zombie(pid: int) -> bool:
+    """Whether Linux reports the process as exited and not yet reaped; False where `/proc` is absent."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            return handle.read().rpartition(b")")[2].split()[:1] == [b"Z"]
+    except OSError:
+        return False
 
 
 SESSION_TTL = 12 * 3600.0

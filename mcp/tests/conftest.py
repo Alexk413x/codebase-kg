@@ -120,3 +120,15 @@ def sample_db(tmp_path: Path, sample_meta: Meta, sample_nodes: list[Node]) -> Pa
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "script_only: the test covers a hook script's own process, not the server")
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Drop the server variant of a `script_only` test, so it is not collected instead of skipped."""
+    dropped = [
+        item for item in items
+        if item.get_closest_marker("script_only")
+        and getattr(getattr(item, "callspec", None), "params", {}).get("backend") == "server"
+    ]
+    if dropped:
+        items[:] = [item for item in items if item not in dropped]
+        config.hook.pytest_deselected(items=dropped)
