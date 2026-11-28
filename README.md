@@ -55,6 +55,14 @@ Keep a project and the tools that work on it on the same system. A project on a 
 (`/mnt/c/...`) opened from WSL is slower than either system alone, because every file operation
 crosses between the two.
 
+To use the plugin on Windows and in WSL on one machine, give the two different ports. WSL 2
+shares its localhost ports with Windows, so a server that starts in WSL also answers on Windows
+at the same port. A Windows session cannot use that server: it has no access to the server's
+token and the server cannot open Windows paths. The session prints one line that says so, and
+the codebase-kg tools stay off in it. Set the plugin setting `server_port` to a port that no other
+program uses, such as 47921, on one of the two systems. A server that starts on Windows first is
+not reachable from WSL, so the two then run side by side.
+
 A session on Windows outside WSL prints one line that names this section, once per machine. A
 session in WSL with the project on a Windows drive prints one line, once per project. Both appear
 only in a repo that has a graph. To turn them off for a clone, set `platform_hint: off` in
@@ -215,7 +223,9 @@ in about 0.2 s and holds about 25 MB while idle.
   `.codex/config.toml.example` in the plugin folder holds this same table, to copy to a gitignored
   `.codex/config.toml` when you work on the plugin itself.
 - **Port.** The plugin setting `server_port` (default 47821) moves it. When another program holds
-  the port, the hook prints one line naming the setting. A release or an installed copy of a higher
+  the port, the hook prints one line naming the setting. It prints the same kind of line when a
+  codebase-kg server holds the port that this session cannot use, such as one that runs in WSL
+  (see Windows: use WSL 2). A release or an installed copy of a higher
   version takes the port from an older server; at the same version the running server stays. A
   development copy (a checkout, a worktree, a scratch copy) never takes the port from another copy:
   its session uses the server that holds it and says so in one line. The rule is in `mcp/README.md`,

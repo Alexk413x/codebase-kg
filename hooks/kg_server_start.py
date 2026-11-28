@@ -12,7 +12,8 @@ server drops a session whose pid has exited, so it can exit once its last
 session ends and nothing has to unregister one.
 
 It always exits 0 and prints one line only when something is wrong: the port
-belongs to another program, the server did not come up in time, or this is a development
+belongs to another program, a codebase-kg holds it that this user's state files do not name
+(one in WSL answers on Windows too), the server did not come up in time, or this is a development
 copy (not a release, not installed by a client) and another build holds the port. Stdlib only.
 """
 
@@ -30,13 +31,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _shim_loader import load_shim
 
 WAIT = 8.0
+VERIFY_WAIT = 2.0
 POLL = 0.1
+UNVERIFIED = "unverified"
 
 
 def _serving(shim: Any, port: int, mine: dict[str, Any]) -> bool:
     """True when the port holds this build or one it may not replace."""
     kind, theirs = shim.health(port, timeout=0.5)
     return kind == shim.OURS and not shim.replaces(mine, theirs)
+
+
+def _holder(shim: Any, port: int) -> tuple[str, dict[str, Any]]:
+    """What holds the port. `UNVERIFIED` is a codebase-kg this user's state files never name within `VERIFY_WAIT`.
+
+    Its token is out of reach, so every request from this session would get 403. A server that
+    hands the port to another build is unverified only for a moment, hence the wait.
+    """
+    kind, theirs = shim.health(port, timeout=0.5)
+    deadline = time.monotonic() + VERIFY_WAIT
+    while kind == shim.OURS and shim.verified_holder(port) is None:
+        if time.monotonic() >= deadline:
+            return UNVERIFIED, theirs
+        time.sleep(POLL)
+        kind, theirs = shim.health(port, timeout=0.5)
+    return kind, theirs
 
 
 def _held(port: int, mine: dict[str, Any], theirs: dict[str, Any]) -> str | None:
@@ -55,11 +74,18 @@ def ensure_server(shim: Any, wait: float = WAIT, spawn: Callable[[str], object] 
     """Start the server, with `spawn` or `shim.spawn_server_detached`, if it is needed. Returns the line to print, or None."""
     port = shim.http_port()
     mine = shim.build_info()
-    kind, theirs = shim.health(port, timeout=0.5)
+    kind, theirs = _holder(shim, port)
     if kind == shim.OTHER:
         return (
             f"codebase-kg: port {port} belongs to another program, so the codebase-kg tools "
             f"are unavailable. Set the plugin's server_port option to a free port."
+        )
+    if kind == UNVERIFIED:
+        return (
+            f"codebase-kg: port {port} holds a codebase-kg server that this session cannot use, so the "
+            f"codebase-kg tools are unavailable. That server runs on another system or as another user: "
+            f"WSL 2 shares its localhost ports with Windows, so a server started in WSL also answers on "
+            f"Windows. Set the plugin's server_port option to another port on one of the two."
         )
     if kind == shim.OURS and not shim.replaces(mine, theirs):
         return _held(port, mine, theirs)
